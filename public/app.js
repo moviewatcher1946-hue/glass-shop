@@ -33,6 +33,7 @@ function renderNav() {
   const count = Object.values(cart).reduce((a, b) => a + b, 0);
   $('#nav').innerHTML =
     `<button data-act="shop">Shop</button><button data-act="cart">Cart (${count})</button>` +
+    (user ? '<button data-act="orders">My orders</button>' : '') +
     (isAdmin() ? '<button data-act="admin">Admin</button>' : '') +
     (user ? `<span class="pill">${esc(user.username)}</span><button data-act="logout">Log out</button>`
           : '<button class="primary" data-act="auth">Log in / Sign up</button>');
@@ -78,9 +79,25 @@ async function renderAdmin() {
         <td>${money(o.total)}</td><td>${esc(o.status)}</td></tr>`).join('')}</table>` : '<p>No orders yet.</p>'}</section>`;
 }
 
+async function renderOrders() {
+  $('#app').innerHTML = '<section class="panel glass"><h2>My orders</h2><p>Loading...</p></section>';
+  const orders = await api('/api/orders/mine').catch(() => []);
+  $('#app').innerHTML = `<h2>My orders</h2>` + (orders.map((o) => `
+    <section class="panel glass">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <b>Order #${o.id}</b><span class="pill">${esc(o.status)}</span></div>
+      <p style="color:var(--muted);margin:4px 0 12px">${new Date(o.created_at).toLocaleString()}</p>
+      <table>${(o.items || []).map((i) => `<tr><td>${i.quantity} x ${esc(i.title)}</td>
+        <td style="text-align:right">${money(i.unit_price * i.quantity)}</td></tr>`).join('')}</table>
+      <p style="text-align:right;margin:12px 0 0"><b>Total: ${money(o.total)}</b></p>
+    </section>`).join('') || '<section class="panel glass"><p>You have no orders yet. Add something to your cart and place an order.</p></section>');
+}
+
 function render() {
   renderNav();
-  if (view === 'admin' && isAdmin()) renderAdmin(); else { view = 'shop'; renderShop(); }
+  if (view === 'admin' && isAdmin()) renderAdmin();
+  else if (view === 'orders' && user) renderOrders();
+  else { view = 'shop'; renderShop(); }
 }
 async function loadProducts() {
   products = await api('/api/products');
@@ -112,6 +129,7 @@ function cartDialog() {
 const actions = {
   shop: () => { view = 'shop'; render(); },
   admin: () => { view = 'admin'; render(); },
+  orders: () => { view = 'orders'; render(); },
   close: () => $('#dlg').close(),
   auth: authDialog,
   cart: cartDialog,
@@ -122,7 +140,7 @@ const actions = {
     if (!user) { authDialog(); return toast('Log in to place your order.'); }
     const items = Object.entries(cart).map(([product_id, quantity]) => ({ product_id, quantity }));
     const o = await api('/api/orders', { method: 'POST', json: { items } });
-    cart = {}; saveCart(); $('#dlg').close(); toast(`Order #${o.id} placed.`);
+    cart = {}; saveCart(); $('#dlg').close(); toast(`Order #${o.id} placed.`); view = 'orders'; render();
   },
   toggle: async (id) => { await api(`/api/products/${id}/sold-out`, { method: 'PATCH' }); await loadProducts(); },
   delete: async (id) => { if (confirm('Delete this product?')) { await api(`/api/products/${id}`, { method: 'DELETE' }); await loadProducts(); toast('Deleted.'); } },
