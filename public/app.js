@@ -1,6 +1,6 @@
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const CURRENCY = '$';
+const CURRENCY = '₱';
 const money = (n) => CURRENCY + Number(n).toFixed(2);
 const STATUS = { pending: 'Pending', packed: 'Packed - ready', completed: 'Completed', cancelled: 'Cancelled' };
 
