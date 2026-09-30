@@ -160,6 +160,24 @@ app.get('/api/orders', auth, admin, wrap(async (req, res) => {
   res.json((await pool.query(`${ORDER_SQL} ORDER BY o.created_at DESC`)).rows);
 }));
 
+// Customer cancels their own order, only while it is still pending.
+app.patch('/api/orders/:id/cancel', auth, wrap(async (req, res) => {
+  const { rows: [o] } = await pool.query(
+    "UPDATE orders SET status='cancelled' WHERE id=$1 AND user_id=$2 AND status='pending' RETURNING id,status",
+    [req.params.id, req.user.id]);
+  if (!o) throw bad('Only pending orders can be cancelled.');
+  res.json(o);
+}));
+
+// Admin moves an order along: pending -> packed (ready) -> completed, or cancelled.
+app.patch('/api/orders/:id/status', auth, admin, wrap(async (req, res) => {
+  const { status } = req.body || {};
+  if (!['pending', 'packed', 'completed', 'cancelled'].includes(status)) throw bad('Invalid status.');
+  const { rows: [o] } = await pool.query('UPDATE orders SET status=$1 WHERE id=$2 RETURNING id,status', [status, req.params.id]);
+  if (!o) throw bad('Order not found.', 404);
+  res.json(o);
+}));
+
 /* ---------- Errors & boot ---------- */
 app.use((err, req, res, next) => {
   if (err.code === 'LIMIT_FILE_SIZE') err = bad('Image must be 5 MB or smaller.');
