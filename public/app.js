@@ -2,12 +2,14 @@ const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const CURRENCY = '$';
 const money = (n) => CURRENCY + Number(n).toFixed(2);
+const STATUS = { pending: 'Pending', packed: 'Packed - ready', completed: 'Completed', cancelled: 'Cancelled' };
 
 let token = localStorage.token || '';
 let user = JSON.parse(localStorage.user || 'null');
 let cart = JSON.parse(localStorage.cart || '{}');
 let products = [];
 let view = 'shop';
+let sig = '', lastOrderId = null, mineHtml = '', adminHtml = '', statusMap = null;
 
 async function api(url, { json, ...opt } = {}) {
   const headers = { ...(opt.headers || {}) };
@@ -24,8 +26,8 @@ function toast(msg) {
   setTimeout(() => t.classList.remove('show'), 2600);
 }
 const saveCart = () => { localStorage.cart = JSON.stringify(cart); renderNav(); };
-const setSession = (t, u) => { token = t; user = u; localStorage.token = t; localStorage.user = JSON.stringify(u); };
-const clearSession = () => { token = ''; user = null; localStorage.removeItem('token'); localStorage.removeItem('user'); };
+const setSession = (t, u) => { token = t; user = u; statusMap = null; localStorage.token = t; localStorage.user = JSON.stringify(u); };
+const clearSession = () => { token = ''; user = null; statusMap = null; localStorage.removeItem('token'); localStorage.removeItem('user'); };
 const isAdmin = () => user && user.role === 'admin';
 
 /* ---------- Rendering ---------- */
@@ -50,8 +52,39 @@ function renderShop() {
     </article>`).join('') || '<p class="panel glass">No products yet.</p>'}</section>`;
 }
 
-async function renderAdmin() {
-  const orders = await api('/api/orders').catch(() => []);
+const productTable = () => `<table>${products.map((p) => `<tr>
+    <td>${p.image_url ? `<img class="thumb" src="${esc(p.image_url)}" alt="">` : ''}</td>
+    <td><b>${esc(p.title)}</b><br>${money(p.price)}${p.is_sold_out ? ' - sold out' : ''}</td>
+    <td><div class="actions">
+      <button data-act="edit" data-id="${p.id}">Edit</button>
+      <button data-act="toggle" data-id="${p.id}">${p.is_sold_out ? 'Mark available' : 'Mark sold out'}</button>
+      <button class="danger" data-act="delete" data-id="${p.id}">Delete</button></div></td></tr>`).join('')}</table>`;
+
+function fillProducts() { const el = $('#plist'); if (el) el.innerHTML = productTable(); }
+
+const adminBtns = (o) => {
+  const btn = (st, label, cls) => `<button class="${cls}" data-act="setstatus" data-id="${o.id}" data-status="${st}">${label}</button>`;
+  if (o.status === 'pending') return btn('packed', 'Mark packed', 'primary') + btn('cancelled', 'Cancel', 'danger');
+  if (o.status === 'packed') return btn('completed', 'Complete', 'primary') + btn('cancelled', 'Cancel', 'danger');
+  return '';
+};
+
+async function refreshOrders() {
+  const orders = await api('/api/orders');
+  const top = orders.reduce((m, o) => Math.max(m, o.id), 0);
+  if (lastOrderId !== null && top > lastOrderId) toast('New order received.');
+  lastOrderId = top;
+  const el = $('#olist');
+  if (!el) return;
+  const html = orders.length ? `<table>${orders.map((o) => `<tr><td>#${o.id}</td><td>${esc(o.username)}</td>
+    <td>${(o.items || []).map((i) => `${i.quantity} x ${esc(i.title)}`).join(', ')}</td>
+    <td>${money(o.total)}</td><td><span class="pill">${STATUS[o.status] || esc(o.status)}</span></td>
+    <td><div class="actions">${adminBtns(o)}</div></td></tr>`).join('')}</table>` : '<p>No orders yet.</p>';
+  if (html !== adminHtml) { adminHtml = html; el.innerHTML = html; }
+}
+
+function renderAdmin() {
+  adminHtml = '';
   $('#app').innerHTML = `
     <section class="panel glass">
       <h2 id="form-title">Add a product</h2>
@@ -64,33 +97,42 @@ async function renderAdmin() {
         <button type="button" data-act="reset-form">Clear</button>
       </form>
     </section>
-    <section class="panel glass table-wrap"><h2>Products</h2><table>
-      ${products.map((p) => `<tr>
-        <td>${p.image_url ? `<img class="thumb" src="${esc(p.image_url)}" alt="">` : ''}</td>
-        <td><b>${esc(p.title)}</b><br>${money(p.price)}${p.is_sold_out ? ' - sold out' : ''}</td>
-        <td><div class="actions">
-          <button data-act="edit" data-id="${p.id}">Edit</button>
-          <button data-act="toggle" data-id="${p.id}">${p.is_sold_out ? 'Mark available' : 'Mark sold out'}</button>
-          <button class="danger" data-act="delete" data-id="${p.id}">Delete</button></div></td></tr>`).join('')}
-    </table></section>
-    <section class="panel glass table-wrap"><h2>Orders</h2>${orders.length ? `<table>
-      ${orders.map((o) => `<tr><td>#${o.id}</td><td>${esc(o.username)}</td>
-        <td>${(o.items || []).map((i) => `${i.quantity} x ${esc(i.title)}`).join(', ')}</td>
-        <td>${money(o.total)}</td><td>${esc(o.status)}</td></tr>`).join('')}</table>` : '<p>No orders yet.</p>'}</section>`;
+    <section class="panel glass table-wrap"><h2>Products</h2><div id="plist"></div></section>
+    <section class="panel glass table-wrap"><h2>Orders</h2><div id="olist"><p>Loading...</p></div></section>`;
+  fillProducts();
+  refreshOrders().catch(() => {});
 }
 
-async function renderOrders() {
-  $('#app').innerHTML = '<section class="panel glass"><h2>My orders</h2><p>Loading...</p></section>';
-  const orders = await api('/api/orders/mine').catch(() => []);
-  $('#app').innerHTML = `<h2>My orders</h2>` + (orders.map((o) => `
+async function loadMine() {
+  const orders = await api('/api/orders/mine');
+  if (statusMap) orders.forEach((o) => {
+    if (statusMap[o.id] && statusMap[o.id] !== o.status && o.status === 'packed') toast(`Order #${o.id} is packed and ready.`);
+  });
+  statusMap = Object.fromEntries(orders.map((o) => [o.id, o.status]));
+  return orders;
+}
+
+async function fillMine() {
+  const el = $('#mine');
+  const orders = await loadMine();
+  if (!el) return;
+  const html = orders.map((o) => `
     <section class="panel glass">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-        <b>Order #${o.id}</b><span class="pill">${esc(o.status)}</span></div>
+        <b>Order #${o.id}</b><span class="pill">${STATUS[o.status] || esc(o.status)}</span></div>
       <p style="color:var(--muted);margin:4px 0 12px">${new Date(o.created_at).toLocaleString()}</p>
       <table>${(o.items || []).map((i) => `<tr><td>${i.quantity} x ${esc(i.title)}</td>
         <td style="text-align:right">${money(i.unit_price * i.quantity)}</td></tr>`).join('')}</table>
       <p style="text-align:right;margin:12px 0 0"><b>Total: ${money(o.total)}</b></p>
-    </section>`).join('') || '<section class="panel glass"><p>You have no orders yet. Add something to your cart and place an order.</p></section>');
+      ${o.status === 'pending' ? `<button class="danger" data-act="cancel" data-id="${o.id}">Cancel order</button>` : ''}
+    </section>`).join('') || '<section class="panel glass"><p>You have no orders yet. Add something to your cart and place an order.</p></section>';
+  if (html !== mineHtml) { mineHtml = html; el.innerHTML = html; }
+}
+
+function renderOrders() {
+  mineHtml = '';
+  $('#app').innerHTML = '<h2>My orders</h2><div id="mine"></div>';
+  fillMine().catch(() => {});
 }
 
 function render() {
@@ -101,6 +143,7 @@ function render() {
 }
 async function loadProducts() {
   products = await api('/api/products');
+  sig = JSON.stringify(products);
   render();
 }
 
@@ -130,6 +173,15 @@ const actions = {
   shop: () => { view = 'shop'; render(); },
   admin: () => { view = 'admin'; render(); },
   orders: () => { view = 'orders'; render(); },
+  cancel: async (id) => {
+    if (!confirm('Cancel this order?')) return;
+    await api(`/api/orders/${id}/cancel`, { method: 'PATCH' }); await fillMine(); toast('Order cancelled.');
+  },
+  setstatus: async (id, d) => {
+    if (d.status === 'cancelled' && !confirm('Cancel this order?')) return;
+    await api(`/api/orders/${id}/status`, { method: 'PATCH', json: { status: d.status } });
+    await refreshOrders(); toast(d.status === 'packed' ? 'Marked packed. The customer is notified.' : 'Order updated.');
+  },
   close: () => $('#dlg').close(),
   auth: authDialog,
   cart: cartDialog,
@@ -156,7 +208,7 @@ const actions = {
 document.addEventListener('click', async (e) => {
   const b = e.target.closest('[data-act]');
   if (!b || !actions[b.dataset.act]) return;
-  try { await actions[b.dataset.act](b.dataset.id); } catch (err) { toast(err.message); }
+  try { await actions[b.dataset.act](b.dataset.id, b.dataset); } catch (err) { toast(err.message); }
 });
 
 document.addEventListener('submit', async (e) => {
@@ -178,5 +230,22 @@ document.addEventListener('submit', async (e) => {
 
 // Close the dialog when clicking the dimmed backdrop
 $('#dlg').addEventListener('click', (e) => { if (e.target === $('#dlg')) $('#dlg').close(); });
+
+/* ---------- Live updates (checks the server every 5 seconds) ---------- */
+async function poll() {
+  if (document.hidden) return;
+  try {
+    const fresh = await api('/api/products');
+    const now = JSON.stringify(fresh);
+    if (now !== sig) {
+      sig = now; products = fresh;
+      if (view === 'shop') renderShop(); else if (view === 'admin') fillProducts();
+    }
+    if (isAdmin()) await refreshOrders();
+    if (user) { if (view === 'orders') await fillMine(); else await loadMine(); }
+  } catch (e) { /* ignore network hiccups */ }
+}
+setInterval(poll, 5000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
 
 loadProducts().catch((e) => toast(e.message));
