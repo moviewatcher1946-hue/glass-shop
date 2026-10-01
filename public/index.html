@@ -3,18 +3,40 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>School Shop</title>
+  <title>Snack Shop</title>
+  <script>
+    try {
+      document.documentElement.dataset.theme =
+        localStorage.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    } catch (e) {}
+  </script>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div>
   <header class="glass nav">
     <h1>Shop</h1>
-    <nav id="nav"></nav>
+    <div class="tools">
+      <nav id="nav"></nav>
+      <button id="tour-btn" type="button">Tutorial</button>
+      <button id="theme" type="button"></button>
+    </div>
   </header>
   <main id="app"></main>
   <dialog id="dlg" class="glass"></dialog>
   <div id="toast" class="glass" role="status"></div>
+  <script>
+    const tb = document.getElementById('theme');
+    const label = () => tb.textContent = document.documentElement.dataset.theme === 'dark' ? 'Light mode' : 'Dark mode';
+    tb.onclick = () => {
+      const t = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+      document.documentElement.dataset.theme = t;
+      try { localStorage.theme = t; } catch (e) {}
+      label();
+    };
+    label();
+  </script>
   <script src="app.js"></script>
+  <script src="tour.js"></script>
 </body>
 </html>
