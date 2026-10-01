@@ -21,7 +21,18 @@ CREATE TABLE IF NOT EXISTS products (
   image_mime  TEXT,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-
+CREATE TABLE IF NOT EXISTS custom_requests (
+  id           SERIAL PRIMARY KEY,
+  user_id      INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  description  TEXT NOT NULL,
+  status       VARCHAR(20) NOT NULL DEFAULT 'pending'
+               CHECK (status IN ('pending','quoted','accepted','declined','unavailable')),
+  quoted_price NUMERIC(10,2) CHECK (quoted_price >= 0),
+  admin_note   TEXT NOT NULL DEFAULT '',
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS custom_requests_user ON custom_requests (user_id);
 CREATE TABLE IF NOT EXISTS orders (
   id         SERIAL PRIMARY KEY,
   user_id    INT NOT NULL REFERENCES users(id),
