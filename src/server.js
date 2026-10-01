@@ -18,6 +18,22 @@ const wrap = (fn) => (req, res, next) => fn(req, res, next).catch(next);
 const COLS = 'id,title,description,price,is_sold_out,image_url,created_at';
 const bad = (msg, status = 400) => Object.assign(new Error(msg), { status });
 
+// Creates the custom_requests table if it doesn't exist yet (never touches existing data).
+const ensureCustomRequests = () => pool.query(`
+  CREATE TABLE IF NOT EXISTS custom_requests (
+    id           SERIAL PRIMARY KEY,
+    user_id      INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    description  TEXT NOT NULL,
+    status       VARCHAR(20) NOT NULL DEFAULT 'pending'
+                 CHECK (status IN ('pending','quoted','accepted','declined','unavailable')),
+    quoted_price NUMERIC(10,2) CHECK (quoted_price >= 0),
+    admin_note   TEXT NOT NULL DEFAULT '',
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+  CREATE INDEX IF NOT EXISTS custom_requests_user ON custom_requests (user_id);
+`);
+
 // Sets image_url (with a cache-busting version) and returns the public product row.
 const withImage = async (id) =>
   (
@@ -178,6 +194,58 @@ app.patch('/api/orders/:id/status', auth, admin, wrap(async (req, res) => {
   res.json(o);
 }));
 
+/* ---------- Custom requests ---------- */
+const CR_SQL = `SELECT r.id,r.description,r.status,r.quoted_price,r.admin_note,r.created_at,r.updated_at,u.username
+  FROM custom_requests r JOIN users u ON u.id=r.user_id`;
+
+// Customer submits a request.
+app.post('/api/custom-requests', auth, wrap(async (req, res) => {
+  const description = String((req.body || {}).description || '').trim();
+  if (description.length < 10 || description.length > 2000)
+    throw bad('Please describe what you want (10-2000 characters).');
+  const { rows: [r] } = await pool.query(
+    'INSERT INTO custom_requests (user_id, description) VALUES ($1,$2) RETURNING id,description,status,quoted_price,admin_note,created_at',
+    [req.user.id, description]);
+  res.status(201).json(r);
+}));
+
+app.get('/api/custom-requests/mine', auth, wrap(async (req, res) => {
+  res.json((await pool.query(`${CR_SQL} WHERE r.user_id=$1 ORDER BY r.created_at DESC`, [req.user.id])).rows);
+}));
+
+app.get('/api/custom-requests', auth, admin, wrap(async (req, res) => {
+  res.json((await pool.query(`${CR_SQL} ORDER BY r.created_at DESC`)).rows);
+}));
+
+// Admin sets a price (quoted) or says it can't be provided (unavailable).
+app.patch('/api/custom-requests/:id/quote', auth, admin, wrap(async (req, res) => {
+  const { price, note = '', unavailable = false } = req.body || {};
+  let status = 'unavailable', amount = null;
+  if (!unavailable) {
+    amount = Number(price);
+    if (price === '' || price == null || !Number.isFinite(amount) || amount < 0 || amount > 99999999)
+      throw bad('Enter a valid price.');
+    status = 'quoted';
+  }
+  const { rows: [r] } = await pool.query(
+    `UPDATE custom_requests SET status=$1, quoted_price=$2, admin_note=$3, updated_at=now()
+     WHERE id=$4 AND status IN ('pending','quoted') RETURNING id,status,quoted_price,admin_note`,
+    [status, amount, String(note).slice(0, 1000), req.params.id]);
+  if (!r) throw bad('Request not found or already answered.', 404);
+  res.json(r);
+}));
+
+// Customer accepts or declines the price they were quoted.
+app.patch('/api/custom-requests/:id/respond', auth, wrap(async (req, res) => {
+  const status = (req.body || {}).accept ? 'accepted' : 'declined';
+  const { rows: [r] } = await pool.query(
+    `UPDATE custom_requests SET status=$1, updated_at=now()
+     WHERE id=$2 AND user_id=$3 AND status='quoted' RETURNING id,status`,
+    [status, req.params.id, req.user.id]);
+  if (!r) throw bad('This request has no price to respond to.');
+  res.json(r);
+}));
+
 /* ---------- Errors & boot ---------- */
 app.use((err, req, res, next) => {
   if (err.code === 'LIMIT_FILE_SIZE') err = bad('Image must be 5 MB or smaller.');
@@ -187,5 +255,6 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 3000;
 init()
+  .then(ensureCustomRequests)
   .then(() => app.listen(PORT, () => console.log(`Glass Shop running on :${PORT}`)))
   .catch((e) => { console.error('Startup failed:', e); process.exit(1); });
