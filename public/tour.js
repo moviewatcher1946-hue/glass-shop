@@ -25,10 +25,6 @@
       target: () => $('[data-act="checkout"]', dlg), wait: onOrders },
     { t: 'See your orders', x: 'Close the cart if it is open, then click My orders to see every order and its status.', target: () => $('[data-act="orders"]'), wait: onOrders },
     { t: 'What the statuses mean', x: 'Pending: the shop received your order. Packed - ready: it is ready, and you get a popup when that happens. Completed: all done. You can press Cancel order only while it is Pending.', target: () => $('#mine .panel') },
-    { when: isAdminUser, t: 'Admin: open the panel', x: 'Click Admin in the top bar.', target: () => $('[data-act="admin"]'), wait: () => !!$('#pform') },
-    { when: isAdminUser, t: 'Admin: add products', x: 'Fill in the title, price, description and a photo, then press Add product. It appears in the shop for everyone straight away.', target: () => $('#pform') },
-    { when: isAdminUser, t: 'Admin: manage products', x: 'Use Edit to change details or the photo, Mark sold out to grey a product out, and Delete to remove it.', target: () => $('#plist') },
-    { when: isAdminUser, t: 'Admin: handle orders', x: 'New orders appear here by themselves. Press Mark packed when an order is ready and the customer is notified. Then press Complete when it is handed over, or Cancel if needed.', target: () => $('#olist') },
     { t: 'Light or dark', x: 'Switch between light and dark mode here. The shop remembers your choice.', target: () => $('#theme') },
     { t: 'You are all set!', x: 'Open this tour again any time with the Tutorial button at the top.' },
   ];
@@ -103,8 +99,16 @@
     go(1);
   }
 
+  // Tutorial is for customers only: hide the button for admins and stop any running tour.
+  const guardAdmin = () => {
+    const admin = isAdminUser();
+    $('#tour-btn').style.display = admin ? 'none' : '';
+    if (admin && card) finish();
+  };
+  setInterval(guardAdmin, 1000);
+
   $('#tour-btn').addEventListener('click', start);
   let seen = false, hasToken = false;
   try { seen = !!localStorage.tourDone; hasToken = !!localStorage.token; } catch (e) {}
-  if (!seen && !hasToken) setTimeout(start, 900);
+  if (!seen && !hasToken) setTimeout(() => { if (!isAdminUser()) start(); }, 900);
 })();
