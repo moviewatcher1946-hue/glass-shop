@@ -1,6 +1,6 @@
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const CURRENCY = '₱';
+const CURRENCY = '$';
 const money = (n) => CURRENCY + Number(n).toFixed(2);
 const STATUS = { pending: 'Pending', packed: 'Packed - ready', completed: 'Completed', cancelled: 'Cancelled' };
 
@@ -9,7 +9,7 @@ let user = JSON.parse(localStorage.user || 'null');
 let cart = JSON.parse(localStorage.cart || '{}');
 let products = [];
 let view = 'shop';
-let sig = '', lastOrderId = null, mineHtml = '', adminHtml = '', statusMap = null;
+let sig = '', lastOrderId = null, mineHtml = '', adminHtml = '', statusMap = null, adminTab = 'products', pendingCount = 0;
 
 async function api(url, { json, ...opt } = {}) {
   const headers = { ...(opt.headers || {}) };
@@ -74,6 +74,9 @@ async function refreshOrders() {
   const top = orders.reduce((m, o) => Math.max(m, o.id), 0);
   if (lastOrderId !== null && top > lastOrderId) toast('New order received.');
   lastOrderId = top;
+  pendingCount = orders.filter((o) => o.status === 'pending').length;
+  const tb = $('#tab-orders');
+  if (tb) tb.textContent = 'Orders' + (pendingCount ? ` (${pendingCount})` : '');
   const el = $('#olist');
   if (!el) return;
   const html = orders.length ? `<table>${orders.map((o) => `<tr><td>#${o.id}</td><td>${esc(o.username)}</td>
@@ -85,7 +88,10 @@ async function refreshOrders() {
 
 function renderAdmin() {
   adminHtml = '';
-  $('#app').innerHTML = `
+  const tab = (id, label, extra = '') =>
+    `<button ${id === 'orders' ? 'id="tab-orders"' : ''} class="${adminTab === id ? 'primary' : ''}" data-act="admintab" data-tab="${id}">${label}${extra}</button>`;
+  const tabs = `<div class="tabs">${tab('products', 'Products')}${tab('orders', 'Orders', pendingCount ? ` (${pendingCount})` : '')}</div>`;
+  const productsView = `
     <section class="panel glass">
       <h2 id="form-title">Add a product</h2>
       <form id="pform">
@@ -97,8 +103,9 @@ function renderAdmin() {
         <button type="button" data-act="reset-form">Clear</button>
       </form>
     </section>
-    <section class="panel glass table-wrap"><h2>Products</h2><div id="plist"></div></section>
-    <section class="panel glass table-wrap"><h2>Orders</h2><div id="olist"><p>Loading...</p></div></section>`;
+    <section class="panel glass table-wrap"><h2>Products</h2><div id="plist"></div></section>`;
+  const ordersView = '<section class="panel glass table-wrap"><h2>Orders</h2><div id="olist"><p>Loading...</p></div></section>';
+  $('#app').innerHTML = tabs + (adminTab === 'orders' ? ordersView : productsView);
   fillProducts();
   refreshOrders().catch(() => {});
 }
@@ -173,6 +180,7 @@ const actions = {
   shop: () => { view = 'shop'; render(); },
   admin: () => { view = 'admin'; render(); },
   orders: () => { view = 'orders'; render(); },
+  admintab: (id, d) => { adminTab = d.tab; renderAdmin(); },
   cancel: async (id) => {
     if (!confirm('Cancel this order?')) return;
     await api(`/api/orders/${id}/cancel`, { method: 'PATCH' }); await fillMine(); toast('Order cancelled.');
