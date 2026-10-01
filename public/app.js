@@ -3,6 +3,7 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const CURRENCY = '$';
 const money = (n) => CURRENCY + Number(n).toFixed(2);
 const STATUS = { pending: 'Pending', packed: 'Packed - ready', completed: 'Completed', cancelled: 'Cancelled' };
+const CR_STATUS = { pending: 'Waiting for a price', quoted: 'Price offered', accepted: 'Accepted', declined: 'Declined', unavailable: "Can't provide" };
 
 let token = localStorage.token || '';
 let user = JSON.parse(localStorage.user || 'null');
@@ -10,6 +11,7 @@ let cart = JSON.parse(localStorage.cart || '{}');
 let products = [];
 let view = 'shop';
 let sig = '', lastOrderId = null, mineHtml = '', adminHtml = '', statusMap = null, adminTab = 'products', pendingCount = 0;
+let customHtml = '', customAdminHtml = '', crMap = null, crList = [], lastCrId = null, pendingCustom = 0;
 
 async function api(url, { json, ...opt } = {}) {
   const headers = { ...(opt.headers || {}) };
@@ -26,15 +28,15 @@ function toast(msg) {
   setTimeout(() => t.classList.remove('show'), 2600);
 }
 const saveCart = () => { localStorage.cart = JSON.stringify(cart); renderNav(); };
-const setSession = (t, u) => { token = t; user = u; statusMap = null; localStorage.token = t; localStorage.user = JSON.stringify(u); };
-const clearSession = () => { token = ''; user = null; statusMap = null; localStorage.removeItem('token'); localStorage.removeItem('user'); };
+const setSession = (t, u) => { token = t; user = u; statusMap = null; crMap = null; localStorage.token = t; localStorage.user = JSON.stringify(u); };
+const clearSession = () => { token = ''; user = null; statusMap = null; crMap = null; localStorage.removeItem('token'); localStorage.removeItem('user'); };
 const isAdmin = () => user && user.role === 'admin';
 
 /* ---------- Rendering ---------- */
 function renderNav() {
   const count = Object.values(cart).reduce((a, b) => a + b, 0);
   $('#nav').innerHTML =
-    `<button data-act="shop">Shop</button><button data-act="cart">Cart (${count})</button>` +
+    `<button data-act="shop">Shop</button><button data-act="custom">Custom order</button><button data-act="cart">Cart (${count})</button>` +
     (user ? '<button data-act="orders">My orders</button>' : '') +
     (isAdmin() ? '<button data-act="admin">Admin</button>' : '') +
     (user ? `<span class="pill">${esc(user.username)}</span><button data-act="logout">Log out</button>`
@@ -86,11 +88,32 @@ async function refreshOrders() {
   if (html !== adminHtml) { adminHtml = html; el.innerHTML = html; }
 }
 
+/* Admin: custom requests */
+async function refreshCustom() {
+  crList = await api('/api/custom-requests');
+  const top = crList.reduce((m, r) => Math.max(m, r.id), 0);
+  if (lastCrId !== null && top > lastCrId) toast('New custom request received.');
+  lastCrId = top;
+  pendingCustom = crList.filter((r) => r.status === 'pending').length;
+  const tb = $('#tab-custom');
+  if (tb) tb.textContent = 'Custom orders' + (pendingCustom ? ` (${pendingCustom})` : '');
+  const el = $('#clist');
+  if (!el) return;
+  const html = crList.length ? `<table>${crList.map((r) => `<tr><td>#${r.id}</td><td>${esc(r.username)}</td>
+    <td style="white-space:pre-wrap;min-width:200px">${esc(r.description)}${r.admin_note ? `<br><small style="color:var(--muted)">Your note: ${esc(r.admin_note)}</small>` : ''}</td>
+    <td>${r.quoted_price != null ? money(r.quoted_price) : ''}</td>
+    <td><span class="pill">${CR_STATUS[r.status] || esc(r.status)}</span></td>
+    <td><div class="actions">${r.status === 'pending' || r.status === 'quoted'
+      ? `<button class="primary" data-act="quote" data-id="${r.id}">${r.status === 'pending' ? 'Set price' : 'Change price'}</button>` : ''}</div></td></tr>`).join('')}</table>`
+    : '<p>No custom requests yet.</p>';
+  if (html !== customAdminHtml) { customAdminHtml = html; el.innerHTML = html; }
+}
+
 function renderAdmin() {
-  adminHtml = '';
+  adminHtml = ''; customAdminHtml = '';
   const tab = (id, label, extra = '') =>
-    `<button ${id === 'orders' ? 'id="tab-orders"' : ''} class="${adminTab === id ? 'primary' : ''}" data-act="admintab" data-tab="${id}">${label}${extra}</button>`;
-  const tabs = `<div class="tabs">${tab('products', 'Products')}${tab('orders', 'Orders', pendingCount ? ` (${pendingCount})` : '')}</div>`;
+    `<button id="tab-${id}" class="${adminTab === id ? 'primary' : ''}" data-act="admintab" data-tab="${id}">${label}${extra}</button>`;
+  const tabs = `<div class="tabs">${tab('products', 'Products')}${tab('orders', 'Orders', pendingCount ? ` (${pendingCount})` : '')}${tab('custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : '')}</div>`;
   const productsView = `
     <section class="panel glass">
       <h2 id="form-title">Add a product</h2>
@@ -105,9 +128,11 @@ function renderAdmin() {
     </section>
     <section class="panel glass table-wrap"><h2>Products</h2><div id="plist"></div></section>`;
   const ordersView = '<section class="panel glass table-wrap"><h2>Orders</h2><div id="olist"><p>Loading...</p></div></section>';
-  $('#app').innerHTML = tabs + (adminTab === 'orders' ? ordersView : productsView);
+  const customView = '<section class="panel glass table-wrap"><h2>Custom orders</h2><div id="clist"><p>Loading...</p></div></section>';
+  $('#app').innerHTML = tabs + (adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : productsView);
   fillProducts();
   refreshOrders().catch(() => {});
+  refreshCustom().catch(() => {});
 }
 
 async function loadMine() {
@@ -142,10 +167,63 @@ function renderOrders() {
   fillMine().catch(() => {});
 }
 
+/* Customer: custom requests */
+async function loadCustomMine() {
+  const list = await api('/api/custom-requests/mine');
+  if (crMap) list.forEach((r) => {
+    if (crMap[r.id] && crMap[r.id] !== r.status) {
+      if (r.status === 'quoted') toast(`Custom request #${r.id} has a price.`);
+      if (r.status === 'unavailable') toast(`Custom request #${r.id}: we can't provide this one.`);
+    }
+  });
+  crMap = Object.fromEntries(list.map((r) => [r.id, r.status]));
+  return list;
+}
+
+async function fillCustomMine() {
+  const el = $('#cmine');
+  const list = await loadCustomMine();
+  if (!el) return;
+  const html = list.map((r) => `
+    <section class="panel glass">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <b>Request #${r.id}</b><span class="pill">${CR_STATUS[r.status] || esc(r.status)}</span></div>
+      <p style="color:var(--muted);margin:4px 0 12px">${new Date(r.created_at).toLocaleString()}</p>
+      <p style="white-space:pre-wrap;margin:0 0 12px">${esc(r.description)}</p>
+      ${r.status === 'quoted' ? `<p style="margin:0 0 6px"><b>Price: ${money(r.quoted_price)}</b>
+        <span style="color:var(--muted);font-size:.9rem"> (external charges may apply)</span></p>` : ''}
+      ${r.admin_note ? `<p style="margin:0 0 12px"><span style="color:var(--muted)">Note:</span> ${esc(r.admin_note)}</p>` : ''}
+      ${r.status === 'quoted' ? `<button class="primary" data-act="crespond" data-id="${r.id}" data-accept="1">Accept price</button>
+        <button class="danger" data-act="crespond" data-id="${r.id}" data-accept="0">Decline</button>` : ''}
+    </section>`).join('') || '<section class="panel glass"><p>You have not sent any custom requests yet.</p></section>';
+  if (html !== customHtml) { customHtml = html; el.innerHTML = html; }
+}
+
+function renderCustom() {
+  customHtml = '';
+  const form = user ? `<form id="cform">
+      <label>What would you like?</label>
+      <textarea name="description" rows="5" required minlength="10" maxlength="2000"
+        placeholder="Describe it: what it is, size, colors, quantity, anything that matters..."></textarea>
+      <button class="primary" type="submit">Send request</button>
+    </form>` : `<p>Please log in to send a custom request.</p>
+    <button class="primary" data-act="auth">Log in / Sign up</button>`;
+  $('#app').innerHTML = `<h2>Custom order</h2>
+    <section class="panel glass">
+      <p style="margin-top:0">Can't find what you're looking for? Tell us what you want and we'll reply with a price, or let you know if we can't provide it.</p>
+      <p style="padding:10px 14px;border-radius:12px;border:1px dashed var(--acc2);background:rgba(124,58,237,.08);font-size:.92rem">
+        <b>Please note:</b> external charges may apply to custom orders. The price we send back is the one that counts, and you can accept or decline it.</p>
+      ${form}
+    </section>
+    ${user ? '<h2>My custom requests</h2><div id="cmine"></div>' : ''}`;
+  if (user) fillCustomMine().catch(() => {});
+}
+
 function render() {
   renderNav();
   if (view === 'admin' && isAdmin()) renderAdmin();
   else if (view === 'orders' && user) renderOrders();
+  else if (view === 'custom') renderCustom();
   else { view = 'shop'; renderShop(); }
 }
 async function loadProducts() {
@@ -174,13 +252,38 @@ function cartDialog() {
     <button data-act="close">Close</button>`;
   $('#dlg').showModal();
 }
+function quoteDialog(id) {
+  const r = crList.find((x) => x.id == id);
+  if (!r) return;
+  $('#dlg').innerHTML = `<h2>Custom request #${r.id}</h2>
+    <p style="color:var(--muted);margin-top:0">From ${esc(r.username)}</p>
+    <p style="white-space:pre-wrap">${esc(r.description)}</p>
+    <form data-form="quote" data-id="${r.id}">
+      <label>Your price (${CURRENCY})</label>
+      <input name="price" type="number" step="0.01" min="0" value="${r.quoted_price != null ? esc(r.quoted_price) : ''}">
+      <label>Note to the customer (optional)</label>
+      <textarea name="note" rows="3">${esc(r.admin_note)}</textarea>
+      <button class="primary" data-mode="quote">Send price</button>
+      <button class="danger" data-mode="unavailable" formnovalidate>Can't provide this</button>
+      <button type="button" data-act="close">Cancel</button>
+    </form>`;
+  $('#dlg').showModal();
+}
 
 /* ---------- Actions ---------- */
 const actions = {
   shop: () => { view = 'shop'; render(); },
   admin: () => { view = 'admin'; render(); },
   orders: () => { view = 'orders'; render(); },
+  custom: () => { view = 'custom'; render(); },
   admintab: (id, d) => { adminTab = d.tab; renderAdmin(); },
+  quote: (id) => quoteDialog(id),
+  crespond: async (id, d) => {
+    const accept = d.accept === '1';
+    if (!accept && !confirm('Decline this price?')) return;
+    await api(`/api/custom-requests/${id}/respond`, { method: 'PATCH', json: { accept } });
+    await fillCustomMine(); toast(accept ? 'Price accepted.' : 'Price declined.');
+  },
   cancel: async (id) => {
     if (!confirm('Cancel this order?')) return;
     await api(`/api/orders/${id}/cancel`, { method: 'PATCH' }); await fillMine(); toast('Order cancelled.');
@@ -226,6 +329,18 @@ document.addEventListener('submit', async (e) => {
       const mode = e.submitter.dataset.mode;
       const d = await api(`/api/auth/${mode}`, { method: 'POST', json: Object.fromEntries(new FormData(e.target)) });
       setSession(d.token, d.user); $('#dlg').close(); render(); toast(`Welcome, ${d.user.username}.`);
+    } else if (e.target.dataset.form === 'quote') {
+      const fd = Object.fromEntries(new FormData(e.target));
+      const unavailable = e.submitter.dataset.mode === 'unavailable';
+      await api(`/api/custom-requests/${e.target.dataset.id}/quote`, {
+        method: 'PATCH', json: { price: fd.price, note: fd.note, unavailable },
+      });
+      $('#dlg').close(); await refreshCustom();
+      toast(unavailable ? 'Marked as not available.' : 'Price sent to the customer.');
+    } else if (e.target.id === 'cform') {
+      const description = new FormData(e.target).get('description');
+      await api('/api/custom-requests', { method: 'POST', json: { description } });
+      e.target.reset(); await fillCustomMine(); toast('Request sent. We will reply with a price.');
     } else if (e.target.id === 'pform') {
       const id = e.target.dataset.id;
       const fd = new FormData(e.target);
@@ -249,8 +364,11 @@ async function poll() {
       sig = now; products = fresh;
       if (view === 'shop') renderShop(); else if (view === 'admin') fillProducts();
     }
-    if (isAdmin()) await refreshOrders();
-    if (user) { if (view === 'orders') await fillMine(); else await loadMine(); }
+    if (isAdmin()) { await refreshOrders(); await refreshCustom(); }
+    if (user) {
+      if (view === 'orders') await fillMine(); else await loadMine();
+      if (view === 'custom') await fillCustomMine(); else await loadCustomMine();
+    }
   } catch (e) { /* ignore network hiccups */ }
 }
 setInterval(poll, 5000);
