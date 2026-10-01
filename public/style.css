@@ -149,3 +149,7 @@ nav button, #theme, #tour-btn { padding: 10px 18px; }
 .tour-actions [data-t="skip"] { margin-right: auto; }
 .tour-bar { height: 4px; border-radius: 4px; background: var(--border); margin-bottom: 12px; overflow: hidden; }
 .tour-bar i { display: block; height: 100%; background: var(--acc); transition: width .3s; }
+
+/* Admin tabs */
+.tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+.tabs button { padding: 10px 24px; font-weight: 600; }
