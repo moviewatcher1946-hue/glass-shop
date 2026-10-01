@@ -135,3 +135,17 @@ dialog::backdrop { background: rgba(14, 12, 26, .5); backdrop-filter: blur(5px);
   .card footer b { text-align: center; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; scroll-behavior: auto !important; } }
+
+/* Interactive tutorial */
+nav button, #theme, #tour-btn { padding: 10px 18px; }
+.tour-hl { position: relative; z-index: 6; outline: 3px solid var(--acc); outline-offset: 4px; border-radius: 12px; animation: tourPulse 1.4s infinite; }
+@keyframes tourPulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(124, 58, 237, .55); } 50% { box-shadow: 0 0 0 12px rgba(124, 58, 237, 0); } }
+#tour { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); width: min(430px, calc(100% - 28px)); z-index: 50; padding: 18px 20px; border-color: var(--acc2); box-shadow: var(--shadow-hover); }
+#tour.in-dlg { position: static; transform: none; width: auto; margin-top: 18px; }
+#tour h3 { margin: 0 0 6px; font-size: 1.1rem; }
+#tour p { margin: 0 0 10px; color: var(--muted); font-size: .95rem; }
+#tour .tour-hint { color: var(--acc); font-weight: 600; font-size: .9rem; }
+.tour-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+.tour-actions [data-t="skip"] { margin-right: auto; }
+.tour-bar { height: 4px; border-radius: 4px; background: var(--border); margin-bottom: 12px; overflow: hidden; }
+.tour-bar i { display: block; height: 100%; background: var(--acc); transition: width .3s; }
