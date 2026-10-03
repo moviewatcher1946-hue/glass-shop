@@ -165,6 +165,28 @@ async function refreshOrders() {
   if (html !== adminHtml) { adminHtml = html; el.innerHTML = html; }
 }
 
+async function refreshCustom() {
+  crList = await api('/api/custom-requests');
+  const top = crList.reduce((m, r) => Math.max(m, r.id), 0);
+  if (lastCrId !== null && top > lastCrId) toast('New custom request received.');
+  lastCrId = top;
+  pendingCustom = crList.filter((r) => r.status === 'pending').length;
+  const tb = $('#tab-custom');
+  if (tb) tb.textContent = 'Custom orders' + (pendingCustom ? ` (${pendingCustom})` : '');
+  const el = $('#clist');
+  if (!el) return;
+  const html = crList.length ? crList.map((r) => `<div class="req">
+    <div class="between"><b>#${r.id} - ${esc(r.username)}</b><span class="pill st-${r.status}">${CR_STATUS[r.status] || esc(r.status)}</span></div>
+    <p class="muted" style="margin:2px 0 8px">${new Date(r.created_at).toLocaleString()}</p>
+    <p style="white-space:pre-wrap;margin:0 0 8px">${esc(r.description)}</p>
+    ${r.quoted_price != null ? `<div class="between"><span>Price quoted</span><b>${money(r.quoted_price)}</b></div>` : ''}
+    ${r.admin_note ? `<p class="muted" style="margin:6px 0 0">Your note: ${esc(r.admin_note)}</p>` : ''}
+    ${r.status === 'pending' || r.status === 'quoted'
+      ? `<div class="actions" style="margin-top:10px"><button class="primary" data-act="quote" data-id="${r.id}">${r.status === 'pending' ? 'Set price' : 'Change price'}</button></div>` : ''}
+  </div>`).join('') : '<p>No custom requests yet.</p>';
+  if (html !== customAdminHtml) { customAdminHtml = html; el.innerHTML = html; }
+}
+
 async function refreshAdminCombos() {
   const list = await api('/api/admin/combos');
   const el = $('#combolist');
