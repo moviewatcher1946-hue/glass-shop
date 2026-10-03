@@ -40,9 +40,10 @@ const clearSession = () => { token = ''; user = null; statusMap = null; crMap = 
 // isAdmin = any staff account (raven or a seller); isRaven = the main admin, who controls everything.
 const isAdmin = () => user && (user.role === 'admin' || user.role === 'seller');
 const isRaven = () => user && user.role === 'admin';
-let sellers = [];
+let sellers = [], team = [];
 const myProducts = () => (isRaven() ? products : products.filter((p) => p.owner_id === user.id));
-const ownerName = (id) => (user && id === user.id ? '' : (sellers.find((x) => x.id === id) || {}).username || '');
+const ownerName = (id) => (!user || id === user.id ? '' : (team.find((x) => x.id === id) || {}).username || '');
+const canEdit = (ownerId) => isRaven() || (user && ownerId === user.id); // everyone on staff can look; only owners (and raven) can change
 
 /* ---------- Rendering ---------- */
 // Phone layout: big labelled buttons at the bottom, Log in + Cart on top, small extras in the footer.
@@ -133,14 +134,17 @@ function renderShop() {
   fillGrid();
 }
 
-const productTable = () => `<table>${myProducts().map((p) => `<tr>
-    <td><input type="checkbox" class="pick" value="${p.id}" ${selected.has(p.id) ? 'checked' : ''}></td>
+const productTable = () => `<table>${products.map((p) => {
+  const mine = canEdit(p.owner_id);
+  return `<tr>
+    <td>${mine ? `<input type="checkbox" class="pick" value="${p.id}" ${selected.has(p.id) ? 'checked' : ''}>` : ''}</td>
     <td>${p.image_url ? `<img class="thumb" src="${esc(p.image_url)}" alt="">` : ''}</td>
-    <td><b>${esc(p.title)}</b><br>${money(p.price)}${p.discount_percent ? ` (-${p.discount_percent}%)` : ''} | ${CATS[p.category] || 'Snacks'}${p.is_sold_out ? ' - sold out' : ''}${isRaven() && ownerName(p.owner_id) ? ` | by ${esc(ownerName(p.owner_id))}` : ''}</td>
-    <td><div class="actions">
+    <td><b>${esc(p.title)}</b><br>${money(p.price)}${p.discount_percent ? ` (-${p.discount_percent}%)` : ''} | ${CATS[p.category] || 'Snacks'}${p.is_sold_out ? ' - sold out' : ''}${ownerName(p.owner_id) ? ` | by ${esc(ownerName(p.owner_id))}` : ''}</td>
+    <td>${mine ? `<div class="actions">
       <button data-act="edit" data-id="${p.id}">Edit</button>
       <button data-act="toggle" data-id="${p.id}">${p.is_sold_out ? 'Mark available' : 'Mark sold out'}</button>
-      <button class="danger" data-act="delete" data-id="${p.id}">Delete</button></div></td></tr>`).join('')}</table>`;
+      <button class="danger" data-act="delete" data-id="${p.id}">Delete</button></div>` : '<span class="muted">View only</span>'}</td></tr>`;
+}).join('')}</table>`;
 
 function updatePicks() {
   const n = $('#pickcount'); if (n) n.textContent = `${selected.size} selected`;
@@ -155,10 +159,17 @@ function fillProducts() {
 
 const adminBtns = (o) => {
   const btn = (st, label, cls) => `<button class="${cls}" data-act="setstatus" data-id="${o.id}" data-status="${st}">${label}</button>`;
-  if (o.status === 'pending') return btn('packed', 'Mark packed', 'primary') + btn('cancelled', 'Cancel', 'danger');
-  if (o.status === 'packed') return btn('completed', 'Complete', 'primary') + btn('cancelled', 'Cancel', 'danger');
+  const parts = o.parts || [];
+  // On a shared order each owner approves their own part; otherwise the buttons change the order directly.
+  const me = parts.length > 1 ? parts.find((x) => x.owner_id === user.id) : null;
+  if (me && o.status === 'cancelled') return '';
+  const st = me ? me.status : o.status;
+  if (st === 'pending') return btn('packed', me ? 'Approve: packed' : 'Mark packed', 'primary') + btn('cancelled', me ? 'Cancel my part' : 'Cancel', 'danger');
+  if (st === 'packed') return btn('completed', me ? 'Approve: complete' : 'Complete', 'primary') + btn('cancelled', me ? 'Cancel my part' : 'Cancel', 'danger');
   return '';
 };
+const partsLine = (o) => ((o.parts || []).length > 1
+  ? `<p class="muted" style="margin:8px 0 0">Shared order, needs approval from each seller: ${o.parts.map((x) => `${esc(x.username)} (${STATUS[x.status] || esc(x.status)})`).join(', ')}</p>` : '');
 
 // One line per item with a bold amount, then promo and total.
 const orderLines = (o) => `<ul class="lines">${(o.items || []).map((i) =>
@@ -181,6 +192,7 @@ async function refreshOrders() {
       <div class="between"><b>#${o.id} - ${esc(o.username)}</b><span class="pill st-${o.status}">${STATUS[o.status] || esc(o.status)}</span></div>
       <p class="muted" style="margin:2px 0 10px">${new Date(o.created_at).toLocaleString()}</p>
       ${orderLines(o)}
+      ${partsLine(o)}
       ${o.note ? `<p class="muted" style="margin:8px 0 0">Note: ${esc(o.note)}</p>` : ''}
       <div class="actions" style="margin-top:12px">${adminBtns(o)}</div>
     </section>`).join('') : '<p>No orders yet.</p>';
@@ -239,9 +251,18 @@ async function refreshAdminPromos() {
   if (!el) return;
   const html = list.length ? `<table>${list.map((p) => `<tr><td><b>${esc(p.code)}</b></td><td>${p.percent}% off</td>
       <td>${p.used_count}${p.max_uses ? ' / ' + p.max_uses : ''} used</td><td><span class="pill">${p.is_active ? 'On' : 'Off'}</span></td>
-      <td><div class="actions"><button data-act="promo-toggle" data-id="${p.id}">${p.is_active ? 'Turn off' : 'Turn on'}</button>
-        <button class="danger" data-act="promo-delete" data-id="${p.id}">Delete</button></div></td></tr>`).join('')}</table>` : '<p>No promo codes yet.</p>';
+      <td>${canEdit(p.owner_id) ? `<div class="actions"><button data-act="promo-toggle" data-id="${p.id}">${p.is_active ? 'Turn off' : 'Turn on'}</button>
+        <button class="danger" data-act="promo-delete" data-id="${p.id}">Delete</button></div>` : `<span class="muted">View only${p.owner ? ' (' + esc(p.owner) + ')' : ''}</span>`}</td></tr>`).join('')}</table>` : '<p>No promo codes yet.</p>';
   if (html !== promoAdminHtml) { promoAdminHtml = html; el.innerHTML = html; }
+}
+
+async function refreshTeam() {
+  team = await api('/api/staff/team');
+  fillProducts(); promoAdminHtml = ''; refreshAdminPromos().catch(() => {});
+}
+async function loadAlerts() {
+  const a = await api('/api/staff/alerts');
+  const i = $('#alert-topic'); if (i) i.value = a.ntfy_topic || '';
 }
 
 async function refreshSellers() {
@@ -263,7 +284,7 @@ function renderAdmin() {
   adminHtml = ''; customAdminHtml = '';
   const tab = (id, label, extra = '') =>
     `<button id="tab-${id}" class="${adminTab === id ? 'primary' : ''}" data-act="admintab" data-tab="${id}">${label}${extra}</button>`;
-  const tabs = `<div class="tabs">${tab('products', 'Products')}${tab('orders', 'Orders', pendingCount ? ` (${pendingCount})` : '')}${isRaven() ? tab('custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : '') : ''}${tab('combos', 'Combos')}${tab('promos', 'Promos')}${isRaven() ? tab('sellers', 'Sellers') + tab('backup', 'Backup') : ''}</div>`;
+  const tabs = `<div class="tabs">${tab('products', 'Products')}${tab('orders', 'Orders', pendingCount ? ` (${pendingCount})` : '')}${tab('custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : '')}${tab('combos', 'Combos')}${tab('promos', 'Promos')}${isRaven() ? tab('sellers', 'Sellers') + tab('backup', 'Backup') : tab('alerts', 'Alerts')}</div>`;
   const productsView = `
     <section class="panel glass">
       <h2 id="form-title">Add a product</h2>
@@ -334,6 +355,15 @@ function renderAdmin() {
       </form>
     </section>
     <section class="panel glass table-wrap"><h2>Sellers</h2><div id="sellerlist"><p>Loading...</p></div></section>`;
+  const alertsView = `<section class="panel glass">
+      <h2>Phone alerts</h2>
+      <p class="muted">Get an alert on your phone when someone orders your items, or when the other seller needs your approval on a shared order. Install the free ntfy app, subscribe to a topic name that only you know (make it long and random, like a password), then type the same name here.</p>
+      <form id="alerts-form">
+        <label>Your ntfy topic (empty turns alerts off)</label>
+        <input id="alert-topic" name="ntfy_topic" maxlength="64" autocomplete="off" placeholder="e.g. her-shop-7f3k2m9x">
+        <button class="primary" type="submit">Save</button>
+      </form>
+    </section>`;
   const backupView = `<section class="panel glass">
       <h2>Backup and restore</h2>
       <p>Download everything (products with photos, accounts, orders and custom requests) as one file. Keep it private, because it contains customer accounts.</p>
@@ -343,12 +373,14 @@ function renderAdmin() {
       <input id="bfile" type="file" accept=".json,application/json">
       <button class="danger" data-act="restore">Restore from backup</button>
     </section>`;
-  $('#app').innerHTML = tabs + (adminTab === 'orders' ? ordersView : adminTab === 'custom' && isRaven() ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'combos' ? combosView : adminTab === 'promos' ? promosView : productsView);
+  $('#app').innerHTML = tabs + (adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'alerts' && !isRaven() ? alertsView : adminTab === 'combos' ? combosView : adminTab === 'promos' ? promosView : productsView);
   fillProducts();
   comboAdminHtml = ''; refreshAdminCombos().catch(() => {});
   promoAdminHtml = ''; refreshAdminPromos().catch(() => {});
   refreshOrders().catch(() => {});
-  if (isRaven()) { refreshCustom().catch(() => {}); refreshSellers().catch(() => {}); }
+  refreshCustom().catch(() => {});
+  refreshTeam().catch(() => {});
+  if (isRaven()) refreshSellers().catch(() => {}); else loadAlerts().catch(() => {});
 }
 
 async function loadMine() {
@@ -607,8 +639,10 @@ const actions = {
   },
   setstatus: async (id, d) => {
     if (d.status === 'cancelled' && !confirm('Cancel this order?')) return;
-    await api(`/api/orders/${id}/status`, { method: 'PATCH', json: { status: d.status } });
-    await refreshOrders(); toast(d.status === 'packed' ? 'Marked packed. The customer is notified.' : 'Order updated.');
+    const r = await api(`/api/orders/${id}/status`, { method: 'PATCH', json: { status: d.status } });
+    await refreshOrders();
+    toast(r.waiting && r.waiting.length ? `Saved. Waiting for ${r.waiting.join(', ')} to approve too.`
+      : d.status === 'packed' ? 'Marked packed. The customer is notified.' : 'Order updated.');
   },
   close: () => $('#dlg').close(),
   auth: authDialog,
@@ -665,6 +699,9 @@ document.addEventListener('submit', async (e) => {
       if (!picked.length) throw new Error('Tick at least one product for the combo.');
       await api('/api/combos', { method: 'POST', json: { title: fd.title, description: fd.description, price: fd.price, items: picked } });
       e.target.reset(); updateComboSum(); await refreshAdminCombos(); await loadProductsQuiet(); toast('Combo created.');
+    } else if (e.target.id === 'alerts-form') {
+      await api('/api/staff/alerts', { method: 'PUT', json: Object.fromEntries(new FormData(e.target)) });
+      toast('Alert settings saved.');
     } else if (e.target.id === 'seller-form') {
       await api('/api/admin/sellers', { method: 'POST', json: Object.fromEntries(new FormData(e.target)) });
       e.target.reset(); await refreshSellers(); toast('Seller created.');
@@ -715,7 +752,7 @@ async function poll() {
       sig = now; products = fresh; combos = freshCombos; settings = freshSettings;
       if (view === 'shop') { fillBanner(); fillGrid(); } else if (view === 'admin') fillProducts();
     }
-    if (isAdmin()) { await refreshOrders(); if (isRaven()) await refreshCustom(); }
+    if (isAdmin()) { await refreshOrders(); await refreshCustom(); }
     if (user && !isAdmin()) {
       if (view === 'orders') await fillMine(); else await loadMine();
       if (view === 'custom') await fillCustomMine(); else await loadCustomMine();
