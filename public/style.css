@@ -242,3 +242,8 @@ dialog { max-height: 88vh; overflow-y: auto; }
   .card footer b { font-size: 1.1rem; }
   dialog { padding: 18px; }
 }
+
+/* Custom request status colors */
+.st-quoted { background: rgba(245, 158, 11, .18); border-color: rgba(245, 158, 11, .6); }
+.st-accepted { background: rgba(16, 185, 129, .2); border-color: rgba(16, 185, 129, .65); }
+.st-declined, .st-unavailable { background: rgba(220, 38, 112, .14); border-color: rgba(220, 38, 112, .5); }
