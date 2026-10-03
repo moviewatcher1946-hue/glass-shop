@@ -22,15 +22,15 @@
     { when: () => !loggedIn(), t: 'Step 2: create your account or log in',
       x: 'New here? Pick a username (letters, numbers or _) and a password of 8+ characters, then press Create account. Already registered? Type your details and press Log in.',
       target: () => $('[data-mode="signup"]', dlg), wait: loggedIn },
-    { when: loggedIn, t: 'You are logged in', x: 'Your name now shows in the top bar. Press Log out there when you are finished, and use Log in next time with the same username and password.', target: () => $('nav .pill') },
+    { when: loggedIn, t: 'You are logged in', x: 'Your name now shows in the top bar. Press Log out there when you are finished, and use Log in next time with the same username and password.', target: () => $('#nav .pill, #acct .pill') },
     { when: () => !!firstAdd() || cartCount() > 0, t: 'Add something to your cart', x: 'Press Add to cart on any product.', target: firstAdd, wait: () => cartCount() > 0 },
     { t: 'Open your cart', x: 'Click Cart in the top bar to see what you picked.', target: () => $('[data-act="cart"]'), wait: cartOpen },
     { t: 'Place your order', x: 'Check the items and total. Press Place order to send it to the shop (this is a real order). Or press Next to carry on without ordering.',
       target: () => $('[data-act="checkout"]', dlg), wait: onOrders },
     { t: 'See your orders', x: 'Close the cart if it is open, then click My orders to see every order and its status.', target: () => $('[data-act="orders"]'), wait: onOrders },
     { t: 'What the statuses mean', x: 'Pending: the shop received your order. Packed - ready: it is ready, and you get a popup when that happens. Completed: all done. You can press Cancel order only while it is Pending.', target: () => $('#mine .panel') },
-    { t: 'Light or dark', x: 'Switch between light and dark mode here. The shop remembers your choice.', target: () => $('#theme') },
-    { t: 'You are all set!', x: 'Open this tour again any time with the Tutorial button at the top.' },
+    { t: 'Light or dark', x: 'Switch between light and dark mode here. The shop remembers your choice.', target: () => $('#theme, #foot-theme') },
+    { t: 'You are all set!', x: 'Open this tour again any time with the Tutorial button.' },
   ];
 
   let i = -1, card = null, hl = null, timer = null, armed = false, pending = false;
