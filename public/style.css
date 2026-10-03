@@ -307,3 +307,15 @@ dialog { max-height: 88vh; overflow-y: auto; }
   #toast { bottom: 96px; }
   #tour { bottom: 88px; }
 }
+
+/* Tutorial button always visible on phones */
+#helpfab { display: none; }
+@media (max-width: 640px) {
+  #helpfab {
+    display: block; position: fixed; right: 12px; bottom: calc(84px + env(safe-area-inset-bottom)); z-index: 35;
+    min-height: 44px; padding: 10px 18px; border-radius: 999px; font-weight: 700; color: var(--acc);
+    border: 1px solid var(--acc2); box-shadow: var(--shadow-hover);
+    background: color-mix(in srgb, var(--bg1) 92%, transparent);
+  }
+  body:has(#tour) #helpfab { display: none; }
+}
