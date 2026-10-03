@@ -167,3 +167,20 @@ nav button, #theme, #tour-btn { padding: 10px 18px; }
   nav .pill { font-weight: 700; }
   main { padding-top: 4px; }
 }
+
+/* Custom orders */
+.notice { margin: 0 0 16px; padding: 12px 14px; border-radius: 12px; background: rgba(124, 58, 237, .12); border: 1px solid var(--acc2); font-size: .95rem; }
+.muted { color: var(--muted); }
+.between { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
+.req { padding: 14px 0; border-bottom: 1px solid var(--border); }
+.req:last-child { border-bottom: 0; }
+
+/* Search, categories */
+select { width: 100%; font: inherit; color: var(--txt); padding: 10px 14px; margin: 4px 0 14px; background: var(--field); border: 1px solid var(--border); border-radius: 12px; }
+select:focus { outline: none; border-color: var(--acc); box-shadow: 0 0 0 3px rgba(124, 58, 237, .2); }
+:root[data-theme="dark"] select { color-scheme: dark; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 8px; }
+.toolbar input { flex: 1 1 220px; margin: 0; }
+.chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.chips button { padding: 9px 18px; border-radius: 999px; font-weight: 600; }
+.cat-title { margin: 26px 0 12px; }
