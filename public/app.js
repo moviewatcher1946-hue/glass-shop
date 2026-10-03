@@ -40,16 +40,32 @@ const clearSession = () => { token = ''; user = null; statusMap = null; crMap = 
 const isAdmin = () => user && user.role === 'admin';
 
 /* ---------- Rendering ---------- */
+// Phone layout: big labelled buttons at the bottom, Log in + Cart on top, small extras in the footer.
+function renderMobileNav() {
+  const bn = $('#bottomnav');
+  if (!bn) return;
+  const on = (v) => (view === v ? 'on' : '');
+  bn.innerHTML = `<button class="${on('shop')}" data-act="shop">Home</button>` + (isAdmin()
+    ? `<button class="${on('admin')}" data-act="admin">Admin</button>`
+    : `<button class="${on('custom')}" data-act="custom">Custom order</button>` +
+      (user ? `<button class="${on('orders')}" data-act="orders">My orders</button>` : ''));
+  $('#acct').innerHTML = user ? `<span class="pill">${esc(user.username)}</span>` : '<button class="primary" data-act="auth">Log in</button>';
+  $('#foot').innerHTML = (isAdmin() ? '' : '<button id="foot-tour" type="button">Tutorial</button>') +
+    `<button id="foot-theme" type="button">${document.documentElement.dataset.theme === 'dark' ? 'Light mode' : 'Dark mode'}</button>` +
+    (user ? '<button data-act="logout">Log out</button>' : '');
+}
+
 function renderNav() {
   const count = Object.values(cart).reduce((a, b) => a + b, 0);
   const q = $('#cartq');
   if (q) q.textContent = `Cart (${count})`;
   $('#nav').innerHTML =
-    `<button data-act="shop">Shop</button><button data-act="custom">Custom order</button><button data-act="cart">Cart (${count})</button>` +
-    (user ? '<button data-act="orders">My orders</button>' : '') +
+    `<button data-act="shop">Shop</button>${isAdmin() ? '' : '<button data-act="custom">Custom order</button>'}<button data-act="cart">Cart (${count})</button>` +
+    (user && !isAdmin() ? '<button data-act="orders">My orders</button>' : '') +
     (isAdmin() ? '<button data-act="admin">Admin</button>' : '') +
     (user ? `<span class="pill">${esc(user.username)}</span><button data-act="logout">Log out</button>`
           : '<button class="primary" data-act="auth">Log in / Sign up</button>');
+  renderMobileNav();
 }
 
 const productCard = (p) => {
@@ -401,8 +417,8 @@ function renderCustom() {
 function render() {
   renderNav();
   if (view === 'admin' && isAdmin()) renderAdmin();
-  else if (view === 'orders' && user) renderOrders();
-  else if (view === 'custom') renderCustom();
+  else if (view === 'orders' && user && !isAdmin()) renderOrders();
+  else if (view === 'custom' && !isAdmin()) renderCustom();
   else { view = 'shop'; renderShop(); }
 }
 async function loadProductsQuiet() {
@@ -656,7 +672,7 @@ async function poll() {
       if (view === 'shop') { fillBanner(); fillGrid(); } else if (view === 'admin') fillProducts();
     }
     if (isAdmin()) { await refreshOrders(); await refreshCustom(); }
-    if (user) {
+    if (user && !isAdmin()) {
       if (view === 'orders') await fillMine(); else await loadMine();
       if (view === 'custom') await fillCustomMine(); else await loadCustomMine();
     }
@@ -665,15 +681,17 @@ async function poll() {
 setInterval(poll, 5000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
 
-/* Phone menu: only Cart and Menu stay in the bar, everything else drops down. */
+/* Phone layout elements (hidden on computers by the stylesheet). */
 (() => {
-  const bar = document.querySelector('.nav');
-  bar.insertAdjacentHTML('beforeend', '<button id="cartq" class="primary" type="button" data-act="cart">Cart (0)</button><button id="menu-btn" type="button">Menu</button>');
-  $('#menu-btn').addEventListener('click', () => bar.classList.toggle('open'));
+  document.querySelector('.nav').insertAdjacentHTML('beforeend',
+    '<div id="acct"></div><button id="cartq" class="primary" type="button" data-act="cart">Cart (0)</button>');
+  document.body.insertAdjacentHTML('beforeend', '<footer id="foot"></footer><div id="bottomnav" class="glass"></div>');
   document.addEventListener('click', (e) => {
-    if (e.target.closest('#menu-btn')) return;
-    if (e.target.closest('.tools button') || !e.target.closest('.nav')) bar.classList.remove('open');
+    if (e.target.closest('#foot-tour')) $('#tour-btn').click();
+    const th = e.target.closest('#foot-theme');
+    if (th) { $('#theme').click(); th.textContent = document.documentElement.dataset.theme === 'dark' ? 'Light mode' : 'Dark mode'; }
   });
+  renderNav();
 })();
 
 loadProducts().catch((e) => toast(e.message));
