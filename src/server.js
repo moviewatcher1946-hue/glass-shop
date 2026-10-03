@@ -131,6 +131,16 @@ app.patch('/api/products/:id/sold-out', auth, admin, wrap(async (req, res) => {
   res.json(p);
 }));
 
+// Move several products to a category at once.
+app.patch('/api/products/category', auth, admin, wrap(async (req, res) => {
+  const { ids, category } = req.body || {};
+  if (!CATEGORIES.includes(category)) throw bad('Pick Drinks or Snacks.');
+  const list = (Array.isArray(ids) ? ids : []).map(Number).filter(Number.isInteger);
+  if (!list.length) throw bad('Select at least one product.');
+  const { rowCount } = await pool.query('UPDATE products SET category=$1 WHERE id = ANY($2)', [category, list]);
+  res.json({ updated: rowCount });
+}));
+
 app.delete('/api/products/:id', auth, admin, wrap(async (req, res) => {
   await pool.query('DELETE FROM products WHERE id=$1', [req.params.id]);
   res.sendStatus(204);
