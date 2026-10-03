@@ -2,6 +2,8 @@ const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const CURRENCY = '$';
 const money = (n) => CURRENCY + Number(n).toFixed(2);
+// Price after the product's % discount (the server works it out again when you order).
+const fin = (p) => Math.round(Number(p.price) * (100 - (Number(p.discount_percent) || 0))) / 100;
 const CATS = { drinks: 'Drinks', snacks: 'Snacks' };
 const STATUS = { pending: 'Pending', packed: 'Packed - ready', completed: 'Completed', cancelled: 'Cancelled' };
 const CR_STATUS = { pending: 'Waiting for a price', quoted: 'Price offered', accepted: 'Accepted', declined: 'Declined', unavailable: "Can't provide" };
@@ -13,6 +15,7 @@ let products = [];
 let view = 'shop';
 let searchText = '', catFilter = 'all';
 const selected = new Set(); // products ticked in Admin for bulk changes
+let combos = [], comboAdminHtml = '';
 let sig = '', lastOrderId = null, mineHtml = '', adminHtml = '', statusMap = null, adminTab = 'products', pendingCount = 0;
 let customHtml = '', customAdminHtml = '', crMap = null, crList = [], lastCrId = null, pendingCustom = 0;
 
@@ -46,14 +49,33 @@ function renderNav() {
           : '<button class="primary" data-act="auth">Log in / Sign up</button>');
 }
 
-const productCard = (p) => `
+const productCard = (p) => {
+  const off = Number(p.discount_percent) || 0;
+  return `
     <article class="card glass">
       <div class="img">${p.image_url ? `<img loading="lazy" src="${esc(p.image_url)}" alt="${esc(p.title)}">` : ''}
-        ${p.is_sold_out ? '<span class="badge">Sold out</span>' : ''}</div>
+        ${p.is_sold_out ? '<span class="badge">Sold out</span>' : ''}${off ? `<span class="badge off">-${off}%</span>` : ''}</div>
       <h3>${esc(p.title)}</h3><p>${esc(p.description)}</p>
-      <footer><b>${money(p.price)}</b>
+      <footer><span>${off ? `<span class="was">${money(p.price)}</span> ` : ''}<b>${money(fin(p))}</b></span>
         <button class="primary" data-act="add" data-id="${p.id}" ${p.is_sold_out ? 'disabled' : ''}>Add to cart</button></footer>
     </article>`;
+};
+
+const comboCard = (c) => {
+  const out = c.items.some((x) => x.is_sold_out);
+  const regular = c.items.reduce((s, x) => s + fin(x) * x.quantity, 0);
+  const save = regular - Number(c.price);
+  const imgs = c.items.filter((x) => x.image_url).slice(0, 4).map((x) => `<img loading="lazy" src="${esc(x.image_url)}" alt="">`).join('');
+  return `
+    <article class="card glass">
+      <div class="img"><div class="combo-imgs">${imgs}</div>
+        ${out ? '<span class="badge">Sold out</span>' : save > 0 ? `<span class="badge off">Save ${money(save)}</span>` : ''}</div>
+      <h3>${esc(c.title)}</h3>
+      <p>${c.items.map((x) => `${x.quantity}x ${esc(x.title)}`).join(', ')}${c.description ? ' - ' + esc(c.description) : ''}</p>
+      <footer><span>${save > 0 ? `<span class="was">${money(regular)}</span> ` : ''}<b>${money(c.price)}</b></span>
+        <button class="primary" data-act="addcombo" data-id="${c.id}" ${out ? 'disabled' : ''}>Add to cart</button></footer>
+    </article>`;
+};
 
 // Redraws only the product list, so the search box keeps focus while typing.
 function fillGrid() {
@@ -62,19 +84,22 @@ function fillGrid() {
   const text = searchText.trim().toLowerCase();
   const match = (p) => !text || `${p.title} ${p.description}`.toLowerCase().includes(text);
   const catOf = (p) => (CATS[p.category] ? p.category : 'snacks');
+  const comboList = catFilter === 'all' || catFilter === 'combos'
+    ? combos.filter((c) => match({ title: c.title, description: `${c.description} ${c.items.map((x) => x.title).join(' ')}` })) : [];
   const groups = Object.keys(CATS)
     .filter((c) => catFilter === 'all' || catFilter === c)
     .map((c) => ({ c, list: products.filter((p) => catOf(p) === c && match(p)) }))
     .filter((g) => g.list.length);
-  el.innerHTML = groups.map((g) => `<h2 class="cat-title">${CATS[g.c]}</h2><section class="grid">${g.list.map(productCard).join('')}</section>`).join('')
-    || `<p class="panel glass">${products.length ? 'No products match your search.' : 'No products yet.'}</p>`;
+  el.innerHTML = (comboList.length ? `<h2 class="cat-title">Combos</h2><section class="grid">${comboList.map(comboCard).join('')}</section>` : '')
+    + groups.map((g) => `<h2 class="cat-title">${CATS[g.c]}</h2><section class="grid">${g.list.map(productCard).join('')}</section>`).join('')
+    || `<p class="panel glass">${products.length || combos.length ? 'No products match your search.' : 'No products yet.'}</p>`;
 }
 
 function renderShop() {
   const chip = (id, label) => `<button class="${catFilter === id ? 'primary' : ''}" data-act="cat" data-cat="${id}">${label}</button>`;
   $('#app').innerHTML = `<div class="toolbar">
       <input id="search" type="search" placeholder="Search products..." value="${esc(searchText)}" autocomplete="off">
-      <div class="chips">${chip('all', 'All')}${Object.entries(CATS).map(([id, label]) => chip(id, label)).join('')}</div>
+      <div class="chips">${chip('all', 'All')}${chip('combos', 'Combos')}${Object.entries(CATS).map(([id, label]) => chip(id, label)).join('')}</div>
     </div><div id="grid"></div>`;
   fillGrid();
 }
@@ -82,7 +107,7 @@ function renderShop() {
 const productTable = () => `<table>${products.map((p) => `<tr>
     <td><input type="checkbox" class="pick" value="${p.id}" ${selected.has(p.id) ? 'checked' : ''}></td>
     <td>${p.image_url ? `<img class="thumb" src="${esc(p.image_url)}" alt="">` : ''}</td>
-    <td><b>${esc(p.title)}</b><br>${money(p.price)} | ${CATS[p.category] || 'Snacks'}${p.is_sold_out ? ' - sold out' : ''}</td>
+    <td><b>${esc(p.title)}</b><br>${money(p.price)}${p.discount_percent ? ` (-${p.discount_percent}%)` : ''} | ${CATS[p.category] || 'Snacks'}${p.is_sold_out ? ' - sold out' : ''}</td>
     <td><div class="actions">
       <button data-act="edit" data-id="${p.id}">Edit</button>
       <button data-act="toggle" data-id="${p.id}">${p.is_sold_out ? 'Mark available' : 'Mark sold out'}</button>
@@ -144,11 +169,35 @@ async function refreshCustom() {
   if (html !== customAdminHtml) { customAdminHtml = html; el.innerHTML = html; }
 }
 
+async function refreshAdminCombos() {
+  const list = await api('/api/admin/combos');
+  const el = $('#combolist');
+  if (!el) return;
+  const html = list.length ? `<table>${list.map((c) => `<tr>
+      <td><b>${esc(c.title)}</b><br><span class="muted">${c.items.map((x) => `${x.quantity}x ${esc(x.title)}`).join(', ')}</span></td>
+      <td>${money(c.price)}</td><td><span class="pill">${c.is_active ? 'Visible' : 'Hidden'}</span></td>
+      <td><div class="actions"><button data-act="combo-toggle" data-id="${c.id}">${c.is_active ? 'Hide' : 'Show'}</button>
+        <button class="danger" data-act="combo-delete" data-id="${c.id}">Delete</button></div></td></tr>`).join('')}</table>` : '<p>No combos yet.</p>';
+  if (html !== comboAdminHtml) { comboAdminHtml = html; el.innerHTML = html; }
+}
+
+function updateComboSum() {
+  const el = $('#combo-sum');
+  if (!el) return;
+  let sum = 0;
+  document.querySelectorAll('#combo-form input[name="pid"]:checked').forEach((b) => {
+    const p = products.find((x) => x.id == b.value);
+    const q = Number(document.querySelector(`[data-qty="${b.value}"]`).value) || 1;
+    if (p) sum += fin(p) * q;
+  });
+  el.textContent = sum ? `These items add up to ${money(sum)} at today's prices. Set the combo price lower to give a saving.` : '';
+}
+
 function renderAdmin() {
   adminHtml = ''; customAdminHtml = '';
   const tab = (id, label, extra = '') =>
     `<button id="tab-${id}" class="${adminTab === id ? 'primary' : ''}" data-act="admintab" data-tab="${id}">${label}${extra}</button>`;
-  const tabs = `<div class="tabs">${tab('products', 'Products')}${tab('orders', 'Orders', pendingCount ? ` (${pendingCount})` : '')}${tab('custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : '')}${tab('backup', 'Backup')}</div>`;
+  const tabs = `<div class="tabs">${tab('products', 'Products')}${tab('orders', 'Orders', pendingCount ? ` (${pendingCount})` : '')}${tab('custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : '')}${tab('combos', 'Combos')}${tab('backup', 'Backup')}</div>`;
   const productsView = `
     <section class="panel glass">
       <h2 id="form-title">Add a product</h2>
@@ -156,6 +205,7 @@ function renderAdmin() {
         <div class="row"><div><label>Title</label><input name="title" required></div>
           <div><label>Price</label><input name="price" type="number" step="0.01" min="0" required></div></div>
         <label>Category</label><select name="category"><option value="drinks">Drinks</option><option value="snacks">Snacks</option></select>
+        <label>Discount % (0 for none)</label><input name="discount_percent" type="number" min="0" max="90" value="0">
         <label>Description</label><textarea name="description" rows="3"></textarea>
         <label>Image (max 5 MB; leave empty to keep the current one)</label><input name="image" type="file" accept="image/*">
         <button class="primary" type="submit" id="save">Add product</button>
@@ -168,10 +218,26 @@ function renderAdmin() {
         <span id="pickcount" class="muted">0 selected</span>
         <button data-act="bulk" data-cat="drinks">Move to Drinks</button>
         <button data-act="bulk" data-cat="snacks">Move to Snacks</button>
+        <input id="discpct" type="number" min="0" max="90" placeholder="% off" style="width:90px;margin:0">
+        <button data-act="bulkdisc">Apply discount</button>
       </div>
       <div id="plist"></div></section>`;
   const ordersView = '<section class="panel glass table-wrap"><h2>Orders</h2><div id="olist"><p>Loading...</p></div></section>';
   const customView = '<section class="panel glass table-wrap"><h2>Custom orders</h2><div id="clist"><p>Loading...</p></div></section>';
+  const combosView = `<section class="panel glass">
+      <h2>Create a combo</h2>
+      <form id="combo-form">
+        <label>Combo name</label><input name="title" required maxlength="120" placeholder="e.g. Movie night snack pack">
+        <label>Description (optional)</label><input name="description" maxlength="300">
+        <label>Combo price</label><input name="price" type="number" step="0.01" min="0" required>
+        <label>Tick the products and how many of each</label>
+        <div class="picks">${products.map((p) => `<label class="pickrow"><input type="checkbox" name="pid" value="${p.id}"> ${esc(p.title)} (${money(fin(p))})
+          <input type="number" min="1" max="20" value="1" data-qty="${p.id}"></label>`).join('') || '<p>Add products first.</p>'}</div>
+        <p class="muted" id="combo-sum"></p>
+        <button class="primary" type="submit">Create combo</button>
+      </form>
+    </section>
+    <section class="panel glass table-wrap"><h2>Combos</h2><div id="combolist"><p>Loading...</p></div></section>`;
   const backupView = `<section class="panel glass">
       <h2>Backup and restore</h2>
       <p>Download everything (products with photos, accounts, orders and custom requests) as one file. Keep it private, because it contains customer accounts.</p>
@@ -181,8 +247,9 @@ function renderAdmin() {
       <input id="bfile" type="file" accept=".json,application/json">
       <button class="danger" data-act="restore">Restore from backup</button>
     </section>`;
-  $('#app').innerHTML = tabs + (adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' ? backupView : productsView);
+  $('#app').innerHTML = tabs + (adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' ? backupView : adminTab === 'combos' ? combosView : productsView);
   fillProducts();
+  comboAdminHtml = ''; refreshAdminCombos().catch(() => {});
   refreshOrders().catch(() => {});
   refreshCustom().catch(() => {});
 }
@@ -278,9 +345,12 @@ function render() {
   else if (view === 'custom') renderCustom();
   else { view = 'shop'; renderShop(); }
 }
+async function loadProductsQuiet() {
+  [products, combos] = await Promise.all([api('/api/products'), api('/api/combos')]);
+  sig = JSON.stringify([products, combos]);
+}
 async function loadProducts() {
-  products = await api('/api/products');
-  sig = JSON.stringify(products);
+  await loadProductsQuiet();
   render();
 }
 
@@ -294,11 +364,21 @@ function authDialog() {
     <button type="button" data-act="close">Cancel</button></form>`;
   $('#dlg').showModal();
 }
+function cartLines() {
+  return Object.entries(cart).map(([key, q]) => {
+    if (key[0] === 'c') {
+      const c = combos.find((x) => 'c' + x.id === key);
+      return c && { key, title: 'Combo: ' + c.title, price: Number(c.price), q };
+    }
+    const p = products.find((x) => x.id == key);
+    return p && { key, title: p.title, price: fin(p), q };
+  }).filter(Boolean);
+}
 function cartDialog() {
-  const lines = Object.entries(cart).map(([id, q]) => ({ p: products.find((x) => x.id == id), q })).filter((l) => l.p);
-  const total = lines.reduce((s, l) => s + Number(l.p.price) * l.q, 0);
-  $('#dlg').innerHTML = `<h2>Your cart</h2>${lines.map((l) => `<p>${l.q} x ${esc(l.p.title)} - ${money(l.p.price * l.q)}
-      <button data-act="remove" data-id="${l.p.id}">Remove</button></p>`).join('') || '<p>Your cart is empty.</p>'}
+  const lines = cartLines();
+  const total = lines.reduce((s, l) => s + l.price * l.q, 0);
+  $('#dlg').innerHTML = `<h2>Your cart</h2>${lines.map((l) => `<p>${l.q} x ${esc(l.title)} - ${money(l.price * l.q)}
+      <button data-act="remove" data-id="${l.key}">Remove</button></p>`).join('') || '<p>Your cart is empty.</p>'}
     <p><b>Total: ${money(total)}</b></p>
     <button class="primary" data-act="checkout" ${lines.length ? '' : 'disabled'}>Place order</button>
     <button data-act="close">Close</button>`;
@@ -326,6 +406,19 @@ function quoteDialog(id) {
 const actions = {
   shop: () => { view = 'shop'; render(); },
   cat: (id, d) => { catFilter = d.cat; renderShop(); },
+  addcombo: (id) => { const k = 'c' + id; cart[k] = (cart[k] || 0) + 1; saveCart(); toast('Added to cart.'); },
+  bulkdisc: async () => {
+    if (!selected.size) return toast('Tick the products first.');
+    const pct = $('#discpct').value;
+    if (pct === '') return toast('Type the discount % first (0 removes it).');
+    await api('/api/products/discount', { method: 'PATCH', json: { ids: [...selected], percent: pct } });
+    selected.clear(); await loadProducts(); toast(Number(pct) ? `${pct}% discount applied.` : 'Discount removed.');
+  },
+  'combo-toggle': async (id) => { await api(`/api/combos/${id}/active`, { method: 'PATCH' }); await refreshAdminCombos(); await loadProductsQuiet(); },
+  'combo-delete': async (id) => {
+    if (!confirm('Delete this combo?')) return;
+    await api(`/api/combos/${id}`, { method: 'DELETE' }); await refreshAdminCombos(); await loadProductsQuiet(); toast('Combo deleted.');
+  },
   bulk: async (id, d) => {
     if (!selected.size) return toast('Tick the products you want to move first.');
     await api('/api/products/category', { method: 'PATCH', json: { ids: [...selected], category: d.cat } });
@@ -381,7 +474,7 @@ const actions = {
   remove: (id) => { delete cart[id]; saveCart(); cartDialog(); },
   checkout: async () => {
     if (!user) { authDialog(); return toast('Log in to place your order.'); }
-    const items = Object.entries(cart).map(([product_id, quantity]) => ({ product_id, quantity }));
+    const items = cartLines().map((l) => (l.key[0] === 'c' ? { combo_id: l.key.slice(1), quantity: l.q } : { product_id: l.key, quantity: l.q }));
     const o = await api('/api/orders', { method: 'POST', json: { items } });
     cart = {}; saveCart(); $('#dlg').close(); toast(`Order #${o.id} placed.`); view = 'orders'; render();
   },
@@ -389,7 +482,7 @@ const actions = {
   delete: async (id) => { if (confirm('Delete this product?')) { await api(`/api/products/${id}`, { method: 'DELETE' }); await loadProducts(); toast('Deleted.'); } },
   edit: (id) => {
     const p = products.find((x) => x.id == id), f = $('#pform');
-    f.dataset.id = id; f.title.value = p.title; f.price.value = p.price; f.description.value = p.description; f.category.value = p.category || 'snacks';
+    f.dataset.id = id; f.title.value = p.title; f.price.value = p.price; f.description.value = p.description; f.category.value = p.category || 'snacks'; f.discount_percent.value = p.discount_percent || 0;
     $('#form-title').textContent = 'Edit product'; $('#save').textContent = 'Save changes';
     f.scrollIntoView({ behavior: 'smooth' });
   },
@@ -421,6 +514,13 @@ document.addEventListener('submit', async (e) => {
       const description = new FormData(e.target).get('description');
       await api('/api/custom-requests', { method: 'POST', json: { description } });
       e.target.reset(); await fillCustomMine(); toast('Request sent. We will reply with a price.');
+    } else if (e.target.id === 'combo-form') {
+      const fd = Object.fromEntries(new FormData(e.target));
+      const picked = [...e.target.querySelectorAll('input[name="pid"]:checked')]
+        .map((b) => ({ product_id: b.value, quantity: Number(e.target.querySelector(`[data-qty="${b.value}"]`).value) || 1 }));
+      if (!picked.length) throw new Error('Tick at least one product for the combo.');
+      await api('/api/combos', { method: 'POST', json: { title: fd.title, description: fd.description, price: fd.price, items: picked } });
+      e.target.reset(); updateComboSum(); await refreshAdminCombos(); await loadProductsQuiet(); toast('Combo created.');
     } else if (e.target.id === 'pform') {
       const id = e.target.dataset.id;
       const fd = new FormData(e.target);
@@ -448,16 +548,17 @@ document.addEventListener('change', (e) => {
 
 document.addEventListener('input', (e) => {
   if (e.target.id === 'search') { searchText = e.target.value; fillGrid(); }
+  else if (e.target.closest('#combo-form')) updateComboSum();
 });
 
 /* ---------- Live updates (checks the server every 5 seconds) ---------- */
 async function poll() {
   if (document.hidden) return;
   try {
-    const fresh = await api('/api/products');
-    const now = JSON.stringify(fresh);
+    const [fresh, freshCombos] = await Promise.all([api('/api/products'), api('/api/combos')]);
+    const now = JSON.stringify([fresh, freshCombos]);
     if (now !== sig) {
-      sig = now; products = fresh;
+      sig = now; products = fresh; combos = freshCombos;
       if (view === 'shop') fillGrid(); else if (view === 'admin') fillProducts();
     }
     if (isAdmin()) { await refreshOrders(); await refreshCustom(); }
