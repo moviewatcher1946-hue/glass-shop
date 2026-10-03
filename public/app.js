@@ -12,6 +12,7 @@ let cart = JSON.parse(localStorage.cart || '{}');
 let products = [];
 let view = 'shop';
 let searchText = '', catFilter = 'all';
+const selected = new Set(); // products ticked in Admin for bulk changes
 let sig = '', lastOrderId = null, mineHtml = '', adminHtml = '', statusMap = null, adminTab = 'products', pendingCount = 0;
 let customHtml = '', customAdminHtml = '', crMap = null, crList = [], lastCrId = null, pendingCustom = 0;
 
@@ -79,6 +80,7 @@ function renderShop() {
 }
 
 const productTable = () => `<table>${products.map((p) => `<tr>
+    <td><input type="checkbox" class="pick" value="${p.id}" ${selected.has(p.id) ? 'checked' : ''}></td>
     <td>${p.image_url ? `<img class="thumb" src="${esc(p.image_url)}" alt="">` : ''}</td>
     <td><b>${esc(p.title)}</b><br>${money(p.price)} | ${CATS[p.category] || 'Snacks'}${p.is_sold_out ? ' - sold out' : ''}</td>
     <td><div class="actions">
@@ -86,7 +88,16 @@ const productTable = () => `<table>${products.map((p) => `<tr>
       <button data-act="toggle" data-id="${p.id}">${p.is_sold_out ? 'Mark available' : 'Mark sold out'}</button>
       <button class="danger" data-act="delete" data-id="${p.id}">Delete</button></div></td></tr>`).join('')}</table>`;
 
-function fillProducts() { const el = $('#plist'); if (el) el.innerHTML = productTable(); }
+function updatePicks() {
+  const n = $('#pickcount'); if (n) n.textContent = `${selected.size} selected`;
+  const all = $('#pickall'); if (all) all.checked = products.length > 0 && selected.size === products.length;
+}
+function fillProducts() {
+  for (const id of [...selected]) if (!products.some((p) => p.id === id)) selected.delete(id);
+  const el = $('#plist');
+  if (el) el.innerHTML = productTable();
+  updatePicks();
+}
 
 const adminBtns = (o) => {
   const btn = (st, label, cls) => `<button class="${cls}" data-act="setstatus" data-id="${o.id}" data-status="${st}">${label}</button>`;
@@ -151,7 +162,14 @@ function renderAdmin() {
         <button type="button" data-act="reset-form">Clear</button>
       </form>
     </section>
-    <section class="panel glass table-wrap"><h2>Products</h2><div id="plist"></div></section>`;
+    <section class="panel glass table-wrap"><h2>Products</h2>
+      <div class="bulk">
+        <label><input type="checkbox" id="pickall"> Select all</label>
+        <span id="pickcount" class="muted">0 selected</span>
+        <button data-act="bulk" data-cat="drinks">Move to Drinks</button>
+        <button data-act="bulk" data-cat="snacks">Move to Snacks</button>
+      </div>
+      <div id="plist"></div></section>`;
   const ordersView = '<section class="panel glass table-wrap"><h2>Orders</h2><div id="olist"><p>Loading...</p></div></section>';
   const customView = '<section class="panel glass table-wrap"><h2>Custom orders</h2><div id="clist"><p>Loading...</p></div></section>';
   const backupView = `<section class="panel glass">
@@ -308,6 +326,11 @@ function quoteDialog(id) {
 const actions = {
   shop: () => { view = 'shop'; render(); },
   cat: (id, d) => { catFilter = d.cat; renderShop(); },
+  bulk: async (id, d) => {
+    if (!selected.size) return toast('Tick the products you want to move first.');
+    await api('/api/products/category', { method: 'PATCH', json: { ids: [...selected], category: d.cat } });
+    selected.clear(); await loadProducts(); toast(`Moved to ${CATS[d.cat]}.`);
+  },
   admin: () => { view = 'admin'; render(); },
   orders: () => { view = 'orders'; render(); },
   custom: () => { view = 'custom'; render(); },
@@ -410,6 +433,18 @@ document.addEventListener('submit', async (e) => {
 
 // Close the dialog when clicking the dimmed backdrop
 $('#dlg').addEventListener('click', (e) => { if (e.target === $('#dlg')) $('#dlg').close(); });
+
+document.addEventListener('change', (e) => {
+  if (e.target.classList.contains('pick')) {
+    const id = Number(e.target.value);
+    if (e.target.checked) selected.add(id); else selected.delete(id);
+    updatePicks();
+  } else if (e.target.id === 'pickall') {
+    selected.clear();
+    if (e.target.checked) products.forEach((p) => selected.add(p.id));
+    fillProducts();
+  }
+});
 
 document.addEventListener('input', (e) => {
   if (e.target.id === 'search') { searchText = e.target.value; fillGrid(); }
