@@ -37,7 +37,12 @@ function toast(msg) {
 const saveCart = () => { localStorage.cart = JSON.stringify(cart); renderNav(); };
 const setSession = (t, u) => { token = t; user = u; statusMap = null; crMap = null; localStorage.token = t; localStorage.user = JSON.stringify(u); };
 const clearSession = () => { token = ''; user = null; statusMap = null; crMap = null; localStorage.removeItem('token'); localStorage.removeItem('user'); };
-const isAdmin = () => user && user.role === 'admin';
+// isAdmin = any staff account (raven or a seller); isRaven = the main admin, who controls everything.
+const isAdmin = () => user && (user.role === 'admin' || user.role === 'seller');
+const isRaven = () => user && user.role === 'admin';
+let sellers = [];
+const myProducts = () => (isRaven() ? products : products.filter((p) => p.owner_id === user.id));
+const ownerName = (id) => (user && id === user.id ? '' : (sellers.find((x) => x.id === id) || {}).username || '');
 
 /* ---------- Rendering ---------- */
 // Phone layout: big labelled buttons at the bottom, Log in + Cart on top, small extras in the footer.
@@ -128,10 +133,10 @@ function renderShop() {
   fillGrid();
 }
 
-const productTable = () => `<table>${products.map((p) => `<tr>
+const productTable = () => `<table>${myProducts().map((p) => `<tr>
     <td><input type="checkbox" class="pick" value="${p.id}" ${selected.has(p.id) ? 'checked' : ''}></td>
     <td>${p.image_url ? `<img class="thumb" src="${esc(p.image_url)}" alt="">` : ''}</td>
-    <td><b>${esc(p.title)}</b><br>${money(p.price)}${p.discount_percent ? ` (-${p.discount_percent}%)` : ''} | ${CATS[p.category] || 'Snacks'}${p.is_sold_out ? ' - sold out' : ''}</td>
+    <td><b>${esc(p.title)}</b><br>${money(p.price)}${p.discount_percent ? ` (-${p.discount_percent}%)` : ''} | ${CATS[p.category] || 'Snacks'}${p.is_sold_out ? ' - sold out' : ''}${isRaven() && ownerName(p.owner_id) ? ` | by ${esc(ownerName(p.owner_id))}` : ''}</td>
     <td><div class="actions">
       <button data-act="edit" data-id="${p.id}">Edit</button>
       <button data-act="toggle" data-id="${p.id}">${p.is_sold_out ? 'Mark available' : 'Mark sold out'}</button>
@@ -139,10 +144,10 @@ const productTable = () => `<table>${products.map((p) => `<tr>
 
 function updatePicks() {
   const n = $('#pickcount'); if (n) n.textContent = `${selected.size} selected`;
-  const all = $('#pickall'); if (all) all.checked = products.length > 0 && selected.size === products.length;
+  const all = $('#pickall'); if (all) all.checked = myProducts().length > 0 && selected.size === myProducts().length;
 }
 function fillProducts() {
-  for (const id of [...selected]) if (!products.some((p) => p.id === id)) selected.delete(id);
+  for (const id of [...selected]) if (!myProducts().some((p) => p.id === id)) selected.delete(id);
   const el = $('#plist');
   if (el) el.innerHTML = productTable();
   updatePicks();
@@ -239,17 +244,33 @@ async function refreshAdminPromos() {
   if (html !== promoAdminHtml) { promoAdminHtml = html; el.innerHTML = html; }
 }
 
+async function refreshSellers() {
+  sellers = await api('/api/admin/sellers');
+  const el = $('#sellerlist');
+  if (el) el.innerHTML = sellers.length ? `<table>${sellers.map((x) => `<tr><td><b>${esc(x.username)}</b></td>
+    <td><div class="actions"><button data-act="seller-pw" data-id="${x.id}">New password</button>
+    <button class="danger" data-act="seller-del" data-id="${x.id}">Remove</button></div></td></tr>`).join('')}</table>` : '<p>No sellers yet.</p>';
+  const ob = $('#ownerbox');
+  if (ob) {
+    const cur = ob.querySelector('select') ? ob.querySelector('select').value : '';
+    ob.innerHTML = sellers.length ? `<label>Owner</label><select name="owner_id"><option value="${user.id}">Me (${esc(user.username)})</option>${sellers.map((x) => `<option value="${x.id}">${esc(x.username)}</option>`).join('')}</select>` : '';
+    if (cur && ob.querySelector('select')) ob.querySelector('select').value = cur;
+  }
+  fillProducts();
+}
+
 function renderAdmin() {
   adminHtml = ''; customAdminHtml = '';
   const tab = (id, label, extra = '') =>
     `<button id="tab-${id}" class="${adminTab === id ? 'primary' : ''}" data-act="admintab" data-tab="${id}">${label}${extra}</button>`;
-  const tabs = `<div class="tabs">${tab('products', 'Products')}${tab('orders', 'Orders', pendingCount ? ` (${pendingCount})` : '')}${tab('custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : '')}${tab('combos', 'Combos')}${tab('promos', 'Promos')}${tab('backup', 'Backup')}</div>`;
+  const tabs = `<div class="tabs">${tab('products', 'Products')}${tab('orders', 'Orders', pendingCount ? ` (${pendingCount})` : '')}${isRaven() ? tab('custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : '') : ''}${tab('combos', 'Combos')}${tab('promos', 'Promos')}${isRaven() ? tab('sellers', 'Sellers') + tab('backup', 'Backup') : ''}</div>`;
   const productsView = `
     <section class="panel glass">
       <h2 id="form-title">Add a product</h2>
       <form id="pform">
         <div class="row"><div><label>Title</label><input name="title" required></div>
           <div><label>Price</label><input name="price" type="number" step="0.01" min="0" required></div></div>
+        <div id="ownerbox"></div>
         <label>Category</label><select name="category"><option value="drinks">Drinks</option><option value="snacks">Snacks</option></select>
         <label>Discount % (0 for none)</label><input name="discount_percent" type="number" min="0" max="90" value="0">
         <label>Description</label><textarea name="description" rows="3"></textarea>
@@ -277,32 +298,42 @@ function renderAdmin() {
         <label>Description (optional)</label><input name="description" maxlength="300">
         <label>Combo price</label><input name="price" type="number" step="0.01" min="0" required>
         <label>Tick the products and how many of each</label>
-        <div class="picks">${products.map((p) => `<label class="pickrow"><input type="checkbox" name="pid" value="${p.id}"> ${esc(p.title)} (${money(fin(p))})
+        <div class="picks">${myProducts().map((p) => `<label class="pickrow"><input type="checkbox" name="pid" value="${p.id}"> ${esc(p.title)} (${money(fin(p))})
           <input type="number" min="1" max="20" value="1" data-qty="${p.id}"></label>`).join('') || '<p>Add products first.</p>'}</div>
         <p class="muted" id="combo-sum"></p>
         <button class="primary" type="submit">Create combo</button>
       </form>
     </section>
     <section class="panel glass table-wrap"><h2>Combos</h2><div id="combolist"><p>Loading...</p></div></section>`;
-  const promosView = `<section class="panel glass">
+  const promosView = `${isRaven() ? `<section class="panel glass">
       <h2>Announcement banner</h2>
       <form id="settings-form">
         <label>Text shown at the top of the shop (leave empty to hide)</label><input name="banner" maxlength="200" value="${esc(settings.banner)}">
         <label>Stamp card reward (earned after every 10 completed orders)</label><input name="stamp_reward" maxlength="80" value="${esc(settings.stamp_reward)}">
         <button class="primary" type="submit">Save</button>
       </form>
-    </section>
+    </section>` : ''}
     <section class="panel glass">
       <h2>Create a promo code</h2>
       <form id="promo-form">
         <div class="row"><div><label>Code</label><input name="code" required maxlength="30" placeholder="e.g. WELCOME10"></div>
-          <div><label>% off the order</label><input name="percent" type="number" min="1" max="90" required></div></div>
+          <div><label>% off your items in the order</label><input name="percent" type="number" min="1" max="90" required></div></div>
         <label>Max uses in total (optional)</label><input name="max_uses" type="number" min="1">
         <button class="primary" type="submit">Create code</button>
       </form>
-      <p class="muted">Each customer can use a code once.</p>
+      <p class="muted">A code only discounts the items you sell. Each customer can use a code once.</p>
     </section>
     <section class="panel glass table-wrap"><h2>Promo codes</h2><div id="promolist"><p>Loading...</p></div></section>`;
+  const sellersView = `<section class="panel glass">
+      <h2>Add a seller</h2>
+      <p class="muted">A seller can add and manage her own products, combos and promo codes and see orders for them. You can see and edit all of it.</p>
+      <form id="seller-form">
+        <label>Username</label><input name="username" required maxlength="30" autocomplete="off">
+        <label>Password (8+ characters)</label><input name="password" type="password" required minlength="8" autocomplete="new-password">
+        <button class="primary" type="submit">Create seller</button>
+      </form>
+    </section>
+    <section class="panel glass table-wrap"><h2>Sellers</h2><div id="sellerlist"><p>Loading...</p></div></section>`;
   const backupView = `<section class="panel glass">
       <h2>Backup and restore</h2>
       <p>Download everything (products with photos, accounts, orders and custom requests) as one file. Keep it private, because it contains customer accounts.</p>
@@ -312,12 +343,12 @@ function renderAdmin() {
       <input id="bfile" type="file" accept=".json,application/json">
       <button class="danger" data-act="restore">Restore from backup</button>
     </section>`;
-  $('#app').innerHTML = tabs + (adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' ? backupView : adminTab === 'combos' ? combosView : adminTab === 'promos' ? promosView : productsView);
+  $('#app').innerHTML = tabs + (adminTab === 'orders' ? ordersView : adminTab === 'custom' && isRaven() ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'combos' ? combosView : adminTab === 'promos' ? promosView : productsView);
   fillProducts();
   comboAdminHtml = ''; refreshAdminCombos().catch(() => {});
   promoAdminHtml = ''; refreshAdminPromos().catch(() => {});
   refreshOrders().catch(() => {});
-  refreshCustom().catch(() => {});
+  if (isRaven()) { refreshCustom().catch(() => {}); refreshSellers().catch(() => {}); }
 }
 
 async function loadMine() {
@@ -443,16 +474,18 @@ function cartLines() {
   return Object.entries(cart).map(([key, q]) => {
     if (key[0] === 'c') {
       const c = combos.find((x) => 'c' + x.id === key);
-      return c && { key, title: 'Combo: ' + c.title, price: Number(c.price), q };
+      return c && { key, title: 'Combo: ' + c.title, price: Number(c.price), q, owner: c.owner_id };
     }
     const p = products.find((x) => x.id == key);
-    return p && { key, title: p.title, price: fin(p), q };
+    return p && { key, title: p.title, price: fin(p), q, owner: p.owner_id };
   }).filter(Boolean);
 }
 function cartDialog() {
   const lines = cartLines();
   const sub = lines.reduce((s, l) => s + l.price * l.q, 0);
-  const off = promo ? Math.round(sub * promo.percent) / 100 : 0;
+  // A promo only discounts the items its owner sells.
+  const base = !promo || promo.owner_id == null ? sub : lines.filter((l) => l.owner === promo.owner_id).reduce((s, l) => s + l.price * l.q, 0);
+  const off = promo ? Math.round(base * promo.percent) / 100 : 0;
   $('#dlg').innerHTML = `<h2>Your cart</h2>${lines.map((l) => `<div class="cline"><span>${l.q} x ${esc(l.title)}</span><b>${money(l.price * l.q)}</b><button data-act="remove" data-id="${l.key}">Remove</button></div>`).join('') || '<p>Your cart is empty.</p>'}
     ${lines.length ? `<label>Promo code (optional)</label>
       <div class="actions"><input id="promoin" value="${esc(promo ? promo.code : '')}" placeholder="Enter code" style="flex:1;margin:0"><button data-act="applypromo">Apply</button></div>
@@ -502,6 +535,15 @@ const actions = {
     });
     if (!added) return toast('Those items are not available right now.');
     saveCart(); cartDialog();
+  },
+  'seller-pw': async (id) => {
+    const pw = prompt('New password for this seller (8+ characters):');
+    if (!pw) return;
+    await api(`/api/admin/sellers/${id}/password`, { method: 'PATCH', json: { password: pw } }); toast('Password changed.');
+  },
+  'seller-del': async (id) => {
+    if (!confirm('Remove this seller? Her products, combos and promos will become yours.')) return;
+    await api(`/api/admin/sellers/${id}`, { method: 'DELETE' }); await refreshSellers(); await loadProducts(); toast('Seller removed.');
   },
   'promo-toggle': async (id) => { await api(`/api/promos/${id}/active`, { method: 'PATCH' }); await refreshAdminPromos(); },
   'promo-delete': async (id) => {
@@ -584,7 +626,7 @@ const actions = {
   delete: async (id) => { if (confirm('Delete this product?')) { await api(`/api/products/${id}`, { method: 'DELETE' }); await loadProducts(); toast('Deleted.'); } },
   edit: (id) => {
     const p = products.find((x) => x.id == id), f = $('#pform');
-    f.dataset.id = id; f.title.value = p.title; f.price.value = p.price; f.description.value = p.description; f.category.value = p.category || 'snacks'; f.discount_percent.value = p.discount_percent || 0;
+    f.dataset.id = id; f.title.value = p.title; f.price.value = p.price; f.description.value = p.description; f.category.value = p.category || 'snacks'; f.discount_percent.value = p.discount_percent || 0; if (f.owner_id) f.owner_id.value = p.owner_id || user.id;
     $('#form-title').textContent = 'Edit product'; $('#save').textContent = 'Save changes';
     f.scrollIntoView({ behavior: 'smooth' });
   },
@@ -623,6 +665,9 @@ document.addEventListener('submit', async (e) => {
       if (!picked.length) throw new Error('Tick at least one product for the combo.');
       await api('/api/combos', { method: 'POST', json: { title: fd.title, description: fd.description, price: fd.price, items: picked } });
       e.target.reset(); updateComboSum(); await refreshAdminCombos(); await loadProductsQuiet(); toast('Combo created.');
+    } else if (e.target.id === 'seller-form') {
+      await api('/api/admin/sellers', { method: 'POST', json: Object.fromEntries(new FormData(e.target)) });
+      e.target.reset(); await refreshSellers(); toast('Seller created.');
     } else if (e.target.id === 'promo-form') {
       await api('/api/promos', { method: 'POST', json: Object.fromEntries(new FormData(e.target)) });
       e.target.reset(); await refreshAdminPromos(); toast('Promo code created.');
@@ -649,7 +694,7 @@ document.addEventListener('change', (e) => {
     updatePicks();
   } else if (e.target.id === 'pickall') {
     selected.clear();
-    if (e.target.checked) products.forEach((p) => selected.add(p.id));
+    if (e.target.checked) myProducts().forEach((p) => selected.add(p.id));
     fillProducts();
   }
 });
@@ -670,7 +715,7 @@ async function poll() {
       sig = now; products = fresh; combos = freshCombos; settings = freshSettings;
       if (view === 'shop') { fillBanner(); fillGrid(); } else if (view === 'admin') fillProducts();
     }
-    if (isAdmin()) { await refreshOrders(); await refreshCustom(); }
+    if (isAdmin()) { await refreshOrders(); if (isRaven()) await refreshCustom(); }
     if (user && !isAdmin()) {
       if (view === 'orders') await fillMine(); else await loadMine();
       if (view === 'custom') await fillCustomMine(); else await loadCustomMine();
