@@ -280,3 +280,30 @@ dialog { max-height: 88vh; overflow-y: auto; }
   nav button, nav .pill, #theme, #tour-btn { min-height: 44px; padding: 10px 14px; font-size: 1rem; border-radius: 12px; }
   nav .pill { display: flex; align-items: center; justify-content: center; }
 }
+
+/* Phone: visible navigation for everyone (no hidden menu) */
+#bottomnav, #acct, #foot { display: none; }
+@media (max-width: 640px) {
+  .nav .tools { display: none !important; }
+  #menu-btn { display: none; }
+  .nav { flex-wrap: nowrap; }
+  #acct { display: block; order: 2; max-width: 34vw; }
+  #acct .pill { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 10px 14px; font-size: .95rem; font-weight: 700; }
+  #acct button, #cartq { min-height: 44px; padding: 10px 16px; font-size: 1rem; border-radius: 12px; white-space: nowrap; }
+  #cartq { order: 3; }
+  #bottomnav {
+    display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 8px;
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
+    padding: 8px 10px calc(8px + env(safe-area-inset-bottom)); border-radius: 20px 20px 0 0;
+    background: color-mix(in srgb, var(--bg1) 92%, transparent);
+  }
+  #bottomnav button { min-height: 52px; padding: 8px 6px; font-size: .95rem; font-weight: 700; border-radius: 14px; }
+  #bottomnav button.on {
+    color: var(--acc-txt); border-color: rgba(255, 255, 255, .25);
+    background: linear-gradient(135deg, var(--acc2) -40%, var(--acc) 40%, var(--acc-hover) 120%);
+  }
+  #foot { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; padding: 4px 14px 104px; }
+  #foot button { font-size: .85rem; padding: 8px 14px; }
+  #toast { bottom: 96px; }
+  #tour { bottom: 88px; }
+}
