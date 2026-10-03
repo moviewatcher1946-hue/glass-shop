@@ -113,7 +113,7 @@ function renderAdmin() {
   adminHtml = ''; customAdminHtml = '';
   const tab = (id, label, extra = '') =>
     `<button id="tab-${id}" class="${adminTab === id ? 'primary' : ''}" data-act="admintab" data-tab="${id}">${label}${extra}</button>`;
-  const tabs = `<div class="tabs">${tab('products', 'Products')}${tab('orders', 'Orders', pendingCount ? ` (${pendingCount})` : '')}${tab('custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : '')}</div>`;
+  const tabs = `<div class="tabs">${tab('products', 'Products')}${tab('orders', 'Orders', pendingCount ? ` (${pendingCount})` : '')}${tab('custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : '')}${tab('backup', 'Backup')}</div>`;
   const productsView = `
     <section class="panel glass">
       <h2 id="form-title">Add a product</h2>
@@ -129,7 +129,16 @@ function renderAdmin() {
     <section class="panel glass table-wrap"><h2>Products</h2><div id="plist"></div></section>`;
   const ordersView = '<section class="panel glass table-wrap"><h2>Orders</h2><div id="olist"><p>Loading...</p></div></section>';
   const customView = '<section class="panel glass table-wrap"><h2>Custom orders</h2><div id="clist"><p>Loading...</p></div></section>';
-  $('#app').innerHTML = tabs + (adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : productsView);
+  const backupView = `<section class="panel glass">
+      <h2>Backup and restore</h2>
+      <p>Download everything (products with photos, accounts, orders and custom requests) as one file. Keep it private, because it contains customer accounts.</p>
+      <button class="primary" data-act="backup">Download backup</button>
+      <hr style="border:0;border-top:1px solid var(--border);margin:22px 0">
+      <p><b>Restore</b> replaces everything on the site with the contents of a backup file. Use it on a new, empty database.</p>
+      <input id="bfile" type="file" accept=".json,application/json">
+      <button class="danger" data-act="restore">Restore from backup</button>
+    </section>`;
+  $('#app').innerHTML = tabs + (adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' ? backupView : productsView);
   fillProducts();
   refreshOrders().catch(() => {});
   refreshCustom().catch(() => {});
@@ -278,6 +287,28 @@ const actions = {
   custom: () => { view = 'custom'; render(); },
   admintab: (id, d) => { adminTab = d.tab; renderAdmin(); },
   quote: (id) => quoteDialog(id),
+  backup: async () => {
+    const r = await fetch('/api/admin/export', { headers: { Authorization: 'Bearer ' + token } });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Backup failed.');
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(await r.blob());
+    link.download = `shop-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(link.href), 10000);
+    toast('Backup downloaded. Keep the file somewhere safe.');
+  },
+  restore: async () => {
+    const f = $('#bfile').files[0];
+    if (!f) return toast('Choose a backup file first.');
+    if (!confirm('This REPLACES everything on the site (products, accounts, orders, requests) with the backup. Continue?')) return;
+    toast('Restoring... please wait.');
+    const r = await fetch('/api/admin/import', {
+      method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' }, body: await f.text(),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || 'Restore failed.');
+    clearSession(); view = 'shop'; await loadProducts(); toast('Restored. Please log in again.');
+  },
   crespond: async (id, d) => {
     const accept = d.accept === '1';
     if (!accept && !confirm('Decline this price?')) return;
