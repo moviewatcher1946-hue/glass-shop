@@ -269,3 +269,14 @@ dialog { max-height: 88vh; overflow-y: auto; }
   nav button { width: 100%; }
   #tour-btn, #theme { flex: 1 1 45%; }
 }
+
+/* Phone top bar: roomier, bigger tap targets */
+@media (max-width: 640px) {
+  .nav { padding: 12px 16px; margin: 10px auto; border-radius: 18px; gap: 10px; }
+  .nav h1 { font-size: 1.3rem; }
+  #cartq, #menu-btn { min-height: 44px; padding: 10px 16px; font-size: 1rem; border-radius: 12px; }
+  .tools { padding: 14px; gap: 10px; border-radius: 18px; }
+  nav { gap: 10px; }
+  nav button, nav .pill, #theme, #tour-btn { min-height: 44px; padding: 10px 14px; font-size: 1rem; border-radius: 12px; }
+  nav .pill { display: flex; align-items: center; justify-content: center; }
+}
