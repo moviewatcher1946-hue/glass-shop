@@ -16,6 +16,7 @@ let view = 'shop';
 let searchText = '', catFilter = 'all';
 const selected = new Set(); // products ticked in Admin for bulk changes
 let combos = [], comboAdminHtml = '';
+let promo = null, cartNote = '', settings = { banner: '', stamp_reward: 'a free snack' }, promoAdminHtml = '', myOrders = [];
 let sig = '', lastOrderId = null, mineHtml = '', adminHtml = '', statusMap = null, adminTab = 'products', pendingCount = 0;
 let customHtml = '', customAdminHtml = '', crMap = null, crList = [], lastCrId = null, pendingCustom = 0;
 
@@ -95,12 +96,18 @@ function fillGrid() {
     || `<p class="panel glass">${products.length || combos.length ? 'No products match your search.' : 'No products yet.'}</p>`;
 }
 
+function fillBanner() {
+  const el = $('#banner');
+  if (el) el.innerHTML = settings.banner ? `<div class="banner glass">${esc(settings.banner)}</div>` : '';
+}
+
 function renderShop() {
   const chip = (id, label) => `<button class="${catFilter === id ? 'primary' : ''}" data-act="cat" data-cat="${id}">${label}</button>`;
-  $('#app').innerHTML = `<div class="toolbar">
+  $('#app').innerHTML = `<div id="banner"></div><div class="toolbar">
       <input id="search" type="search" placeholder="Search products..." value="${esc(searchText)}" autocomplete="off">
       <div class="chips">${chip('all', 'All')}${chip('combos', 'Combos')}${Object.entries(CATS).map(([id, label]) => chip(id, label)).join('')}</div>
     </div><div id="grid"></div>`;
+  fillBanner();
   fillGrid();
 }
 
@@ -142,8 +149,8 @@ async function refreshOrders() {
   const el = $('#olist');
   if (!el) return;
   const html = orders.length ? `<table>${orders.map((o) => `<tr><td>#${o.id}</td><td>${esc(o.username)}</td>
-    <td>${(o.items || []).map((i) => `${i.quantity} x ${esc(i.title)}`).join(', ')}</td>
-    <td>${money(o.total)}</td><td><span class="pill">${STATUS[o.status] || esc(o.status)}</span></td>
+    <td>${(o.items || []).map((i) => `${i.quantity} x ${esc(i.title)}`).join(', ')}${o.note ? `<br><small class="muted">Note: ${esc(o.note)}</small>` : ''}</td>
+    <td>${money(o.total)}${Number(o.discount) > 0 ? `<br><small class="muted">promo ${esc(o.promo_code)}</small>` : ''}</td><td><span class="pill">${STATUS[o.status] || esc(o.status)}</span></td>
     <td><div class="actions">${adminBtns(o)}</div></td></tr>`).join('')}</table>` : '<p>No orders yet.</p>';
   if (html !== adminHtml) { adminHtml = html; el.innerHTML = html; }
 }
@@ -193,11 +200,22 @@ function updateComboSum() {
   el.textContent = sum ? `These items add up to ${money(sum)} at today's prices. Set the combo price lower to give a saving.` : '';
 }
 
+async function refreshAdminPromos() {
+  const list = await api('/api/admin/promos');
+  const el = $('#promolist');
+  if (!el) return;
+  const html = list.length ? `<table>${list.map((p) => `<tr><td><b>${esc(p.code)}</b></td><td>${p.percent}% off</td>
+      <td>${p.used_count}${p.max_uses ? ' / ' + p.max_uses : ''} used</td><td><span class="pill">${p.is_active ? 'On' : 'Off'}</span></td>
+      <td><div class="actions"><button data-act="promo-toggle" data-id="${p.id}">${p.is_active ? 'Turn off' : 'Turn on'}</button>
+        <button class="danger" data-act="promo-delete" data-id="${p.id}">Delete</button></div></td></tr>`).join('')}</table>` : '<p>No promo codes yet.</p>';
+  if (html !== promoAdminHtml) { promoAdminHtml = html; el.innerHTML = html; }
+}
+
 function renderAdmin() {
   adminHtml = ''; customAdminHtml = '';
   const tab = (id, label, extra = '') =>
     `<button id="tab-${id}" class="${adminTab === id ? 'primary' : ''}" data-act="admintab" data-tab="${id}">${label}${extra}</button>`;
-  const tabs = `<div class="tabs">${tab('products', 'Products')}${tab('orders', 'Orders', pendingCount ? ` (${pendingCount})` : '')}${tab('custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : '')}${tab('combos', 'Combos')}${tab('backup', 'Backup')}</div>`;
+  const tabs = `<div class="tabs">${tab('products', 'Products')}${tab('orders', 'Orders', pendingCount ? ` (${pendingCount})` : '')}${tab('custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : '')}${tab('combos', 'Combos')}${tab('promos', 'Promos')}${tab('backup', 'Backup')}</div>`;
   const productsView = `
     <section class="panel glass">
       <h2 id="form-title">Add a product</h2>
@@ -238,6 +256,25 @@ function renderAdmin() {
       </form>
     </section>
     <section class="panel glass table-wrap"><h2>Combos</h2><div id="combolist"><p>Loading...</p></div></section>`;
+  const promosView = `<section class="panel glass">
+      <h2>Announcement banner</h2>
+      <form id="settings-form">
+        <label>Text shown at the top of the shop (leave empty to hide)</label><input name="banner" maxlength="200" value="${esc(settings.banner)}">
+        <label>Stamp card reward (earned after every 10 completed orders)</label><input name="stamp_reward" maxlength="80" value="${esc(settings.stamp_reward)}">
+        <button class="primary" type="submit">Save</button>
+      </form>
+    </section>
+    <section class="panel glass">
+      <h2>Create a promo code</h2>
+      <form id="promo-form">
+        <div class="row"><div><label>Code</label><input name="code" required maxlength="30" placeholder="e.g. WELCOME10"></div>
+          <div><label>% off the order</label><input name="percent" type="number" min="1" max="90" required></div></div>
+        <label>Max uses in total (optional)</label><input name="max_uses" type="number" min="1">
+        <button class="primary" type="submit">Create code</button>
+      </form>
+      <p class="muted">Each customer can use a code once.</p>
+    </section>
+    <section class="panel glass table-wrap"><h2>Promo codes</h2><div id="promolist"><p>Loading...</p></div></section>`;
   const backupView = `<section class="panel glass">
       <h2>Backup and restore</h2>
       <p>Download everything (products with photos, accounts, orders and custom requests) as one file. Keep it private, because it contains customer accounts.</p>
@@ -247,9 +284,10 @@ function renderAdmin() {
       <input id="bfile" type="file" accept=".json,application/json">
       <button class="danger" data-act="restore">Restore from backup</button>
     </section>`;
-  $('#app').innerHTML = tabs + (adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' ? backupView : adminTab === 'combos' ? combosView : productsView);
+  $('#app').innerHTML = tabs + (adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' ? backupView : adminTab === 'combos' ? combosView : adminTab === 'promos' ? promosView : productsView);
   fillProducts();
   comboAdminHtml = ''; refreshAdminCombos().catch(() => {});
+  promoAdminHtml = ''; refreshAdminPromos().catch(() => {});
   refreshOrders().catch(() => {});
   refreshCustom().catch(() => {});
 }
@@ -266,17 +304,27 @@ async function loadMine() {
 async function fillMine() {
   const el = $('#mine');
   const orders = await loadMine();
+  myOrders = orders;
   if (!el) return;
-  const html = orders.map((o) => `
+  const goal = 10, done = orders.filter((o) => o.status === 'completed').length, stamps = done % goal;
+  const card = isAdmin() ? '' : `<section class="panel glass"><b>Stamp card</b>
+      <p class="stamps">${'●'.repeat(stamps)}${'○'.repeat(goal - stamps)}</p>
+      <p class="muted" style="margin:0">${done && !stamps
+        ? `Reward ready! Show this to the seller to get ${esc(settings.stamp_reward)}.`
+        : `${goal - stamps} more completed order${goal - stamps === 1 ? '' : 's'} to earn ${esc(settings.stamp_reward)}.`}</p></section>`;
+  const html = card + (orders.map((o) => `
     <section class="panel glass">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
         <b>Order #${o.id}</b><span class="pill">${STATUS[o.status] || esc(o.status)}</span></div>
       <p style="color:var(--muted);margin:4px 0 12px">${new Date(o.created_at).toLocaleString()}</p>
       <table>${(o.items || []).map((i) => `<tr><td>${i.quantity} x ${esc(i.title)}</td>
         <td style="text-align:right">${money(i.unit_price * i.quantity)}</td></tr>`).join('')}</table>
+      ${o.note ? `<p class="muted" style="margin:8px 0 0">Your note: ${esc(o.note)}</p>` : ''}
+      ${Number(o.discount) > 0 ? `<p class="muted" style="text-align:right;margin:8px 0 0">Promo ${esc(o.promo_code)}: -${money(o.discount)}</p>` : ''}
       <p style="text-align:right;margin:12px 0 0"><b>Total: ${money(o.total)}</b></p>
       ${o.status === 'pending' ? `<button class="danger" data-act="cancel" data-id="${o.id}">Cancel order</button>` : ''}
-    </section>`).join('') || '<section class="panel glass"><p>You have no orders yet. Add something to your cart and place an order.</p></section>';
+      ${(o.items || []).some((i) => i.product_id) ? `<button data-act="reorder" data-id="${o.id}">Order again</button>` : ''}
+    </section>`).join('') || '<section class="panel glass"><p>You have no orders yet. Add something to your cart and place an order.</p></section>');
   if (html !== mineHtml) { mineHtml = html; el.innerHTML = html; }
 }
 
@@ -346,8 +394,8 @@ function render() {
   else { view = 'shop'; renderShop(); }
 }
 async function loadProductsQuiet() {
-  [products, combos] = await Promise.all([api('/api/products'), api('/api/combos')]);
-  sig = JSON.stringify([products, combos]);
+  [products, combos, settings] = await Promise.all([api('/api/products'), api('/api/combos'), api('/api/settings')]);
+  sig = JSON.stringify([products, combos, settings]);
 }
 async function loadProducts() {
   await loadProductsQuiet();
@@ -376,10 +424,16 @@ function cartLines() {
 }
 function cartDialog() {
   const lines = cartLines();
-  const total = lines.reduce((s, l) => s + l.price * l.q, 0);
+  const sub = lines.reduce((s, l) => s + l.price * l.q, 0);
+  const off = promo ? Math.round(sub * promo.percent) / 100 : 0;
   $('#dlg').innerHTML = `<h2>Your cart</h2>${lines.map((l) => `<p>${l.q} x ${esc(l.title)} - ${money(l.price * l.q)}
       <button data-act="remove" data-id="${l.key}">Remove</button></p>`).join('') || '<p>Your cart is empty.</p>'}
-    <p><b>Total: ${money(total)}</b></p>
+    ${lines.length ? `<label>Promo code (optional)</label>
+      <div class="actions"><input id="promoin" value="${esc(promo ? promo.code : '')}" placeholder="Enter code" style="flex:1;margin:0"><button data-act="applypromo">Apply</button></div>
+      <label style="display:block;margin-top:12px">Note for the seller (your name, seat, anything helpful)</label>
+      <input id="ordernote" maxlength="300" value="${esc(cartNote)}">` : ''}
+    <p>Subtotal: ${money(sub)}${off ? `<br>Promo ${esc(promo.code)} (-${promo.percent}%): -${money(off)}` : ''}<br><b>Total: ${money(sub - off)}</b></p>
+    <p class="notice">Cash on delivery: you pay when your order is handed to you in class.</p>
     <button class="primary" data-act="checkout" ${lines.length ? '' : 'disabled'}>Place order</button>
     <button data-act="close">Close</button>`;
   $('#dlg').showModal();
@@ -406,6 +460,28 @@ function quoteDialog(id) {
 const actions = {
   shop: () => { view = 'shop'; render(); },
   cat: (id, d) => { catFilter = d.cat; renderShop(); },
+  applypromo: async () => {
+    if (!user) { authDialog(); return toast('Log in to use a promo code.'); }
+    const code = $('#promoin').value.trim();
+    if (!code) { promo = null; return cartDialog(); }
+    promo = await api('/api/promos/check?code=' + encodeURIComponent(code));
+    cartDialog(); toast(`${promo.percent}% off applied.`);
+  },
+  reorder: (id) => {
+    const o = myOrders.find((x) => x.id == id);
+    let added = 0;
+    ((o && o.items) || []).forEach((i) => {
+      const p = i.product_id && products.find((x) => x.id == i.product_id);
+      if (p && !p.is_sold_out) { cart[p.id] = (cart[p.id] || 0) + i.quantity; added++; }
+    });
+    if (!added) return toast('Those items are not available right now.');
+    saveCart(); cartDialog();
+  },
+  'promo-toggle': async (id) => { await api(`/api/promos/${id}/active`, { method: 'PATCH' }); await refreshAdminPromos(); },
+  'promo-delete': async (id) => {
+    if (!confirm('Delete this promo code?')) return;
+    await api(`/api/promos/${id}`, { method: 'DELETE' }); await refreshAdminPromos(); toast('Deleted.');
+  },
   addcombo: (id) => { const k = 'c' + id; cart[k] = (cart[k] || 0) + 1; saveCart(); toast('Added to cart.'); },
   bulkdisc: async () => {
     if (!selected.size) return toast('Tick the products first.');
@@ -475,8 +551,8 @@ const actions = {
   checkout: async () => {
     if (!user) { authDialog(); return toast('Log in to place your order.'); }
     const items = cartLines().map((l) => (l.key[0] === 'c' ? { combo_id: l.key.slice(1), quantity: l.q } : { product_id: l.key, quantity: l.q }));
-    const o = await api('/api/orders', { method: 'POST', json: { items } });
-    cart = {}; saveCart(); $('#dlg').close(); toast(`Order #${o.id} placed.`); view = 'orders'; render();
+    const o = await api('/api/orders', { method: 'POST', json: { items, promo: promo ? promo.code : '', note: cartNote } });
+    cart = {}; promo = null; cartNote = ''; saveCart(); $('#dlg').close(); toast(`Order #${o.id} placed.`); view = 'orders'; render();
   },
   toggle: async (id) => { await api(`/api/products/${id}/sold-out`, { method: 'PATCH' }); await loadProducts(); },
   delete: async (id) => { if (confirm('Delete this product?')) { await api(`/api/products/${id}`, { method: 'DELETE' }); await loadProducts(); toast('Deleted.'); } },
@@ -521,6 +597,12 @@ document.addEventListener('submit', async (e) => {
       if (!picked.length) throw new Error('Tick at least one product for the combo.');
       await api('/api/combos', { method: 'POST', json: { title: fd.title, description: fd.description, price: fd.price, items: picked } });
       e.target.reset(); updateComboSum(); await refreshAdminCombos(); await loadProductsQuiet(); toast('Combo created.');
+    } else if (e.target.id === 'promo-form') {
+      await api('/api/promos', { method: 'POST', json: Object.fromEntries(new FormData(e.target)) });
+      e.target.reset(); await refreshAdminPromos(); toast('Promo code created.');
+    } else if (e.target.id === 'settings-form') {
+      await api('/api/admin/settings', { method: 'PUT', json: Object.fromEntries(new FormData(e.target)) });
+      await loadProductsQuiet(); toast('Saved.');
     } else if (e.target.id === 'pform') {
       const id = e.target.dataset.id;
       const fd = new FormData(e.target);
@@ -548,6 +630,7 @@ document.addEventListener('change', (e) => {
 
 document.addEventListener('input', (e) => {
   if (e.target.id === 'search') { searchText = e.target.value; fillGrid(); }
+  else if (e.target.id === 'ordernote') cartNote = e.target.value;
   else if (e.target.closest('#combo-form')) updateComboSum();
 });
 
@@ -555,11 +638,11 @@ document.addEventListener('input', (e) => {
 async function poll() {
   if (document.hidden) return;
   try {
-    const [fresh, freshCombos] = await Promise.all([api('/api/products'), api('/api/combos')]);
-    const now = JSON.stringify([fresh, freshCombos]);
+    const [fresh, freshCombos, freshSettings] = await Promise.all([api('/api/products'), api('/api/combos'), api('/api/settings')]);
+    const now = JSON.stringify([fresh, freshCombos, freshSettings]);
     if (now !== sig) {
-      sig = now; products = fresh; combos = freshCombos;
-      if (view === 'shop') fillGrid(); else if (view === 'admin') fillProducts();
+      sig = now; products = fresh; combos = freshCombos; settings = freshSettings;
+      if (view === 'shop') { fillBanner(); fillGrid(); } else if (view === 'admin') fillProducts();
     }
     if (isAdmin()) { await refreshOrders(); await refreshCustom(); }
     if (user) {
