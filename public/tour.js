@@ -1,7 +1,10 @@
 /* Interactive tutorial: a floating card that highlights real buttons and
    moves on by itself when the visitor actually does each step. */
 (() => {
-  const $ = (s, r = document) => r.querySelector(s);
+  const $ = (s, r = document) => {
+    const all = [...r.querySelectorAll(s)];
+    return all.find((e) => e.offsetParent !== null) || all[0] || null;
+  };
   const dlg = $('#dlg');
   const loggedIn = () => !!$('[data-act="logout"]');
   const isAdminUser = () => !!$('[data-act="admin"]');
@@ -14,6 +17,7 @@
   const S = [
     { t: 'Welcome!', x: 'This quick tour shows you how to create an account, log in and order. You will try each step on the real site, so click along. The tour moves on by itself when you do.' },
     { t: 'Browse the products', x: 'Each product shows its photo, price and description. Items marked Sold out are greyed out and cannot be ordered.', target: () => $('.grid .card') },
+    { t: 'Custom orders', x: 'Cannot find what you want? Use Custom order to describe it. The shop replies with a price or tells you it cannot provide it. Some external charges may apply, and nothing is ordered until you accept the price.', target: () => $('[data-act="custom"]') },
     { when: () => !loggedIn(), t: 'Step 1: open the sign-up window', x: 'Click Log in / Sign up in the top bar.', target: () => $('[data-act="auth"]'), wait: authOpen },
     { when: () => !loggedIn(), t: 'Step 2: create your account or log in',
       x: 'New here? Pick a username (letters, numbers or _) and a password of 8+ characters, then press Create account. Already registered? Type your details and press Log in.',
