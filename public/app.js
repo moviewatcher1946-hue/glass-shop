@@ -16,6 +16,7 @@ let view = 'shop';
 let searchText = '', catFilter = 'all';
 const selected = new Set(); // products ticked in Admin for bulk changes
 let combos = [], comboAdminHtml = '';
+let ordersCache = [], shownOrders = [], ordStatus = 'all', ordRange = 'all', ordDay = '';
 let promo = null, cartNote = '', settings = { banner: '', stamp_reward: 'a free snack' }, promoAdminHtml = '', myOrders = [];
 let sig = '', lastOrderId = null, mineHtml = '', adminHtml = '', statusMap = null, adminTab = 'products', pendingCount = 0;
 let customHtml = '', customAdminHtml = '', crMap = null, crList = [], lastCrId = null, pendingCustom = 0;
@@ -177,6 +178,127 @@ const orderLines = (o) => `<ul class="lines">${(o.items || []).map((i) =>
   ${Number(o.discount) > 0 ? `<div class="between muted" style="margin-top:6px"><span>Promo ${esc(o.promo_code)}</span><b>-${money(o.discount)}</b></div>` : ''}
   <div class="between total"><span>Total</span><b>${money(o.total)}</b></div>`;
 
+// The status that matters to me: my own part on a shared order, otherwise the order's status.
+const statusOf = (o) => {
+  if (o.status === 'cancelled') return 'cancelled';
+  const me = (o.parts || []).length > 1 ? o.parts.find((x) => x.owner_id === user.id) : null;
+  return me ? me.status : o.status;
+};
+
+const orderCard = (o) => `
+    <section class="panel glass">
+      <div class="between"><b>#${o.id} - ${esc(o.username)}</b><span class="pill st-${statusOf(o)}">${STATUS[statusOf(o)] || esc(statusOf(o))}</span></div>
+      <p class="muted" style="margin:2px 0 10px">${new Date(o.created_at).toLocaleString()}</p>
+      ${orderLines(o)}
+      ${partsLine(o)}
+      ${o.note ? `<p class="muted" style="margin:8px 0 0">Note: ${esc(o.note)}</p>` : ''}
+      <div class="actions" style="margin-top:12px">${adminBtns(o)}<button data-act="print-order" data-id="${o.id}">Print receipt</button></div>
+    </section>`;
+
+const dayLabel = (d) => {
+  const t = new Date(), y = new Date();
+  y.setDate(t.getDate() - 1);
+  if (d.toDateString() === t.toDateString()) return 'Today';
+  if (d.toDateString() === y.toDateString()) return 'Yesterday';
+  return d.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+};
+const hourLabel = (d) => {
+  const f = (x) => x.toLocaleTimeString([], { hour: 'numeric' });
+  const start = new Date(d); start.setMinutes(0, 0, 0);
+  return `${f(start)} - ${f(new Date(start.getTime() + 3600000))}`;
+};
+
+function paintOrderFilters() {
+  document.querySelectorAll('#ofilters [data-st]').forEach((b) => b.classList.toggle('primary', b.dataset.st === ordStatus));
+  if ($('#orange')) $('#orange').value = ordRange;
+  if ($('#oday')) $('#oday').value = ordDay;
+}
+
+function drawOrders() {
+  const el = $('#olist');
+  if (!el) return;
+  const now = new Date(), startOf = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const inRange = (o) => {
+    const d = new Date(o.created_at);
+    if (ordDay) return d.toDateString() === new Date(ordDay + 'T00:00:00').toDateString();
+    if (ordRange === 'today') return d >= startOf(now);
+    if (ordRange === 'yesterday') { const y = startOf(now); y.setDate(y.getDate() - 1); return d >= y && d < startOf(now); }
+    if (ordRange === 'week') return d >= new Date(now.getTime() - 7 * 86400000);
+    return true;
+  };
+  shownOrders = ordersCache.filter((o) => inRange(o) && (ordStatus === 'all' || statusOf(o) === ordStatus));
+  const c = $('#ocount');
+  if (c) c.textContent = `${shownOrders.length} order${shownOrders.length === 1 ? '' : 's'} shown`;
+
+  const perDay = {}, perHour = {};
+  shownOrders.forEach((o) => {
+    const d = new Date(o.created_at), dk = d.toDateString();
+    perDay[dk] = (perDay[dk] || 0) + 1;
+    perHour[dk + d.getHours()] = (perHour[dk + d.getHours()] || 0) + 1;
+  });
+  let html = '', day = '', hour = '', open = false;
+  for (const o of shownOrders) {
+    const d = new Date(o.created_at), dk = d.toDateString(), hk = dk + d.getHours();
+    if (dk !== day) {
+      if (open) html += '</div>';
+      open = false; day = dk; hour = '';
+      html += `<h3 class="day-title">${esc(dayLabel(d))} <span class="muted">(${perDay[dk]})</span></h3>`;
+    }
+    if (hk !== hour) {
+      if (open) html += '</div>';
+      hour = hk; open = true;
+      html += `<h4 class="hour-title">${esc(hourLabel(d))} <span>(${perHour[hk]})</span></h4><div class="ogrid">`;
+    }
+    html += orderCard(o);
+  }
+  if (open) html += '</div>';
+  html = html || '<p>No orders for this filter.</p>';
+  if (html !== adminHtml) { adminHtml = html; el.innerHTML = html; }
+}
+
+// A printable page: Save as PDF from the print window, or print it. Works for one order (receipt) or many (packing list).
+function printOrders(list, mode) {
+  if (!list.length) return toast('Nothing to print for this filter.');
+  const single = mode === 'receipt';
+  const shop = ($('.nav h1') || {}).textContent || 'Shop';
+  const live = list.filter((o) => statusOf(o) !== 'cancelled');
+  const tally = new Map();
+  if (!single) live.forEach((o) => (o.items || []).forEach((i) => tally.set(i.title, (tally.get(i.title) || 0) + i.quantity)));
+  const summary = [...tally].sort((x, y) => x[0].localeCompare(y[0]))
+    .map(([t, q]) => `<tr><td>${esc(t)}</td><td class="r"><b>${q}</b></td></tr>`).join('');
+  const block = (o) => `<div class="order">
+      <div class="head"><span>Order #${o.id} - ${esc(o.username)}</span><span>${esc(STATUS[statusOf(o)] || statusOf(o))}</span></div>
+      <div>${new Date(o.created_at).toLocaleString()}</div>
+      <table>${(o.items || []).map((i) => `<tr><td>${i.quantity} x ${esc(i.title)}</td><td class="r"><b>${money(i.unit_price * i.quantity)}</b></td></tr>`).join('')}</table>
+      ${Number(o.discount) > 0 ? `<div class="tot small">Promo ${esc(o.promo_code)}: -${money(o.discount)}</div>` : ''}
+      <div class="tot">Total: ${money(o.total)}</div>
+      ${o.note ? `<div class="note">Note: ${esc(o.note)}</div>` : ''}
+      <div>Payment: cash on delivery</div>
+      ${single ? '' : '<div class="check">[ &nbsp; ] Packed &nbsp;&nbsp;&nbsp; [ &nbsp; ] Delivered</div>'}
+    </div>`;
+  const filt = [{ pending: 'To pack', packed: 'Packed', completed: 'Completed' }[ordStatus] || 'All orders',
+    ordDay ? new Date(ordDay + 'T00:00:00').toLocaleDateString() : { today: 'Today', yesterday: 'Yesterday', week: 'Last 7 days' }[ordRange] || 'All time'].join(' | ');
+  const title = single ? `${shop} receipt order ${list[0].id}` : `${shop} packing list ${new Date().toLocaleDateString()}`;
+  const css = `body{font:14px/1.45 Arial,sans-serif;color:#000;margin:24px}h1{margin:0 0 4px;font-size:22px}h2{font-size:16px;margin:18px 0 6px}
+    .meta{color:#444;margin:0 0 14px}.bar{margin-bottom:16px}.bar button{font-size:15px;padding:10px 16px;margin-right:8px}
+    table{width:100%;border-collapse:collapse}td{padding:5px 4px;border-bottom:1px solid #bbb}.r{text-align:right}
+    .order{border:1.5px solid #000;border-radius:6px;padding:12px;margin:0 0 12px;page-break-inside:avoid}
+    .head{display:flex;justify-content:space-between;font-weight:700;font-size:15px}.tot{text-align:right;font-weight:700;font-size:16px;margin-top:6px}
+    .small{font-size:13px}.note{background:#eee;padding:6px;margin:6px 0}.check{margin-top:8px}
+    @media print{.bar{display:none}body{margin:0}}`;
+  const w = window.open('', '_blank');
+  if (!w) return toast('Allow pop-ups for this site, then try again.');
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>${esc(title)}</title><style>${css}</style></head><body>
+    <div class="bar"><button onclick="window.print()">Print / Save as PDF</button><button onclick="window.close()">Close</button></div>
+    <h1>${esc(shop)}</h1>
+    <p class="meta">${single ? 'Receipt' : 'Packing list'} | ${esc(isRaven() ? 'All sellers' : 'Seller: ' + user.username)}${single ? '' : ' | ' + esc(filt)} | Printed ${new Date().toLocaleString()}</p>
+    ${single || !summary ? '' : `<h2>Items to pack (${live.length} order${live.length === 1 ? '' : 's'})</h2><table>${summary}</table><h2>Orders</h2>`}
+    ${list.map(block).join('')}</body></html>`);
+  w.document.close();
+  setTimeout(() => { try { w.focus(); w.print(); } catch (e) { /* use the button */ } }, 500);
+}
+
 async function refreshOrders() {
   const orders = await api('/api/orders');
   const top = orders.reduce((m, o) => Math.max(m, o.id), 0);
@@ -185,18 +307,8 @@ async function refreshOrders() {
   pendingCount = orders.filter((o) => o.status === 'pending').length;
   const tb = $('#tab-orders');
   if (tb) tb.textContent = 'Orders' + (pendingCount ? ` (${pendingCount})` : '');
-  const el = $('#olist');
-  if (!el) return;
-  const html = orders.length ? orders.map((o) => `
-    <section class="panel glass">
-      <div class="between"><b>#${o.id} - ${esc(o.username)}</b><span class="pill st-${o.status}">${STATUS[o.status] || esc(o.status)}</span></div>
-      <p class="muted" style="margin:2px 0 10px">${new Date(o.created_at).toLocaleString()}</p>
-      ${orderLines(o)}
-      ${partsLine(o)}
-      ${o.note ? `<p class="muted" style="margin:8px 0 0">Note: ${esc(o.note)}</p>` : ''}
-      <div class="actions" style="margin-top:12px">${adminBtns(o)}</div>
-    </section>`).join('') : '<p>No orders yet.</p>';
-  if (html !== adminHtml) { adminHtml = html; el.innerHTML = html; }
+  ordersCache = orders;
+  drawOrders();
 }
 
 async function refreshCustom() {
@@ -330,7 +442,19 @@ function renderAdmin() {
         <button data-act="bulkdisc">Apply discount</button>
       </div>
       <div id="plist"></div></section>`;
-  const ordersView = '<h2>Orders</h2><div id="olist"><p>Loading...</p></div>';
+  const ordersView = `<h2>Orders</h2>
+    <div class="toolbar" id="ofilters">
+      <div class="chips">
+        <button data-act="ofilter" data-st="pending">To pack</button><button data-act="ofilter" data-st="packed">Packed</button>
+        <button data-act="ofilter" data-st="completed">Completed</button><button data-act="ofilter" data-st="all">All</button>
+      </div>
+      <select id="orange"><option value="all">All time</option><option value="today">Today</option>
+        <option value="yesterday">Yesterday</option><option value="week">Last 7 days</option></select>
+      <input type="date" id="oday" aria-label="Pick a day">
+      <button class="primary" data-act="print-orders">Print packing list</button>
+    </div>
+    <p class="muted" id="ocount" style="margin:0 0 4px"></p>
+    <div id="olist"><p>Loading...</p></div>`;
   const customView = '<section class="panel glass table-wrap"><h2>Custom orders</h2><div id="clist"><p>Loading...</p></div></section>';
   const combosView = `<section class="panel glass">
       <h2>Create a combo</h2>
@@ -401,6 +525,7 @@ function renderAdmin() {
   fillProducts();
   comboAdminHtml = ''; refreshAdminCombos().catch(() => {});
   promoAdminHtml = ''; refreshAdminPromos().catch(() => {});
+  paintOrderFilters();
   refreshOrders().catch(() => {});
   refreshCustom().catch(() => {});
   refreshTeam().catch(() => {});
@@ -598,6 +723,9 @@ function quoteDialog(id) {
 const actions = {
   shop: () => { view = 'shop'; render(); },
   cat: (id, d) => { catFilter = d.cat; renderShop(); },
+  ofilter: (id, d) => { ordStatus = d.st; paintOrderFilters(); drawOrders(); },
+  'print-orders': () => printOrders(shownOrders, 'list'),
+  'print-order': (id) => { const o = ordersCache.find((x) => x.id == id); if (o) printOrders([o], 'receipt'); },
   applypromo: async () => {
     if (!user) { authDialog(); return toast('Log in to use a promo code.'); }
     const code = $('#promoin').value.trim();
@@ -777,6 +905,8 @@ document.addEventListener('submit', async (e) => {
 $('#dlg').addEventListener('click', (e) => { if (e.target === $('#dlg')) $('#dlg').close(); });
 
 document.addEventListener('change', (e) => {
+  if (e.target.id === 'orange') { ordRange = e.target.value; ordDay = ''; paintOrderFilters(); drawOrders(); return; }
+  if (e.target.id === 'oday') { ordDay = e.target.value; drawOrders(); return; }
   if (e.target.classList.contains('pick')) {
     const id = Number(e.target.value);
     if (e.target.checked) selected.add(id); else selected.delete(id);
