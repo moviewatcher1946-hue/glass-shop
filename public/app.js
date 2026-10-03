@@ -221,15 +221,30 @@ async function refreshCustom() {
   if (html !== customAdminHtml) { customAdminHtml = html; el.innerHTML = html; }
 }
 
+const comboState = (c) => {
+  const ap = c.approvals || [];
+  const no = ap.find((x) => x.status === 'declined');
+  if (no) return `Declined by ${esc(no.username)}`;
+  const wait = ap.filter((x) => x.status === 'pending');
+  if (wait.length) return `Waiting for ${wait.map((x) => esc(x.username)).join(', ')}`;
+  return c.is_active ? 'Visible' : 'Hidden';
+};
+
 async function refreshAdminCombos() {
   const list = await api('/api/admin/combos');
   const el = $('#combolist');
   if (!el) return;
-  const html = list.length ? `<table>${list.map((c) => `<tr>
-      <td><b>${esc(c.title)}</b><br><span class="muted">${c.items.map((x) => `${x.quantity}x ${esc(x.title)}`).join(', ')}</span></td>
-      <td>${money(c.price)}</td><td><span class="pill">${c.is_active ? 'Visible' : 'Hidden'}</span></td>
-      <td><div class="actions"><button data-act="combo-toggle" data-id="${c.id}">${c.is_active ? 'Hide' : 'Show'}</button>
-        <button class="danger" data-act="combo-delete" data-id="${c.id}">Delete</button></div></td></tr>`).join('')}</table>` : '<p>No combos yet.</p>';
+  const html = list.length ? `<table>${list.map((c) => {
+    const my = (c.approvals || []).find((x) => x.owner_id === user.id);
+    return `<tr>
+      <td><b>${esc(c.title)}</b><br><span class="muted">${c.items.map((x) => `${x.quantity}x ${esc(x.title)}`).join(', ')}${ownerName(c.owner_id) ? ` | made by ${esc(ownerName(c.owner_id))}` : ''}</span></td>
+      <td>${money(c.price)}</td><td><span class="pill">${comboState(c)}</span></td>
+      <td><div class="actions">
+        ${my && my.status !== 'approved' ? `<button class="primary" data-act="combo-approve" data-id="${c.id}" data-yes="1">Approve</button>` : ''}
+        ${my && my.status !== 'declined' ? `<button class="danger" data-act="combo-approve" data-id="${c.id}" data-yes="0">Decline</button>` : ''}
+        ${canEdit(c.owner_id) ? `<button data-act="combo-toggle" data-id="${c.id}">${c.is_active ? 'Hide' : 'Show'}</button>
+        <button class="danger" data-act="combo-delete" data-id="${c.id}">Delete</button>` : ''}</div></td></tr>`;
+  }).join('')}</table>` : '<p>No combos yet.</p>';
   if (html !== comboAdminHtml) { comboAdminHtml = html; el.innerHTML = html; }
 }
 
@@ -245,11 +260,15 @@ function updateComboSum() {
   el.textContent = sum ? `These items add up to ${money(sum)} at today's prices. Set the combo price lower to give a saving.` : '';
 }
 
+const promoScope = (p) => (p.product_ids && p.product_ids.length
+  ? 'Only: ' + p.product_ids.map((id) => { const x = products.find((q) => q.id === id); return x ? esc(x.title) : 'removed product'; }).join(', ')
+  : 'Everything ' + (p.owner ? esc(p.owner) + ' sells' : 'in the shop'));
+
 async function refreshAdminPromos() {
   const list = await api('/api/admin/promos');
   const el = $('#promolist');
   if (!el) return;
-  const html = list.length ? `<table>${list.map((p) => `<tr><td><b>${esc(p.code)}</b></td><td>${p.percent}% off</td>
+  const html = list.length ? `<table>${list.map((p) => `<tr><td><b>${esc(p.code)}</b><br><span class="muted">${promoScope(p)}</span></td><td>${p.percent}% off</td>
       <td>${p.used_count}${p.max_uses ? ' / ' + p.max_uses : ''} used</td><td><span class="pill">${p.is_active ? 'On' : 'Off'}</span></td>
       <td>${canEdit(p.owner_id) ? `<div class="actions"><button data-act="promo-toggle" data-id="${p.id}">${p.is_active ? 'Turn off' : 'Turn on'}</button>
         <button class="danger" data-act="promo-delete" data-id="${p.id}">Delete</button></div>` : `<span class="muted">View only${p.owner ? ' (' + esc(p.owner) + ')' : ''}</span>`}</td></tr>`).join('')}</table>` : '<p>No promo codes yet.</p>';
@@ -319,7 +338,8 @@ function renderAdmin() {
         <label>Description (optional)</label><input name="description" maxlength="300">
         <label>Combo price</label><input name="price" type="number" step="0.01" min="0" required>
         <label>Tick the products and how many of each</label>
-        <div class="picks">${myProducts().map((p) => `<label class="pickrow"><input type="checkbox" name="pid" value="${p.id}"> ${esc(p.title)} (${money(fin(p))})
+        <p class="muted" style="margin:0 0 8px">You can add other sellers' products too. They must approve before the combo goes live, and each seller approves her own part of every order.</p>
+        <div class="picks">${products.map((p) => `<label class="pickrow"><input type="checkbox" name="pid" value="${p.id}"> ${esc(p.title)} (${money(fin(p))})${ownerName(p.owner_id) ? ` - by ${esc(ownerName(p.owner_id))}` : ''}
           <input type="number" min="1" max="20" value="1" data-qty="${p.id}"></label>`).join('') || '<p>Add products first.</p>'}</div>
         <p class="muted" id="combo-sum"></p>
         <button class="primary" type="submit">Create combo</button>
@@ -340,9 +360,11 @@ function renderAdmin() {
         <div class="row"><div><label>Code</label><input name="code" required maxlength="30" placeholder="e.g. WELCOME10"></div>
           <div><label>% off your items in the order</label><input name="percent" type="number" min="1" max="90" required></div></div>
         <label>Max uses in total (optional)</label><input name="max_uses" type="number" min="1">
+        <label>Only for these products (leave all unticked to discount everything you sell)</label>
+        <div class="picks">${myProducts().map((p) => `<label class="pickrow"><input type="checkbox" name="pid" value="${p.id}"> ${esc(p.title)}</label>`).join('') || '<p>Add products first.</p>'}</div>
         <button class="primary" type="submit">Create code</button>
       </form>
-      <p class="muted">A code only discounts the items you sell. Each customer can use a code once.</p>
+      <p class="muted">No products ticked = a universal code for everything you sell. Tick products to limit it to just those. Each customer can use a code once.</p>
     </section>
     <section class="panel glass table-wrap"><h2>Promo codes</h2><div id="promolist"><p>Loading...</p></div></section>`;
   const sellersView = `<section class="panel glass">
@@ -502,11 +524,29 @@ function authDialog() {
     <button type="button" data-act="close">Cancel</button></form>`;
   $('#dlg').showModal();
 }
+// Splits a combo's price between the sellers whose products are in it (by value), like the server does.
+function comboParts(c) {
+  const groups = new Map();
+  for (const x of c.items) {
+    const k = x.owner_id ?? c.owner_id;
+    const g = groups.get(k) || { owner: k, value: 0 };
+    g.value += fin(x) * x.quantity;
+    groups.set(k, g);
+  }
+  const list = [...groups.values()], worth = list.reduce((s, g) => s + g.value, 0) || 1;
+  let left = Number(c.price);
+  return list.map((g, n) => {
+    const share = n === list.length - 1 ? left : Math.round((Number(c.price) * g.value / worth) * 100) / 100;
+    left = Math.round((left - share) * 100) / 100;
+    return { owner: g.owner, price: share };
+  });
+}
+
 function cartLines() {
   return Object.entries(cart).map(([key, q]) => {
     if (key[0] === 'c') {
       const c = combos.find((x) => 'c' + x.id === key);
-      return c && { key, title: 'Combo: ' + c.title, price: Number(c.price), q, owner: c.owner_id };
+      return c && { key, title: 'Combo: ' + c.title, price: Number(c.price), q, owner: c.owner_id, parts: comboParts(c) };
     }
     const p = products.find((x) => x.id == key);
     return p && { key, title: p.title, price: fin(p), q, owner: p.owner_id };
@@ -515,8 +555,13 @@ function cartLines() {
 function cartDialog() {
   const lines = cartLines();
   const sub = lines.reduce((s, l) => s + l.price * l.q, 0);
-  // A promo only discounts the items its owner sells.
-  const base = !promo || promo.owner_id == null ? sub : lines.filter((l) => l.owner === promo.owner_id).reduce((s, l) => s + l.price * l.q, 0);
+  // A promo discounts its owner's items, and only the chosen products when it is per-product.
+  const perProduct = promo && promo.product_ids && promo.product_ids.length;
+  const base = !promo ? sub : lines.reduce((s, l) => {
+    if (l.parts) return perProduct ? s : s + l.parts.filter((p) => promo.owner_id == null || p.owner === promo.owner_id).reduce((t, p) => t + p.price, 0) * l.q;
+    const ok = (promo.owner_id == null || l.owner === promo.owner_id) && (!perProduct || promo.product_ids.includes(Number(l.key)));
+    return ok ? s + l.price * l.q : s;
+  }, 0);
   const off = promo ? Math.round(base * promo.percent) / 100 : 0;
   $('#dlg').innerHTML = `<h2>Your cart</h2>${lines.map((l) => `<div class="cline"><span>${l.q} x ${esc(l.title)}</span><b>${money(l.price * l.q)}</b><button data-act="remove" data-id="${l.key}">Remove</button></div>`).join('') || '<p>Your cart is empty.</p>'}
     ${lines.length ? `<label>Promo code (optional)</label>
@@ -589,6 +634,10 @@ const actions = {
     if (pct === '') return toast('Type the discount % first (0 removes it).');
     await api('/api/products/discount', { method: 'PATCH', json: { ids: [...selected], percent: pct } });
     selected.clear(); await loadProducts(); toast(Number(pct) ? `${pct}% discount applied.` : 'Discount removed.');
+  },
+  'combo-approve': async (id, d) => {
+    await api(`/api/combos/${id}/approval`, { method: 'PATCH', json: { approve: d.yes === '1' } });
+    await refreshAdminCombos(); await loadProductsQuiet(); toast(d.yes === '1' ? 'Approved.' : 'Declined.');
   },
   'combo-toggle': async (id) => { await api(`/api/combos/${id}/active`, { method: 'PATCH' }); await refreshAdminCombos(); await loadProductsQuiet(); },
   'combo-delete': async (id) => {
@@ -697,8 +746,8 @@ document.addEventListener('submit', async (e) => {
       const picked = [...e.target.querySelectorAll('input[name="pid"]:checked')]
         .map((b) => ({ product_id: b.value, quantity: Number(e.target.querySelector(`[data-qty="${b.value}"]`).value) || 1 }));
       if (!picked.length) throw new Error('Tick at least one product for the combo.');
-      await api('/api/combos', { method: 'POST', json: { title: fd.title, description: fd.description, price: fd.price, items: picked } });
-      e.target.reset(); updateComboSum(); await refreshAdminCombos(); await loadProductsQuiet(); toast('Combo created.');
+      const made = await api('/api/combos', { method: 'POST', json: { title: fd.title, description: fd.description, price: fd.price, items: picked } });
+      e.target.reset(); updateComboSum(); await refreshAdminCombos(); await loadProductsQuiet(); toast(made.waiting ? 'Combo created. It goes live once the other seller approves.' : 'Combo created.');
     } else if (e.target.id === 'alerts-form') {
       await api('/api/staff/alerts', { method: 'PUT', json: Object.fromEntries(new FormData(e.target)) });
       toast('Alert settings saved.');
@@ -706,7 +755,7 @@ document.addEventListener('submit', async (e) => {
       await api('/api/admin/sellers', { method: 'POST', json: Object.fromEntries(new FormData(e.target)) });
       e.target.reset(); await refreshSellers(); toast('Seller created.');
     } else if (e.target.id === 'promo-form') {
-      await api('/api/promos', { method: 'POST', json: Object.fromEntries(new FormData(e.target)) });
+      await api('/api/promos', { method: 'POST', json: { ...Object.fromEntries(new FormData(e.target)), product_ids: [...e.target.querySelectorAll('input[name="pid"]:checked')].map((b) => Number(b.value)) } });
       e.target.reset(); await refreshAdminPromos(); toast('Promo code created.');
     } else if (e.target.id === 'settings-form') {
       await api('/api/admin/settings', { method: 'PUT', json: Object.fromEntries(new FormData(e.target)) });
