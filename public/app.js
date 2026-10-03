@@ -265,7 +265,17 @@ function printOrders(list, mode) {
   const tally = new Map();
   if (!single) live.forEach((o) => (o.items || []).forEach((i) => tally.set(i.title, (tally.get(i.title) || 0) + i.quantity)));
   const summary = [...tally].sort((x, y) => x[0].localeCompare(y[0]))
-    .map(([t, q]) => `<tr><td>${esc(t)}</td><td class="r"><b>${q}</b></td></tr>`).join('');
+    .map(([t, q]) => `<li>${esc(t)} <b>x${q}</b></li>`).join('');
+  if (!single && !live.length) return toast('No active orders to pack for this filter.');
+  // Packing list: one short row per order (who has what), not a big box each.
+  const when = (o) => { const d = new Date(o.created_at); return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`; };
+  const rows = live.map((o) => `<tr><td>#${o.id}</td><td><b>${esc(o.username)}</b><br><span class="s">${when(o)}</span></td>
+      <td>${(o.items || []).map((i) => `${i.quantity} ${esc(i.title)}`).join(', ')}${o.note ? `<br><span class="s">Note: ${esc(o.note)}</span>` : ''}</td>
+      <td class="r"><b>${money(o.total)}</b></td><td>[&nbsp;&nbsp;&nbsp;]</td></tr>`).join('');
+  const sumTotal = live.reduce((s, o) => s + Number(o.total), 0);
+  const listHtml = `<h2>To pack</h2><ul class="sum">${summary}</ul>
+    <h2>Who has what</h2><table><tr><th>Order</th><th>Customer</th><th>Items</th><th class="r">Total</th><th>Packed</th></tr>${rows}</table>
+    <div class="foot">${live.length} order${live.length === 1 ? '' : 's'} | Total ${money(sumTotal)} | Cash on delivery</div>`;
   const block = (o) => `<div class="order">
       <div class="head"><span>Order #${o.id} - ${esc(o.username)}</span><span>${esc(STATUS[statusOf(o)] || statusOf(o))}</span></div>
       <div>${new Date(o.created_at).toLocaleString()}</div>
@@ -285,16 +295,19 @@ function printOrders(list, mode) {
     .order{border:1.5px solid #000;border-radius:6px;padding:12px;margin:0 0 12px;page-break-inside:avoid}
     .head{display:flex;justify-content:space-between;font-weight:700;font-size:15px}.tot{text-align:right;font-weight:700;font-size:16px;margin-top:6px}
     .small{font-size:13px}.note{background:#eee;padding:6px;margin:6px 0}.check{margin-top:8px}
-    @media print{.bar{display:none}body{margin:0}}`;
+    .sum{columns:2;margin:0 0 6px;padding-left:18px}.sum li{margin:0 0 2px}
+    .compact{font-size:12px;margin:16px}.compact h1{font-size:18px}.compact h2{font-size:14px;margin:12px 0 4px}
+    .compact td,.compact th{padding:3px 4px;border-bottom:1px solid #ccc;vertical-align:top;text-align:left}.compact th.r{text-align:right}
+    .s{color:#555;font-size:11px}.foot{text-align:right;font-weight:700;margin-top:8px}
+    @media print{.bar{display:none}body{margin:0}.compact{margin:0}}`;
   const w = window.open('', '_blank');
   if (!w) return toast('Allow pop-ups for this site, then try again.');
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-    <title>${esc(title)}</title><style>${css}</style></head><body>
+    <title>${esc(title)}</title><style>${css}</style></head><body class="${single ? '' : 'compact'}">
     <div class="bar"><button onclick="window.print()">Print / Save as PDF</button><button onclick="window.close()">Close</button></div>
     <h1>${esc(shop)}</h1>
     <p class="meta">${single ? 'Receipt' : 'Packing list'} | ${esc(isRaven() ? 'All sellers' : 'Seller: ' + user.username)}${single ? '' : ' | ' + esc(filt)} | Printed ${new Date().toLocaleString()}</p>
-    ${single || !summary ? '' : `<h2>Items to pack (${live.length} order${live.length === 1 ? '' : 's'})</h2><table>${summary}</table><h2>Orders</h2>`}
-    ${list.map(block).join('')}</body></html>`);
+    ${single ? list.map(block).join('') : listHtml}</body></html>`);
   w.document.close();
   setTimeout(() => { try { w.focus(); w.print(); } catch (e) { /* use the button */ } }, 500);
 }
