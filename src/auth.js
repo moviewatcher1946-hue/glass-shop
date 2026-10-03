@@ -22,4 +22,8 @@ const auth = (req, res, next) => {
 const admin = (req, res, next) =>
   req.user.role === 'admin' ? next() : res.status(403).json({ error: 'Admins only.' });
 
-module.exports = { sign, auth, admin };
+// Use after `auth`: the main admin (raven) or a seller account.
+const staff = (req, res, next) =>
+  ['admin', 'seller'].includes(req.user.role) ? next() : res.status(403).json({ error: 'Staff only.' });
+
+module.exports = { sign, auth, admin, staff };
