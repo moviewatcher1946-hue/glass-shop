@@ -5,7 +5,7 @@ const money = (n) => CURRENCY + Number(n).toFixed(2);
 // Price after the product's % discount (the server works it out again when you order).
 const fin = (p) => Math.round(Number(p.price) * (100 - (Number(p.discount_percent) || 0))) / 100;
 const CATS = { drinks: 'Drinks', snacks: 'Snacks' };
-const STATUS = { pending: 'Pending', packed: 'Packed - ready', completed: 'Completed', cancelled: 'Cancelled' };
+const STATUS = { pending: 'Pending', packed: 'Packed', completed: 'Completed', cancelled: 'Cancelled' };
 const CR_STATUS = { pending: 'Waiting for a price', quoted: 'Price offered', accepted: 'Accepted', declined: 'Declined', unavailable: "Can't provide" };
 
 let token = localStorage.token || '';
@@ -138,6 +138,12 @@ const adminBtns = (o) => {
   return '';
 };
 
+// One line per item with a bold amount, then promo and total.
+const orderLines = (o) => `<ul class="lines">${(o.items || []).map((i) =>
+    `<li><span>${i.quantity} x ${esc(i.title)}</span><b>${money(i.unit_price * i.quantity)}</b></li>`).join('')}</ul>
+  ${Number(o.discount) > 0 ? `<div class="between muted" style="margin-top:6px"><span>Promo ${esc(o.promo_code)}</span><b>-${money(o.discount)}</b></div>` : ''}
+  <div class="between total"><span>Total</span><b>${money(o.total)}</b></div>`;
+
 async function refreshOrders() {
   const orders = await api('/api/orders');
   const top = orders.reduce((m, o) => Math.max(m, o.id), 0);
@@ -148,32 +154,15 @@ async function refreshOrders() {
   if (tb) tb.textContent = 'Orders' + (pendingCount ? ` (${pendingCount})` : '');
   const el = $('#olist');
   if (!el) return;
-  const html = orders.length ? `<table>${orders.map((o) => `<tr><td>#${o.id}</td><td>${esc(o.username)}</td>
-    <td>${(o.items || []).map((i) => `${i.quantity} x ${esc(i.title)}`).join(', ')}${o.note ? `<br><small class="muted">Note: ${esc(o.note)}</small>` : ''}</td>
-    <td>${money(o.total)}${Number(o.discount) > 0 ? `<br><small class="muted">promo ${esc(o.promo_code)}</small>` : ''}</td><td><span class="pill">${STATUS[o.status] || esc(o.status)}</span></td>
-    <td><div class="actions">${adminBtns(o)}</div></td></tr>`).join('')}</table>` : '<p>No orders yet.</p>';
+  const html = orders.length ? orders.map((o) => `
+    <section class="panel glass">
+      <div class="between"><b>#${o.id} - ${esc(o.username)}</b><span class="pill st-${o.status}">${STATUS[o.status] || esc(o.status)}</span></div>
+      <p class="muted" style="margin:2px 0 10px">${new Date(o.created_at).toLocaleString()}</p>
+      ${orderLines(o)}
+      ${o.note ? `<p class="muted" style="margin:8px 0 0">Note: ${esc(o.note)}</p>` : ''}
+      <div class="actions" style="margin-top:12px">${adminBtns(o)}</div>
+    </section>`).join('') : '<p>No orders yet.</p>';
   if (html !== adminHtml) { adminHtml = html; el.innerHTML = html; }
-}
-
-/* Admin: custom requests */
-async function refreshCustom() {
-  crList = await api('/api/custom-requests');
-  const top = crList.reduce((m, r) => Math.max(m, r.id), 0);
-  if (lastCrId !== null && top > lastCrId) toast('New custom request received.');
-  lastCrId = top;
-  pendingCustom = crList.filter((r) => r.status === 'pending').length;
-  const tb = $('#tab-custom');
-  if (tb) tb.textContent = 'Custom orders' + (pendingCustom ? ` (${pendingCustom})` : '');
-  const el = $('#clist');
-  if (!el) return;
-  const html = crList.length ? `<table>${crList.map((r) => `<tr><td>#${r.id}</td><td>${esc(r.username)}</td>
-    <td style="white-space:pre-wrap;min-width:200px">${esc(r.description)}${r.admin_note ? `<br><small style="color:var(--muted)">Your note: ${esc(r.admin_note)}</small>` : ''}</td>
-    <td>${r.quoted_price != null ? money(r.quoted_price) : ''}</td>
-    <td><span class="pill">${CR_STATUS[r.status] || esc(r.status)}</span></td>
-    <td><div class="actions">${r.status === 'pending' || r.status === 'quoted'
-      ? `<button class="primary" data-act="quote" data-id="${r.id}">${r.status === 'pending' ? 'Set price' : 'Change price'}</button>` : ''}</div></td></tr>`).join('')}</table>`
-    : '<p>No custom requests yet.</p>';
-  if (html !== customAdminHtml) { customAdminHtml = html; el.innerHTML = html; }
 }
 
 async function refreshAdminCombos() {
@@ -240,7 +229,7 @@ function renderAdmin() {
         <button data-act="bulkdisc">Apply discount</button>
       </div>
       <div id="plist"></div></section>`;
-  const ordersView = '<section class="panel glass table-wrap"><h2>Orders</h2><div id="olist"><p>Loading...</p></div></section>';
+  const ordersView = '<h2>Orders</h2><div id="olist"><p>Loading...</p></div>';
   const customView = '<section class="panel glass table-wrap"><h2>Custom orders</h2><div id="clist"><p>Loading...</p></div></section>';
   const combosView = `<section class="panel glass">
       <h2>Create a combo</h2>
@@ -314,16 +303,15 @@ async function fillMine() {
         : `${goal - stamps} more completed order${goal - stamps === 1 ? '' : 's'} to earn ${esc(settings.stamp_reward)}.`}</p></section>`;
   const html = card + (orders.map((o) => `
     <section class="panel glass">
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-        <b>Order #${o.id}</b><span class="pill">${STATUS[o.status] || esc(o.status)}</span></div>
-      <p style="color:var(--muted);margin:4px 0 12px">${new Date(o.created_at).toLocaleString()}</p>
-      <table>${(o.items || []).map((i) => `<tr><td>${i.quantity} x ${esc(i.title)}</td>
-        <td style="text-align:right">${money(i.unit_price * i.quantity)}</td></tr>`).join('')}</table>
+      <div class="between"><b>Order #${o.id}</b><span class="pill st-${o.status}">${STATUS[o.status] || esc(o.status)}</span></div>
+      <p class="muted" style="margin:2px 0 10px">${new Date(o.created_at).toLocaleString()}</p>
+      ${o.status === 'packed' ? '<p class="ready">Your order is packed and ready!</p>' : ''}
+      ${orderLines(o)}
       ${o.note ? `<p class="muted" style="margin:8px 0 0">Your note: ${esc(o.note)}</p>` : ''}
-      ${Number(o.discount) > 0 ? `<p class="muted" style="text-align:right;margin:8px 0 0">Promo ${esc(o.promo_code)}: -${money(o.discount)}</p>` : ''}
-      <p style="text-align:right;margin:12px 0 0"><b>Total: ${money(o.total)}</b></p>
-      ${o.status === 'pending' ? `<button class="danger" data-act="cancel" data-id="${o.id}">Cancel order</button>` : ''}
-      ${(o.items || []).some((i) => i.product_id) ? `<button data-act="reorder" data-id="${o.id}">Order again</button>` : ''}
+      <div class="actions" style="margin-top:12px">
+        ${o.status === 'pending' ? `<button class="danger" data-act="cancel" data-id="${o.id}">Cancel order</button>` : ''}
+        ${(o.items || []).some((i) => i.product_id) ? `<button data-act="reorder" data-id="${o.id}">Order again</button>` : ''}
+      </div>
     </section>`).join('') || '<section class="panel glass"><p>You have no orders yet. Add something to your cart and place an order.</p></section>');
   if (html !== mineHtml) { mineHtml = html; el.innerHTML = html; }
 }
@@ -426,13 +414,12 @@ function cartDialog() {
   const lines = cartLines();
   const sub = lines.reduce((s, l) => s + l.price * l.q, 0);
   const off = promo ? Math.round(sub * promo.percent) / 100 : 0;
-  $('#dlg').innerHTML = `<h2>Your cart</h2>${lines.map((l) => `<p>${l.q} x ${esc(l.title)} - ${money(l.price * l.q)}
-      <button data-act="remove" data-id="${l.key}">Remove</button></p>`).join('') || '<p>Your cart is empty.</p>'}
+  $('#dlg').innerHTML = `<h2>Your cart</h2>${lines.map((l) => `<div class="cline"><span>${l.q} x ${esc(l.title)}</span><b>${money(l.price * l.q)}</b><button data-act="remove" data-id="${l.key}">Remove</button></div>`).join('') || '<p>Your cart is empty.</p>'}
     ${lines.length ? `<label>Promo code (optional)</label>
       <div class="actions"><input id="promoin" value="${esc(promo ? promo.code : '')}" placeholder="Enter code" style="flex:1;margin:0"><button data-act="applypromo">Apply</button></div>
       <label style="display:block;margin-top:12px">Note for the seller (your name, seat, anything helpful)</label>
       <input id="ordernote" maxlength="300" value="${esc(cartNote)}">` : ''}
-    <p>Subtotal: ${money(sub)}${off ? `<br>Promo ${esc(promo.code)} (-${promo.percent}%): -${money(off)}` : ''}<br><b>Total: ${money(sub - off)}</b></p>
+    <p>Subtotal: <b>${money(sub)}</b>${off ? `<br>Promo ${esc(promo.code)} (-${promo.percent}%): <b>-${money(off)}</b>` : ''}<br><b>Total: ${money(sub - off)}</b></p>
     <p class="notice">Cash on delivery: you pay when your order is handed to you in class.</p>
     <button class="primary" data-act="checkout" ${lines.length ? '' : 'disabled'}>Place order</button>
     <button data-act="close">Close</button>`;
