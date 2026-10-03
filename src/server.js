@@ -17,12 +17,39 @@ const upload = multer({
   fileFilter: (req, f, cb) => cb(null, /^image\/(png|jpe?g|webp|gif)$/.test(f.mimetype)),
 });
 const wrap = (fn) => (req, res, next) => fn(req, res, next).catch(next);
-const COLS = 'id,title,description,price,is_sold_out,category,image_url,created_at';
+const COLS = 'id,title,description,price,is_sold_out,category,discount_percent,image_url,created_at';
 const CATEGORIES = ['drinks', 'snacks'];
+// Price after the product's % discount. The server always works the price out itself.
+const finalPrice = (p) => Math.round(Number(p.price) * (100 - (Number(p.discount_percent) || 0))) / 100;
+const COMBO_SQL = `SELECT c.id,c.title,c.description,c.price,c.is_active,c.created_at,
+  COALESCE((SELECT json_agg(json_build_object('product_id',p.id,'title',p.title,'quantity',ci.quantity,'price',p.price,
+      'discount_percent',p.discount_percent,'is_sold_out',p.is_sold_out,'image_url',p.image_url) ORDER BY p.title)
+    FROM combo_items ci JOIN products p ON p.id=ci.product_id WHERE ci.combo_id=c.id), '[]'::json) AS items
+  FROM combos c`;
 const bad = (msg, status = 400) => Object.assign(new Error(msg), { status });
 
 // Adds the category column to products (safe to run every start; existing products become 'snacks').
 const ensureCategory = () => pool.query("ALTER TABLE products ADD COLUMN IF NOT EXISTS category VARCHAR(30) NOT NULL DEFAULT 'snacks'");
+
+// Discounts and combos (safe to run every start; never touches existing data).
+const ensureCombos = () => pool.query(`
+  ALTER TABLE products ADD COLUMN IF NOT EXISTS discount_percent INT NOT NULL DEFAULT 0 CHECK (discount_percent BETWEEN 0 AND 90);
+  CREATE TABLE IF NOT EXISTS combos (
+    id          SERIAL PRIMARY KEY,
+    title       VARCHAR(120) NOT NULL,
+    description VARCHAR(300) NOT NULL DEFAULT '',
+    price       NUMERIC(10,2) NOT NULL CHECK (price >= 0),
+    is_active   BOOLEAN NOT NULL DEFAULT true,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+  CREATE TABLE IF NOT EXISTS combo_items (
+    id         SERIAL PRIMARY KEY,
+    combo_id   INT NOT NULL REFERENCES combos(id) ON DELETE CASCADE,
+    product_id INT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    quantity   INT NOT NULL CHECK (quantity BETWEEN 1 AND 20),
+    UNIQUE (combo_id, product_id)
+  );
+`);
 
 // Creates the custom_requests table if it doesn't exist yet (never touches existing data).
 const ensureCustomRequests = () => pool.query(`
@@ -99,26 +126,30 @@ app.get('/api/products/:id/image', wrap(async (req, res) => {
 
 /* ---------- Products (admin write) ---------- */
 app.post('/api/products', auth, admin, upload.single('image'), wrap(async (req, res) => {
-  const { title, description = '', price, category = 'snacks' } = req.body;
+  const { title, description = '', price, category = 'snacks', discount_percent = 0 } = req.body;
   if (!title || price === '' || isNaN(price) || price < 0) throw bad('Title and a valid price are required.');
   if (!CATEGORIES.includes(category)) throw bad('Pick Drinks or Snacks.');
+  const disc = parseInt(discount_percent) || 0;
+  if (disc < 0 || disc > 90) throw bad('Discount must be between 0 and 90%.');
   const f = req.file;
   const { rows: [p] } = await pool.query(
-    'INSERT INTO products (title, description, price, image_data, image_mime, category) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id',
-    [title, description, price, f ? f.buffer : null, f ? f.mimetype : null, category]
+    'INSERT INTO products (title, description, price, image_data, image_mime, category, discount_percent) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id',
+    [title, description, price, f ? f.buffer : null, f ? f.mimetype : null, category, disc]
   );
   res.status(201).json(await withImage(p.id));
 }));
 
 app.put('/api/products/:id', auth, admin, upload.single('image'), wrap(async (req, res) => {
-  const { title, description, price, category } = req.body;
+  const { title, description, price, category, discount_percent } = req.body;
+  const disc = discount_percent === undefined || discount_percent === '' ? null : parseInt(discount_percent);
+  if (disc !== null && !(disc >= 0 && disc <= 90)) throw bad('Discount must be between 0 and 90%.');
   if (category !== undefined && !CATEGORIES.includes(category)) throw bad('Pick Drinks or Snacks.');
   if (price !== undefined && (price === '' || isNaN(price) || price < 0)) throw bad('Invalid price.');
   const f = req.file;
   const { rowCount } = await pool.query(
     `UPDATE products SET title=COALESCE($1,title), description=COALESCE($2,description), price=COALESCE($3,price),
-       image_data=COALESCE($4,image_data), image_mime=COALESCE($5,image_mime), category=COALESCE($6,category) WHERE id=$7`,
-    [title ?? null, description ?? null, price ?? null, f ? f.buffer : null, f ? f.mimetype : null, category ?? null, req.params.id]
+       image_data=COALESCE($4,image_data), image_mime=COALESCE($5,image_mime), category=COALESCE($6,category), discount_percent=COALESCE($7,discount_percent) WHERE id=$8`,
+    [title ?? null, description ?? null, price ?? null, f ? f.buffer : null, f ? f.mimetype : null, category ?? null, disc, req.params.id]
   );
   if (!rowCount) throw bad('Product not found.', 404);
   res.json(await withImage(req.params.id));
@@ -141,6 +172,66 @@ app.patch('/api/products/category', auth, admin, wrap(async (req, res) => {
   res.json({ updated: rowCount });
 }));
 
+// Set the same % discount on several products at once (0 removes it).
+app.patch('/api/products/discount', auth, admin, wrap(async (req, res) => {
+  const { ids, percent } = req.body || {};
+  const pct = parseInt(percent);
+  if (!(pct >= 0 && pct <= 90)) throw bad('Discount must be between 0 and 90%.');
+  const list = (Array.isArray(ids) ? ids : []).map(Number).filter(Number.isInteger);
+  if (!list.length) throw bad('Select at least one product.');
+  const { rowCount } = await pool.query('UPDATE products SET discount_percent=$1 WHERE id = ANY($2)', [pct, list]);
+  res.json({ updated: rowCount });
+}));
+
+/* ---------- Combos ---------- */
+app.get('/api/combos', wrap(async (req, res) => {
+  const { rows } = await pool.query(`${COMBO_SQL} WHERE c.is_active ORDER BY c.created_at DESC`);
+  res.json(rows.filter((c) => c.items.length));
+}));
+
+app.get('/api/admin/combos', auth, admin, wrap(async (req, res) => {
+  res.json((await pool.query(`${COMBO_SQL} ORDER BY c.created_at DESC`)).rows);
+}));
+
+app.post('/api/combos', auth, admin, wrap(async (req, res) => {
+  const clean = (v, n) => String(v || '').trim().slice(0, n);
+  const title = clean(req.body.title, 120), description = clean(req.body.description, 300);
+  const price = Number(req.body.price);
+  const items = (Array.isArray(req.body.items) ? req.body.items : [])
+    .map((i) => ({ pid: parseInt(i.product_id), q: parseInt(i.quantity) }))
+    .filter((i) => Number.isInteger(i.pid) && i.q >= 1 && i.q <= 20).slice(0, 20);
+  if (!title || req.body.price === '' || !(price >= 0) || !items.length) throw bad('Add a name, a price and at least one product.');
+  const c = await pool.connect();
+  try {
+    await c.query('BEGIN');
+    const { rows: found } = await c.query('SELECT id FROM products WHERE id = ANY($1)', [items.map((i) => i.pid)]);
+    if (found.length !== new Set(items.map((i) => i.pid)).size) throw bad('One of the products no longer exists.');
+    const { rows: [cb] } = await c.query('INSERT INTO combos (title, description, price) VALUES ($1,$2,$3) RETURNING id',
+      [title, description, price.toFixed(2)]);
+    for (const i of items)
+      await c.query('INSERT INTO combo_items (combo_id, product_id, quantity) VALUES ($1,$2,$3) ON CONFLICT (combo_id, product_id) DO UPDATE SET quantity=EXCLUDED.quantity',
+        [cb.id, i.pid, i.q]);
+    await c.query('COMMIT');
+    res.status(201).json({ id: cb.id });
+  } catch (e) {
+    await c.query('ROLLBACK');
+    throw e;
+  } finally {
+    c.release();
+  }
+}));
+
+app.patch('/api/combos/:id/active', auth, admin, wrap(async (req, res) => {
+  const { rows: [c] } = await pool.query('UPDATE combos SET is_active = NOT is_active WHERE id=$1 RETURNING id,is_active', [req.params.id]);
+  if (!c) throw bad('Combo not found.', 404);
+  res.json(c);
+}));
+
+app.delete('/api/combos/:id', auth, admin, wrap(async (req, res) => {
+  await pool.query('DELETE FROM combos WHERE id=$1', [req.params.id]);
+  res.sendStatus(204);
+}));
+
 app.delete('/api/products/:id', auth, admin, wrap(async (req, res) => {
   await pool.query('DELETE FROM products WHERE id=$1', [req.params.id]);
   res.sendStatus(204);
@@ -150,28 +241,38 @@ app.delete('/api/products/:id', auth, admin, wrap(async (req, res) => {
 app.post('/api/orders', auth, wrap(async (req, res) => {
   const items = (req.body.items || []).filter((i) => parseInt(i.quantity) > 0);
   if (!items.length) throw bad('Your cart is empty.');
+  const prodIds = items.filter((i) => i.product_id).map((i) => parseInt(i.product_id)).filter(Number.isInteger);
+  const comboIds = items.filter((i) => i.combo_id).map((i) => parseInt(i.combo_id)).filter(Number.isInteger);
   const c = await pool.connect();
   try {
     await c.query('BEGIN');
-    const { rows } = await c.query('SELECT id,title,price,is_sold_out FROM products WHERE id = ANY($1)', [
-      items.map((i) => parseInt(i.product_id)),
-    ]);
-    const byId = new Map(rows.map((r) => [r.id, r]));
+    const { rows: prods } = await c.query('SELECT id,title,price,discount_percent,is_sold_out FROM products WHERE id = ANY($1)', [prodIds]);
+    const byId = new Map(prods.map((r) => [r.id, r]));
+    const { rows: combos } = await c.query(`${COMBO_SQL} WHERE c.id = ANY($1) AND c.is_active`, [comboIds]);
+    const comboById = new Map(combos.map((r) => [r.id, r]));
     let total = 0;
     const lines = items.map((i) => {
-      const p = byId.get(parseInt(i.product_id));
-      if (!p || p.is_sold_out) throw bad('An item in your cart is no longer available.');
       const q = Math.min(99, parseInt(i.quantity));
-      total += Number(p.price) * q;
-      return { p, q };
+      let line;
+      if (i.combo_id) {
+        const cb = comboById.get(parseInt(i.combo_id));
+        if (!cb || !cb.items.length || cb.items.some((x) => x.is_sold_out)) throw bad('A combo in your cart is no longer available.');
+        line = { pid: null, title: `Combo: ${cb.title} (${cb.items.map((x) => `${x.quantity}x ${x.title}`).join(', ')})`, price: Number(cb.price), q };
+      } else {
+        const p = byId.get(parseInt(i.product_id));
+        if (!p || p.is_sold_out) throw bad('An item in your cart is no longer available.');
+        line = { pid: p.id, title: p.title, price: finalPrice(p), q };
+      }
+      total += line.price * line.q;
+      return line;
     });
     const { rows: [o] } = await c.query(
       'INSERT INTO orders (user_id, total) VALUES ($1,$2) RETURNING id,total,status,created_at',
       [req.user.id, total.toFixed(2)]
     );
-    for (const { p, q } of lines)
+    for (const l of lines)
       await c.query('INSERT INTO order_items (order_id, product_id, title, unit_price, quantity) VALUES ($1,$2,$3,$4,$5)',
-        [o.id, p.id, p.title, p.price, q]);
+        [o.id, l.pid, l.title, l.price.toFixed(2), l.q]);
     await c.query('COMMIT');
     res.status(201).json(o);
   } catch (e) {
@@ -265,7 +366,7 @@ app.patch('/api/custom-requests/:id/respond', auth, wrap(async (req, res) => {
 }));
 
 /* ---------- Backup / restore (admin only) ---------- */
-const BACKUP_TABLES = ['users', 'products', 'orders', 'order_items', 'custom_requests']; // parents first
+const BACKUP_TABLES = ['users', 'products', 'combos', 'combo_items', 'orders', 'order_items', 'custom_requests']; // parents first
 
 app.get('/api/admin/export', auth, admin, wrap(async (req, res) => {
   const tables = {};
@@ -289,7 +390,7 @@ app.post('/api/admin/import', auth, admin, express.json({ limit: '100mb' }), wra
   const c = await pool.connect();
   try {
     await c.query('BEGIN');
-    await c.query('TRUNCATE order_items, orders, custom_requests, products, users RESTART IDENTITY CASCADE');
+    await c.query('TRUNCATE order_items, orders, custom_requests, combo_items, combos, products, users RESTART IDENTITY CASCADE');
     for (const t of BACKUP_TABLES) {
       const { rows: colRows } = await c.query(
         'SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=$1', [t]);
@@ -323,5 +424,6 @@ const PORT = process.env.PORT || 3000;
 init()
   .then(ensureCustomRequests)
   .then(ensureCategory)
+  .then(ensureCombos)
   .then(() => app.listen(PORT, () => console.log(`Glass Shop running on :${PORT}`)))
   .catch((e) => { console.error('Startup failed:', e); process.exit(1); });
