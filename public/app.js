@@ -16,7 +16,7 @@ let view = 'shop';
 let searchText = '', catFilter = 'all';
 const selected = new Set(); // products ticked in Admin for bulk changes
 let combos = [], comboAdminHtml = '';
-let ordersCache = [], shownOrders = [], ordStatus = 'all', ordRange = 'all', ordDay = '';
+let ordersCache = [], shownOrders = [], ordStatus = 'active', ordRange = 'all', ordDay = '';
 let promo = null, cartNote = '', settings = { banner: '', stamp_reward: 'a free snack' }, promoAdminHtml = '', myOrders = [];
 let sig = '', lastOrderId = null, mineHtml = '', adminHtml = '', statusMap = null, adminTab = 'products', pendingCount = 0;
 let customHtml = '', customAdminHtml = '', crMap = null, crList = [], lastCrId = null, pendingCustom = 0;
@@ -226,7 +226,7 @@ function drawOrders() {
     if (ordRange === 'week') return d >= new Date(now.getTime() - 7 * 86400000);
     return true;
   };
-  shownOrders = ordersCache.filter((o) => inRange(o) && (ordStatus === 'all' || statusOf(o) === ordStatus));
+  shownOrders = ordersCache.filter((o) => inRange(o) && (ordStatus === 'all' || (ordStatus === 'active' ? ['pending', 'packed'].includes(statusOf(o)) : statusOf(o) === ordStatus)));
   const c = $('#ocount');
   if (c) c.textContent = `${shownOrders.length} order${shownOrders.length === 1 ? '' : 's'} shown`;
 
@@ -261,19 +261,20 @@ function printOrders(list, mode) {
   if (!list.length) return toast('Nothing to print for this filter.');
   const single = mode === 'receipt';
   const shop = ($('.nav h1') || {}).textContent || 'Shop';
-  const live = list.filter((o) => statusOf(o) !== 'cancelled');
+  const wantDone = ordStatus === 'completed';
+  const live = list.filter((o) => (wantDone ? statusOf(o) === 'completed' : ['pending', 'packed'].includes(statusOf(o))));
   const tally = new Map();
   if (!single) live.forEach((o) => (o.items || []).forEach((i) => tally.set(i.title, (tally.get(i.title) || 0) + i.quantity)));
   const summary = [...tally].sort((x, y) => x[0].localeCompare(y[0]))
     .map(([t, q]) => `<li>${esc(t)} <b>x${q}</b></li>`).join('');
-  if (!single && !live.length) return toast('No active orders to pack for this filter.');
+  if (!single && !live.length) return toast('Nothing left to pack for this filter.');
   // Packing list: one short row per order (who has what), not a big box each.
   const when = (o) => { const d = new Date(o.created_at); return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`; };
   const rows = live.map((o) => `<tr><td>#${o.id}</td><td><b>${esc(o.username)}</b><br><span class="s">${when(o)}</span></td>
       <td>${(o.items || []).map((i) => `${i.quantity} ${esc(i.title)}`).join(', ')}${o.note ? `<br><span class="s">Note: ${esc(o.note)}</span>` : ''}</td>
       <td class="r"><b>${money(o.total)}</b></td><td>[&nbsp;&nbsp;&nbsp;]</td></tr>`).join('');
   const sumTotal = live.reduce((s, o) => s + Number(o.total), 0);
-  const listHtml = `<h2>To pack</h2><ul class="sum">${summary}</ul>
+  const listHtml = `<h2>${wantDone ? 'Items' : 'To pack'}</h2><ul class="sum">${summary}</ul>
     <h2>Who has what</h2><table><tr><th>Order</th><th>Customer</th><th>Items</th><th class="r">Total</th><th>Packed</th></tr>${rows}</table>
     <div class="foot">${live.length} order${live.length === 1 ? '' : 's'} | Total ${money(sumTotal)} | Cash on delivery</div>`;
   const block = (o) => `<div class="order">
@@ -286,7 +287,7 @@ function printOrders(list, mode) {
       <div>Payment: cash on delivery</div>
       ${single ? '' : '<div class="check">[ &nbsp; ] Packed &nbsp;&nbsp;&nbsp; [ &nbsp; ] Delivered</div>'}
     </div>`;
-  const filt = [{ pending: 'To pack', packed: 'Packed', completed: 'Completed' }[ordStatus] || 'All orders',
+  const filt = [{ active: 'Active', pending: 'To pack', packed: 'Packed', completed: 'Completed' }[ordStatus] || 'All orders',
     ordDay ? new Date(ordDay + 'T00:00:00').toLocaleDateString() : { today: 'Today', yesterday: 'Yesterday', week: 'Last 7 days' }[ordRange] || 'All time'].join(' | ');
   const title = single ? `${shop} receipt order ${list[0].id}` : `${shop} packing list ${new Date().toLocaleDateString()}`;
   const css = `body{font:14px/1.45 Arial,sans-serif;color:#000;margin:24px}h1{margin:0 0 4px;font-size:22px}h2{font-size:16px;margin:18px 0 6px}
@@ -458,7 +459,7 @@ function renderAdmin() {
   const ordersView = `<h2>Orders</h2>
     <div class="toolbar" id="ofilters">
       <div class="chips">
-        <button data-act="ofilter" data-st="pending">To pack</button><button data-act="ofilter" data-st="packed">Packed</button>
+        <button data-act="ofilter" data-st="active">Active</button><button data-act="ofilter" data-st="pending">To pack</button><button data-act="ofilter" data-st="packed">Packed</button>
         <button data-act="ofilter" data-st="completed">Completed</button><button data-act="ofilter" data-st="all">All</button>
       </div>
       <select id="orange"><option value="all">All time</option><option value="today">Today</option>
