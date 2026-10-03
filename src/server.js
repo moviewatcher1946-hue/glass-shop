@@ -6,7 +6,9 @@ const { pool, init } = require('./db');
 const { sign, auth, admin } = require('./auth');
 
 const app = express();
-app.use(express.json());
+const json = express.json();
+// The restore route accepts big files, so it brings its own larger body parser.
+app.use((req, res, next) => (req.path === '/api/admin/import' ? next() : json(req, res, next)));
 app.use(express.static(path.join(__dirname, '../public')));
 
 const upload = multer({
@@ -244,6 +246,54 @@ app.patch('/api/custom-requests/:id/respond', auth, wrap(async (req, res) => {
     [status, req.params.id, req.user.id]);
   if (!r) throw bad('This request has no price to respond to.');
   res.json(r);
+}));
+
+/* ---------- Backup / restore (admin only) ---------- */
+const BACKUP_TABLES = ['users', 'products', 'orders', 'order_items', 'custom_requests']; // parents first
+
+app.get('/api/admin/export', auth, admin, wrap(async (req, res) => {
+  const tables = {};
+  for (const t of BACKUP_TABLES) {
+    const { rows } = await pool.query(`SELECT * FROM ${t} ORDER BY id`);
+    tables[t] = rows.map((row) => {
+      for (const k in row) if (Buffer.isBuffer(row[k])) row[k] = { $b64: row[k].toString('base64') }; // product photos
+      return row;
+    });
+  }
+  res.set('Content-Type', 'application/json')
+    .send(JSON.stringify({ app: 'glass-shop', version: 1, exported_at: new Date().toISOString(), tables }));
+}));
+
+// Replaces ALL data with the contents of a backup file, in one transaction (all or nothing).
+app.post('/api/admin/import', auth, admin, express.json({ limit: '100mb' }), wrap(async (req, res) => {
+  const data = req.body;
+  if (!data || data.app !== 'glass-shop' || !data.tables) throw bad('This is not a valid backup file.');
+  if (!(data.tables.users || []).some((u) => u.role === 'admin'))
+    throw bad('The backup has no admin account, so nothing was restored.');
+  const c = await pool.connect();
+  try {
+    await c.query('BEGIN');
+    await c.query('TRUNCATE order_items, orders, custom_requests, products, users RESTART IDENTITY CASCADE');
+    for (const t of BACKUP_TABLES) {
+      const { rows: colRows } = await c.query(
+        'SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=$1', [t]);
+      const valid = new Set(colRows.map((r) => r.column_name));
+      for (const row of data.tables[t] || []) {
+        const cols = Object.keys(row).filter((k) => valid.has(k)); // only real columns are ever used in SQL
+        if (!cols.length) continue;
+        const vals = cols.map((k) => (row[k] && row[k].$b64 !== undefined ? Buffer.from(row[k].$b64, 'base64') : row[k]));
+        await c.query(`INSERT INTO ${t} (${cols.join(',')}) VALUES (${cols.map((_, i) => '$' + (i + 1)).join(',')})`, vals);
+      }
+      await c.query(`SELECT setval(pg_get_serial_sequence('${t}', 'id'), COALESCE((SELECT MAX(id) FROM ${t}), 0) + 1, false)`);
+    }
+    await c.query('COMMIT');
+    res.json({ ok: true });
+  } catch (e) {
+    await c.query('ROLLBACK');
+    throw e;
+  } finally {
+    c.release();
+  }
 }));
 
 /* ---------- Errors & boot ---------- */
