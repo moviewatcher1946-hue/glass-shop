@@ -668,7 +668,7 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) poll
 /* Phone menu: only Cart and Menu stay in the bar, everything else drops down. */
 (() => {
   const bar = document.querySelector('.nav');
-  bar.insertAdjacentHTML('beforeend', '<button id="cartq" type="button" data-act="cart">Cart (0)</button><button id="menu-btn" type="button">Menu</button>');
+  bar.insertAdjacentHTML('beforeend', '<button id="cartq" class="primary" type="button" data-act="cart">Cart (0)</button><button id="menu-btn" type="button">Menu</button>');
   $('#menu-btn').addEventListener('click', () => bar.classList.toggle('open'));
   document.addEventListener('click', (e) => {
     if (e.target.closest('#menu-btn')) return;
