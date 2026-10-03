@@ -204,3 +204,41 @@ input[type="checkbox"] { width: 20px; height: 20px; margin: 0; padding: 0; accen
 .tabs { flex-wrap: wrap; }
 .banner { padding: 12px 18px; margin-bottom: 14px; text-align: center; font-weight: 600; border-color: var(--acc2); background: rgba(124, 58, 237, .14); }
 .stamps { letter-spacing: 4px; font-size: 1.3rem; color: var(--acc); margin: 6px 0; }
+
+/* Orders, status colors, mobile polish */
+.pill { white-space: nowrap; }
+.st-pending { background: rgba(245, 158, 11, .18); border-color: rgba(245, 158, 11, .6); }
+.st-packed { background: rgba(16, 185, 129, .2); border-color: rgba(16, 185, 129, .65); }
+.st-completed { background: rgba(99, 102, 241, .16); border-color: rgba(99, 102, 241, .5); }
+.st-cancelled { background: rgba(220, 38, 112, .14); border-color: rgba(220, 38, 112, .5); }
+.ready { margin: 0 0 10px; font-weight: 700; color: #059669; }
+:root[data-theme="dark"] .ready { color: #34d399; }
+.lines { list-style: none; margin: 0; padding: 0; }
+.lines li { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px dashed var(--border); }
+.lines li:last-child { border-bottom: 0; }
+.total { padding-top: 10px; margin-top: 6px; border-top: 1px solid var(--border); font-size: 1.1rem; }
+#olist { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; align-items: start; }
+#olist .panel { margin: 0; }
+.cline { display: flex; align-items: center; gap: 10px; padding: 6px 0; }
+.cline span { flex: 1; }
+.panel, .card, dialog { overflow-wrap: anywhere; }
+dialog { max-height: 88vh; overflow-y: auto; }
+
+@media (max-width: 640px) {
+  main { padding-left: 10px; padding-right: 10px; }
+  .panel { padding: 16px; }
+  #olist { grid-template-columns: 1fr; }
+  .tabs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tabs button { flex: none; white-space: nowrap; padding: 9px 14px; }
+  .chips button { padding: 8px 14px; }
+  .table-wrap table, .table-wrap tbody { display: block; }
+  .table-wrap tr { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+  .table-wrap tr:last-child { border-bottom: 0; }
+  .table-wrap td { display: block; padding: 0; border: 0; }
+  .table-wrap td:has(> b) { flex: 1 1 140px; }
+  .table-wrap td:last-child { flex: 1 1 100%; }
+  .card h3 { font-size: .98rem; }
+  .card footer b { font-size: 1.1rem; }
+  dialog { padding: 18px; }
+}
