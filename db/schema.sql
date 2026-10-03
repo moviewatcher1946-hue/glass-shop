@@ -2,7 +2,7 @@ CREATE TABLE IF NOT EXISTS users (
   id            SERIAL PRIMARY KEY,
   username      VARCHAR(50) UNIQUE NOT NULL,
   password_hash TEXT NOT NULL,
-  role          VARCHAR(10) NOT NULL DEFAULT 'customer' CHECK (role IN ('admin','customer')),
+  role          VARCHAR(10) NOT NULL DEFAULT 'customer' CHECK (role IN ('admin','customer','seller')),
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 -- Case-insensitive uniqueness so nobody can register "Raven"
