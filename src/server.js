@@ -3,7 +3,7 @@ const multer = require('multer');
 const bcrypt = require('bcryptjs');
 const path = require('path');
 const { pool, init } = require('./db');
-const { sign, auth, admin } = require('./auth');
+const { sign, auth, admin, staff } = require('./auth');
 
 const app = express();
 const json = express.json();
@@ -17,16 +17,32 @@ const upload = multer({
   fileFilter: (req, f, cb) => cb(null, /^image\/(png|jpe?g|webp|gif)$/.test(f.mimetype)),
 });
 const wrap = (fn) => (req, res, next) => fn(req, res, next).catch(next);
-const COLS = 'id,title,description,price,is_sold_out,category,discount_percent,image_url,created_at';
+const COLS = 'id,title,description,price,is_sold_out,category,discount_percent,image_url,created_at,owner_id';
 const CATEGORIES = ['drinks', 'snacks'];
 // Price after the product's % discount. The server always works the price out itself.
 const finalPrice = (p) => Math.round(Number(p.price) * (100 - (Number(p.discount_percent) || 0))) / 100;
-const COMBO_SQL = `SELECT c.id,c.title,c.description,c.price,c.is_active,c.created_at,
+const COMBO_SQL = `SELECT c.id,c.title,c.description,c.price,c.is_active,c.created_at,c.owner_id,
   COALESCE((SELECT json_agg(json_build_object('product_id',p.id,'title',p.title,'quantity',ci.quantity,'price',p.price,
       'discount_percent',p.discount_percent,'is_sold_out',p.is_sold_out,'image_url',p.image_url) ORDER BY p.title)
     FROM combo_items ci JOIN products p ON p.id=ci.product_id WHERE ci.combo_id=c.id), '[]'::json) AS items
   FROM combos c`;
 const bad = (msg, status = 400) => Object.assign(new Error(msg), { status });
+const isMain = (u) => u.role === 'admin'; // raven: controls everything, including the sellers' items
+
+// Sellers may only touch rows they own; the main admin may touch anything.
+async function guard(table, id, user) {
+  const { rows: [r] } = await pool.query(`SELECT owner_id FROM ${table} WHERE id=$1`, [id]); // table is always a fixed name below
+  if (!r) throw bad('Not found.', 404);
+  if (!isMain(user) && r.owner_id !== user.id) throw bad('That belongs to another seller.', 403);
+}
+// Only the main admin may hand an item to someone else; the owner must be a staff account.
+async function pickOwner(user, wanted) {
+  const id = parseInt(wanted);
+  if (!isMain(user) || !Number.isInteger(id)) return user.id;
+  const { rowCount } = await pool.query("SELECT 1 FROM users WHERE id=$1 AND role IN ('admin','seller')", [id]);
+  if (!rowCount) throw bad('That owner does not exist.');
+  return id;
+}
 
 // Phone alerts for the owner. Set NTFY_TOPIC (free ntfy app) and/or TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID in Render.
 // Never blocks or breaks an order if the alert fails.
@@ -46,7 +62,7 @@ const notify = (text) => {
 async function checkPromo(db, code, userId) {
   const clean = String(code || '').trim();
   if (!clean) return null;
-  const { rows: [p] } = await db.query('SELECT * FROM promo_codes WHERE upper(code)=upper($1) AND is_active', [clean]);
+  const { rows: [p] } = await db.query('SELECT * FROM promo_codes WHERE upper(code)=upper($1) AND is_active', [clean]); // applies only to the items its owner sells
   if (!p) throw bad('That promo code is not valid.');
   if (p.max_uses != null && p.used_count >= p.max_uses) throw bad('That promo code has been fully used.');
   const { rowCount } = await db.query("SELECT 1 FROM orders WHERE user_id=$1 AND upper(promo_code)=upper($2) AND status <> 'cancelled'", [userId, p.code]);
@@ -97,6 +113,21 @@ const ensureShop = () => pool.query(`
     key   VARCHAR(40) UNIQUE NOT NULL,
     value TEXT NOT NULL DEFAULT ''
   );
+`);
+
+// Seller accounts and ownership (safe to run every start). Existing rows become the main admin's.
+const ensureOwners = () => pool.query(`
+  ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
+  ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('admin','customer','seller'));
+  ALTER TABLE products    ADD COLUMN IF NOT EXISTS owner_id INT REFERENCES users(id) ON DELETE SET NULL;
+  ALTER TABLE combos      ADD COLUMN IF NOT EXISTS owner_id INT REFERENCES users(id) ON DELETE SET NULL;
+  ALTER TABLE promo_codes ADD COLUMN IF NOT EXISTS owner_id INT REFERENCES users(id) ON DELETE SET NULL;
+  ALTER TABLE order_items ADD COLUMN IF NOT EXISTS owner_id INT REFERENCES users(id) ON DELETE SET NULL;
+  UPDATE products    SET owner_id=(SELECT id FROM users WHERE role='admin' ORDER BY id LIMIT 1) WHERE owner_id IS NULL;
+  UPDATE combos      SET owner_id=(SELECT id FROM users WHERE role='admin' ORDER BY id LIMIT 1) WHERE owner_id IS NULL;
+  UPDATE promo_codes SET owner_id=(SELECT id FROM users WHERE role='admin' ORDER BY id LIMIT 1) WHERE owner_id IS NULL;
+  UPDATE order_items oi SET owner_id=COALESCE((SELECT owner_id FROM products WHERE id=oi.product_id),
+    (SELECT id FROM users WHERE role='admin' ORDER BY id LIMIT 1)) WHERE owner_id IS NULL;
 `);
 
 // Creates the custom_requests table if it doesn't exist yet (never touches existing data).
@@ -173,22 +204,25 @@ app.get('/api/products/:id/image', wrap(async (req, res) => {
 }));
 
 /* ---------- Products (admin write) ---------- */
-app.post('/api/products', auth, admin, upload.single('image'), wrap(async (req, res) => {
+app.post('/api/products', auth, staff, upload.single('image'), wrap(async (req, res) => {
   const { title, description = '', price, category = 'snacks', discount_percent = 0 } = req.body;
   if (!title || price === '' || isNaN(price) || price < 0) throw bad('Title and a valid price are required.');
   if (!CATEGORIES.includes(category)) throw bad('Pick Drinks or Snacks.');
   const disc = parseInt(discount_percent) || 0;
   if (disc < 0 || disc > 90) throw bad('Discount must be between 0 and 90%.');
   const f = req.file;
+  const owner = await pickOwner(req.user, req.body.owner_id);
   const { rows: [p] } = await pool.query(
-    'INSERT INTO products (title, description, price, image_data, image_mime, category, discount_percent) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id',
-    [title, description, price, f ? f.buffer : null, f ? f.mimetype : null, category, disc]
+    'INSERT INTO products (title, description, price, image_data, image_mime, category, discount_percent, owner_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id',
+    [title, description, price, f ? f.buffer : null, f ? f.mimetype : null, category, disc, owner]
   );
   res.status(201).json(await withImage(p.id));
 }));
 
-app.put('/api/products/:id', auth, admin, upload.single('image'), wrap(async (req, res) => {
+app.put('/api/products/:id', auth, staff, upload.single('image'), wrap(async (req, res) => {
+  await guard('products', req.params.id, req.user);
   const { title, description, price, category, discount_percent } = req.body;
+  const newOwner = isMain(req.user) && req.body.owner_id ? await pickOwner(req.user, req.body.owner_id) : null;
   const disc = discount_percent === undefined || discount_percent === '' ? null : parseInt(discount_percent);
   if (disc !== null && !(disc >= 0 && disc <= 90)) throw bad('Discount must be between 0 and 90%.');
   if (category !== undefined && !CATEGORIES.includes(category)) throw bad('Pick Drinks or Snacks.');
@@ -196,14 +230,15 @@ app.put('/api/products/:id', auth, admin, upload.single('image'), wrap(async (re
   const f = req.file;
   const { rowCount } = await pool.query(
     `UPDATE products SET title=COALESCE($1,title), description=COALESCE($2,description), price=COALESCE($3,price),
-       image_data=COALESCE($4,image_data), image_mime=COALESCE($5,image_mime), category=COALESCE($6,category), discount_percent=COALESCE($7,discount_percent) WHERE id=$8`,
-    [title ?? null, description ?? null, price ?? null, f ? f.buffer : null, f ? f.mimetype : null, category ?? null, disc, req.params.id]
+       image_data=COALESCE($4,image_data), image_mime=COALESCE($5,image_mime), category=COALESCE($6,category), discount_percent=COALESCE($7,discount_percent), owner_id=COALESCE($9,owner_id) WHERE id=$8`,
+    [title ?? null, description ?? null, price ?? null, f ? f.buffer : null, f ? f.mimetype : null, category ?? null, disc, req.params.id, newOwner]
   );
   if (!rowCount) throw bad('Product not found.', 404);
   res.json(await withImage(req.params.id));
 }));
 
-app.patch('/api/products/:id/sold-out', auth, admin, wrap(async (req, res) => {
+app.patch('/api/products/:id/sold-out', auth, staff, wrap(async (req, res) => {
+  await guard('products', req.params.id, req.user);
   const { rows: [p] } = await pool.query(
     `UPDATE products SET is_sold_out = NOT is_sold_out WHERE id=$1 RETURNING ${COLS}`, [req.params.id]);
   if (!p) throw bad('Product not found.', 404);
@@ -211,23 +246,27 @@ app.patch('/api/products/:id/sold-out', auth, admin, wrap(async (req, res) => {
 }));
 
 // Move several products to a category at once.
-app.patch('/api/products/category', auth, admin, wrap(async (req, res) => {
+app.patch('/api/products/category', auth, staff, wrap(async (req, res) => {
   const { ids, category } = req.body || {};
   if (!CATEGORIES.includes(category)) throw bad('Pick Drinks or Snacks.');
   const list = (Array.isArray(ids) ? ids : []).map(Number).filter(Number.isInteger);
   if (!list.length) throw bad('Select at least one product.');
-  const { rowCount } = await pool.query('UPDATE products SET category=$1 WHERE id = ANY($2)', [category, list]);
+  const { rowCount } = isMain(req.user)
+    ? await pool.query('UPDATE products SET category=$1 WHERE id = ANY($2)', [category, list])
+    : await pool.query('UPDATE products SET category=$1 WHERE id = ANY($2) AND owner_id=$3', [category, list, req.user.id]);
   res.json({ updated: rowCount });
 }));
 
 // Set the same % discount on several products at once (0 removes it).
-app.patch('/api/products/discount', auth, admin, wrap(async (req, res) => {
+app.patch('/api/products/discount', auth, staff, wrap(async (req, res) => {
   const { ids, percent } = req.body || {};
   const pct = parseInt(percent);
   if (!(pct >= 0 && pct <= 90)) throw bad('Discount must be between 0 and 90%.');
   const list = (Array.isArray(ids) ? ids : []).map(Number).filter(Number.isInteger);
   if (!list.length) throw bad('Select at least one product.');
-  const { rowCount } = await pool.query('UPDATE products SET discount_percent=$1 WHERE id = ANY($2)', [pct, list]);
+  const { rowCount } = isMain(req.user)
+    ? await pool.query('UPDATE products SET discount_percent=$1 WHERE id = ANY($2)', [pct, list])
+    : await pool.query('UPDATE products SET discount_percent=$1 WHERE id = ANY($2) AND owner_id=$3', [pct, list, req.user.id]);
   res.json({ updated: rowCount });
 }));
 
@@ -237,11 +276,13 @@ app.get('/api/combos', wrap(async (req, res) => {
   res.json(rows.filter((c) => c.items.length));
 }));
 
-app.get('/api/admin/combos', auth, admin, wrap(async (req, res) => {
-  res.json((await pool.query(`${COMBO_SQL} ORDER BY c.created_at DESC`)).rows);
+app.get('/api/admin/combos', auth, staff, wrap(async (req, res) => {
+  res.json((await (isMain(req.user)
+    ? pool.query(`${COMBO_SQL} ORDER BY c.created_at DESC`)
+    : pool.query(`${COMBO_SQL} WHERE c.owner_id=$1 ORDER BY c.created_at DESC`, [req.user.id]))).rows);
 }));
 
-app.post('/api/combos', auth, admin, wrap(async (req, res) => {
+app.post('/api/combos', auth, staff, wrap(async (req, res) => {
   const clean = (v, n) => String(v || '').trim().slice(0, n);
   const title = clean(req.body.title, 120), description = clean(req.body.description, 300);
   const price = Number(req.body.price);
@@ -252,10 +293,13 @@ app.post('/api/combos', auth, admin, wrap(async (req, res) => {
   const c = await pool.connect();
   try {
     await c.query('BEGIN');
-    const { rows: found } = await c.query('SELECT id FROM products WHERE id = ANY($1)', [items.map((i) => i.pid)]);
-    if (found.length !== new Set(items.map((i) => i.pid)).size) throw bad('One of the products no longer exists.');
-    const { rows: [cb] } = await c.query('INSERT INTO combos (title, description, price) VALUES ($1,$2,$3) RETURNING id',
-      [title, description, price.toFixed(2)]);
+    // Sellers can only build combos from their own products; the main admin can use any.
+    const { rows: found } = isMain(req.user)
+      ? await c.query('SELECT id FROM products WHERE id = ANY($1)', [items.map((i) => i.pid)])
+      : await c.query('SELECT id FROM products WHERE id = ANY($1) AND owner_id=$2', [items.map((i) => i.pid), req.user.id]);
+    if (found.length !== new Set(items.map((i) => i.pid)).size) throw bad('One of the products no longer exists or is not yours.');
+    const { rows: [cb] } = await c.query('INSERT INTO combos (title, description, price, owner_id) VALUES ($1,$2,$3,$4) RETURNING id',
+      [title, description, price.toFixed(2), req.user.id]);
     for (const i of items)
       await c.query('INSERT INTO combo_items (combo_id, product_id, quantity) VALUES ($1,$2,$3) ON CONFLICT (combo_id, product_id) DO UPDATE SET quantity=EXCLUDED.quantity',
         [cb.id, i.pid, i.q]);
@@ -269,18 +313,21 @@ app.post('/api/combos', auth, admin, wrap(async (req, res) => {
   }
 }));
 
-app.patch('/api/combos/:id/active', auth, admin, wrap(async (req, res) => {
+app.patch('/api/combos/:id/active', auth, staff, wrap(async (req, res) => {
+  await guard('combos', req.params.id, req.user);
   const { rows: [c] } = await pool.query('UPDATE combos SET is_active = NOT is_active WHERE id=$1 RETURNING id,is_active', [req.params.id]);
   if (!c) throw bad('Combo not found.', 404);
   res.json(c);
 }));
 
-app.delete('/api/combos/:id', auth, admin, wrap(async (req, res) => {
+app.delete('/api/combos/:id', auth, staff, wrap(async (req, res) => {
+  await guard('combos', req.params.id, req.user);
   await pool.query('DELETE FROM combos WHERE id=$1', [req.params.id]);
   res.sendStatus(204);
 }));
 
-app.delete('/api/products/:id', auth, admin, wrap(async (req, res) => {
+app.delete('/api/products/:id', auth, staff, wrap(async (req, res) => {
+  await guard('products', req.params.id, req.user);
   await pool.query('DELETE FROM products WHERE id=$1', [req.params.id]);
   res.sendStatus(204);
 }));
@@ -294,7 +341,7 @@ app.post('/api/orders', auth, wrap(async (req, res) => {
   const c = await pool.connect();
   try {
     await c.query('BEGIN');
-    const { rows: prods } = await c.query('SELECT id,title,price,discount_percent,is_sold_out FROM products WHERE id = ANY($1)', [prodIds]);
+    const { rows: prods } = await c.query('SELECT id,title,price,discount_percent,is_sold_out,owner_id FROM products WHERE id = ANY($1)', [prodIds]);
     const byId = new Map(prods.map((r) => [r.id, r]));
     const { rows: combos } = await c.query(`${COMBO_SQL} WHERE c.id = ANY($1) AND c.is_active`, [comboIds]);
     const comboById = new Map(combos.map((r) => [r.id, r]));
@@ -305,17 +352,21 @@ app.post('/api/orders', auth, wrap(async (req, res) => {
       if (i.combo_id) {
         const cb = comboById.get(parseInt(i.combo_id));
         if (!cb || !cb.items.length || cb.items.some((x) => x.is_sold_out)) throw bad('A combo in your cart is no longer available.');
-        line = { pid: null, title: `Combo: ${cb.title} (${cb.items.map((x) => `${x.quantity}x ${x.title}`).join(', ')})`, price: Number(cb.price), q };
+        line = { pid: null, title: `Combo: ${cb.title} (${cb.items.map((x) => `${x.quantity}x ${x.title}`).join(', ')})`, price: Number(cb.price), q, owner: cb.owner_id };
       } else {
         const p = byId.get(parseInt(i.product_id));
         if (!p || p.is_sold_out) throw bad('An item in your cart is no longer available.');
-        line = { pid: p.id, title: p.title, price: finalPrice(p), q };
+        line = { pid: p.id, title: p.title, price: finalPrice(p), q, owner: p.owner_id };
       }
       total += line.price * line.q;
       return line;
     });
     const promo = await checkPromo(c, req.body.promo, req.user.id);
-    const discount = promo ? Math.round(total * promo.percent) / 100 : 0;
+    // A promo code discounts only the items its owner sells (or the whole order if it has no owner).
+    const base = !promo || promo.owner_id == null ? total
+      : lines.filter((l) => l.owner === promo.owner_id).reduce((s, l) => s + l.price * l.q, 0);
+    if (promo && base === 0) throw bad('That promo code only applies to items that are not in your cart.');
+    const discount = promo ? Math.round(base * promo.percent) / 100 : 0;
     const note = String(req.body.note || '').trim().slice(0, 300);
     const { rows: [o] } = await c.query(
       'INSERT INTO orders (user_id, total, note, promo_code, discount) VALUES ($1,$2,$3,$4,$5) RETURNING id,total,status,created_at',
@@ -323,8 +374,8 @@ app.post('/api/orders', auth, wrap(async (req, res) => {
     );
     if (promo) await c.query('UPDATE promo_codes SET used_count = used_count + 1 WHERE id=$1', [promo.id]);
     for (const l of lines)
-      await c.query('INSERT INTO order_items (order_id, product_id, title, unit_price, quantity) VALUES ($1,$2,$3,$4,$5)',
-        [o.id, l.pid, l.title, l.price.toFixed(2), l.q]);
+      await c.query('INSERT INTO order_items (order_id, product_id, title, unit_price, quantity, owner_id) VALUES ($1,$2,$3,$4,$5,$6)',
+        [o.id, l.pid, l.title, l.price.toFixed(2), l.q, l.owner ?? null]);
     await c.query('COMMIT');
     notify(`New order #${o.id} from ${req.user.username} - total ${Number(o.total).toFixed(2)}\n${lines.map((l) => `${l.q}x ${l.title}`).join(', ')}${note ? `\nNote: ${note}` : ''}${promo ? `\nPromo: ${promo.code}` : ''}`);
     res.status(201).json(o);
@@ -344,8 +395,22 @@ app.get('/api/orders/mine', auth, wrap(async (req, res) => {
   res.json((await pool.query(`${ORDER_SQL} WHERE o.user_id=$1 ORDER BY o.created_at DESC`, [req.user.id])).rows);
 }));
 
-app.get('/api/orders', auth, admin, wrap(async (req, res) => {
-  res.json((await pool.query(`${ORDER_SQL} ORDER BY o.created_at DESC`)).rows);
+// The main admin sees every order. A seller sees only orders that contain her items, and only those items.
+app.get('/api/orders', auth, staff, wrap(async (req, res) => {
+  if (isMain(req.user)) return res.json((await pool.query(`${ORDER_SQL} ORDER BY o.created_at DESC`)).rows);
+  const { rows } = await pool.query(
+    `SELECT o.id,o.status,o.note,o.promo_code,o.discount,o.created_at,u.username,
+       (SELECT json_agg(json_build_object('product_id',oi.product_id,'title',oi.title,'unit_price',oi.unit_price,'quantity',oi.quantity) ORDER BY oi.id)
+          FROM order_items oi WHERE oi.order_id=o.id AND oi.owner_id=$1) AS items,
+       EXISTS (SELECT 1 FROM promo_codes pc WHERE upper(pc.code)=upper(o.promo_code) AND pc.owner_id=$1) AS promo_mine
+     FROM orders o JOIN users u ON u.id=o.user_id
+     WHERE EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id=o.id AND oi.owner_id=$1)
+     ORDER BY o.created_at DESC`, [req.user.id]);
+  res.json(rows.map(({ promo_mine, ...o }) => {
+    const sub = o.items.reduce((s, i) => s + Number(i.unit_price) * i.quantity, 0);
+    const discount = promo_mine ? Number(o.discount) : 0;
+    return { ...o, promo_code: promo_mine ? o.promo_code : null, discount, total: (sub - discount).toFixed(2) };
+  }));
 }));
 
 // Customer cancels their own order, only while it is still pending.
@@ -359,9 +424,16 @@ app.patch('/api/orders/:id/cancel', auth, wrap(async (req, res) => {
 }));
 
 // Admin moves an order along: pending -> packed (ready) -> completed, or cancelled.
-app.patch('/api/orders/:id/status', auth, admin, wrap(async (req, res) => {
+app.patch('/api/orders/:id/status', auth, staff, wrap(async (req, res) => {
   const { status } = req.body || {};
   if (!['pending', 'packed', 'completed', 'cancelled'].includes(status)) throw bad('Invalid status.');
+  if (!isMain(req.user)) {
+    const { rows: [c] } = await pool.query(
+      'SELECT count(*) FILTER (WHERE owner_id=$2::int) AS mine, count(*) FILTER (WHERE owner_id IS DISTINCT FROM $2::int) AS other FROM order_items WHERE order_id=$1',
+      [req.params.id, req.user.id]);
+    if (!Number(c.mine)) throw bad('Order not found.', 404);
+    if (Number(c.other)) throw bad('This order also has items from another seller, so only the main admin can change its status.', 403);
+  }
   const { rows: [o] } = await pool.query('UPDATE orders SET status=$1 WHERE id=$2 RETURNING id,status', [status, req.params.id]);
   if (!o) throw bad('Order not found.', 404);
   res.json(o);
@@ -469,18 +541,69 @@ app.post('/api/admin/import', auth, admin, express.json({ limit: '100mb' }), wra
   }
 }));
 
+/* ---------- Seller accounts (main admin only) ---------- */
+app.get('/api/admin/sellers', auth, admin, wrap(async (req, res) => {
+  res.json((await pool.query("SELECT id,username,created_at FROM users WHERE role='seller' ORDER BY id")).rows);
+}));
+
+app.post('/api/admin/sellers', auth, admin, wrap(async (req, res) => {
+  const { username = '', password = '' } = req.body || {};
+  if (!/^[a-zA-Z0-9_]{3,30}$/.test(username) || password.length < 8)
+    throw bad('Username: 3-30 letters, numbers or _. Password: at least 8 characters.');
+  try {
+    const { rows: [u] } = await pool.query(
+      "INSERT INTO users (username, password_hash, role) VALUES ($1,$2,'seller') RETURNING id,username,created_at",
+      [username, await bcrypt.hash(password, 12)]);
+    res.status(201).json(u);
+  } catch (e) {
+    if (e.code === '23505') throw bad('That username is taken.', 409);
+    throw e;
+  }
+}));
+
+app.patch('/api/admin/sellers/:id/password', auth, admin, wrap(async (req, res) => {
+  const password = String((req.body || {}).password || '');
+  if (password.length < 8) throw bad('Password: at least 8 characters.');
+  const { rowCount } = await pool.query("UPDATE users SET password_hash=$1 WHERE id=$2 AND role='seller'",
+    [await bcrypt.hash(password, 12), req.params.id]);
+  if (!rowCount) throw bad('Seller not found.', 404);
+  res.json({ ok: true });
+}));
+
+// Removing a seller hands all her products, combos, promos and order history to the main admin.
+app.delete('/api/admin/sellers/:id', auth, admin, wrap(async (req, res) => {
+  const c = await pool.connect();
+  try {
+    await c.query('BEGIN');
+    const { rowCount } = await c.query("SELECT 1 FROM users WHERE id=$1 AND role='seller'", [req.params.id]);
+    if (!rowCount) throw bad('Seller not found.', 404);
+    for (const t of ['products', 'combos', 'promo_codes', 'order_items'])
+      await c.query(`UPDATE ${t} SET owner_id=$1 WHERE owner_id=$2`, [req.user.id, req.params.id]);
+    await c.query('DELETE FROM users WHERE id=$1', [req.params.id]);
+    await c.query('COMMIT');
+    res.sendStatus(204);
+  } catch (e) {
+    await c.query('ROLLBACK');
+    throw e;
+  } finally {
+    c.release();
+  }
+}));
+
 /* ---------- Promo codes and settings ---------- */
 app.get('/api/promos/check', auth, wrap(async (req, res) => {
   const p = await checkPromo(pool, req.query.code, req.user.id);
   if (!p) throw bad('Type a promo code first.');
-  res.json({ code: p.code, percent: p.percent });
+  res.json({ code: p.code, percent: p.percent, owner_id: p.owner_id });
 }));
 
-app.get('/api/admin/promos', auth, admin, wrap(async (req, res) => {
-  res.json((await pool.query('SELECT * FROM promo_codes ORDER BY created_at DESC')).rows);
+app.get('/api/admin/promos', auth, staff, wrap(async (req, res) => {
+  res.json((await (isMain(req.user)
+    ? pool.query('SELECT * FROM promo_codes ORDER BY created_at DESC')
+    : pool.query('SELECT * FROM promo_codes WHERE owner_id=$1 ORDER BY created_at DESC', [req.user.id]))).rows);
 }));
 
-app.post('/api/promos', auth, admin, wrap(async (req, res) => {
+app.post('/api/promos', auth, staff, wrap(async (req, res) => {
   const code = String(req.body.code || '').trim().toUpperCase();
   const percent = parseInt(req.body.percent);
   const maxUses = req.body.max_uses === '' || req.body.max_uses == null ? null : parseInt(req.body.max_uses);
@@ -488,7 +611,7 @@ app.post('/api/promos', auth, admin, wrap(async (req, res) => {
   if (!(percent >= 1 && percent <= 90)) throw bad('Percent must be between 1 and 90.');
   if (maxUses !== null && !(maxUses >= 1)) throw bad('Max uses must be 1 or more.');
   try {
-    const { rows: [p] } = await pool.query('INSERT INTO promo_codes (code, percent, max_uses) VALUES ($1,$2,$3) RETURNING *', [code, percent, maxUses]);
+    const { rows: [p] } = await pool.query('INSERT INTO promo_codes (code, percent, max_uses, owner_id) VALUES ($1,$2,$3,$4) RETURNING *', [code, percent, maxUses, req.user.id]);
     res.status(201).json(p);
   } catch (e) {
     if (e.code === '23505') throw bad('That code already exists.', 409);
@@ -496,13 +619,15 @@ app.post('/api/promos', auth, admin, wrap(async (req, res) => {
   }
 }));
 
-app.patch('/api/promos/:id/active', auth, admin, wrap(async (req, res) => {
+app.patch('/api/promos/:id/active', auth, staff, wrap(async (req, res) => {
+  await guard('promo_codes', req.params.id, req.user);
   const { rows: [p] } = await pool.query('UPDATE promo_codes SET is_active = NOT is_active WHERE id=$1 RETURNING id,is_active', [req.params.id]);
   if (!p) throw bad('Code not found.', 404);
   res.json(p);
 }));
 
-app.delete('/api/promos/:id', auth, admin, wrap(async (req, res) => {
+app.delete('/api/promos/:id', auth, staff, wrap(async (req, res) => {
+  await guard('promo_codes', req.params.id, req.user);
   await pool.query('DELETE FROM promo_codes WHERE id=$1', [req.params.id]);
   res.sendStatus(204);
 }));
@@ -533,5 +658,6 @@ init()
   .then(ensureCategory)
   .then(ensureCombos)
   .then(ensureShop)
+  .then(ensureOwners)
   .then(() => app.listen(PORT, () => console.log(`Glass Shop running on :${PORT}`)))
   .catch((e) => { console.error('Startup failed:', e); process.exit(1); });
