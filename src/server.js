@@ -28,6 +28,32 @@ const COMBO_SQL = `SELECT c.id,c.title,c.description,c.price,c.is_active,c.creat
   FROM combos c`;
 const bad = (msg, status = 400) => Object.assign(new Error(msg), { status });
 
+// Phone alerts for the owner. Set NTFY_TOPIC (free ntfy app) and/or TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID in Render.
+// Never blocks or breaks an order if the alert fails.
+const notify = (text) => {
+  const jobs = [];
+  if (process.env.NTFY_TOPIC)
+    jobs.push(fetch(`https://ntfy.sh/${encodeURIComponent(process.env.NTFY_TOPIC)}`, { method: 'POST', body: text, headers: { Title: 'Glass Shop' } }));
+  if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID)
+    jobs.push(fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: process.env.TELEGRAM_CHAT_ID, text }),
+    }));
+  Promise.allSettled(jobs).catch(() => {});
+};
+
+// A promo code gives % off the whole order, once per account.
+async function checkPromo(db, code, userId) {
+  const clean = String(code || '').trim();
+  if (!clean) return null;
+  const { rows: [p] } = await db.query('SELECT * FROM promo_codes WHERE upper(code)=upper($1) AND is_active', [clean]);
+  if (!p) throw bad('That promo code is not valid.');
+  if (p.max_uses != null && p.used_count >= p.max_uses) throw bad('That promo code has been fully used.');
+  const { rowCount } = await db.query("SELECT 1 FROM orders WHERE user_id=$1 AND upper(promo_code)=upper($2) AND status <> 'cancelled'", [userId, p.code]);
+  if (rowCount) throw bad('You already used that promo code.');
+  return p;
+}
+
 // Adds the category column to products (safe to run every start; existing products become 'snacks').
 const ensureCategory = () => pool.query("ALTER TABLE products ADD COLUMN IF NOT EXISTS category VARCHAR(30) NOT NULL DEFAULT 'snacks'");
 
@@ -48,6 +74,28 @@ const ensureCombos = () => pool.query(`
     product_id INT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
     quantity   INT NOT NULL CHECK (quantity BETWEEN 1 AND 20),
     UNIQUE (combo_id, product_id)
+  );
+`);
+
+// Order notes, promo codes and shop settings (safe to run every start).
+const ensureShop = () => pool.query(`
+  ALTER TABLE orders ADD COLUMN IF NOT EXISTS note VARCHAR(300) NOT NULL DEFAULT '';
+  ALTER TABLE orders ADD COLUMN IF NOT EXISTS promo_code VARCHAR(40);
+  ALTER TABLE orders ADD COLUMN IF NOT EXISTS discount NUMERIC(10,2) NOT NULL DEFAULT 0;
+  CREATE TABLE IF NOT EXISTS promo_codes (
+    id         SERIAL PRIMARY KEY,
+    code       VARCHAR(40) NOT NULL,
+    percent    INT NOT NULL CHECK (percent BETWEEN 1 AND 90),
+    max_uses   INT,
+    used_count INT NOT NULL DEFAULT 0,
+    is_active  BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS promo_codes_code ON promo_codes (upper(code));
+  CREATE TABLE IF NOT EXISTS settings (
+    id    SERIAL PRIMARY KEY,
+    key   VARCHAR(40) UNIQUE NOT NULL,
+    value TEXT NOT NULL DEFAULT ''
   );
 `);
 
@@ -266,14 +314,19 @@ app.post('/api/orders', auth, wrap(async (req, res) => {
       total += line.price * line.q;
       return line;
     });
+    const promo = await checkPromo(c, req.body.promo, req.user.id);
+    const discount = promo ? Math.round(total * promo.percent) / 100 : 0;
+    const note = String(req.body.note || '').trim().slice(0, 300);
     const { rows: [o] } = await c.query(
-      'INSERT INTO orders (user_id, total) VALUES ($1,$2) RETURNING id,total,status,created_at',
-      [req.user.id, total.toFixed(2)]
+      'INSERT INTO orders (user_id, total, note, promo_code, discount) VALUES ($1,$2,$3,$4,$5) RETURNING id,total,status,created_at',
+      [req.user.id, (total - discount).toFixed(2), note, promo ? promo.code : null, discount.toFixed(2)]
     );
+    if (promo) await c.query('UPDATE promo_codes SET used_count = used_count + 1 WHERE id=$1', [promo.id]);
     for (const l of lines)
       await c.query('INSERT INTO order_items (order_id, product_id, title, unit_price, quantity) VALUES ($1,$2,$3,$4,$5)',
         [o.id, l.pid, l.title, l.price.toFixed(2), l.q]);
     await c.query('COMMIT');
+    notify(`New order #${o.id} from ${req.user.username} - total ${Number(o.total).toFixed(2)}\n${lines.map((l) => `${l.q}x ${l.title}`).join(', ')}${note ? `\nNote: ${note}` : ''}${promo ? `\nPromo: ${promo.code}` : ''}`);
     res.status(201).json(o);
   } catch (e) {
     await c.query('ROLLBACK');
@@ -283,8 +336,8 @@ app.post('/api/orders', auth, wrap(async (req, res) => {
   }
 }));
 
-const ORDER_SQL = `SELECT o.id,o.total,o.status,o.created_at,u.username,
-  (SELECT json_agg(json_build_object('title',title,'unit_price',unit_price,'quantity',quantity))
+const ORDER_SQL = `SELECT o.id,o.total,o.status,o.note,o.promo_code,o.discount,o.created_at,u.username,
+  (SELECT json_agg(json_build_object('product_id',product_id,'title',title,'unit_price',unit_price,'quantity',quantity))
    FROM order_items WHERE order_id=o.id) AS items FROM orders o JOIN users u ON u.id=o.user_id`;
 
 app.get('/api/orders/mine', auth, wrap(async (req, res) => {
@@ -301,6 +354,7 @@ app.patch('/api/orders/:id/cancel', auth, wrap(async (req, res) => {
     "UPDATE orders SET status='cancelled' WHERE id=$1 AND user_id=$2 AND status='pending' RETURNING id,status",
     [req.params.id, req.user.id]);
   if (!o) throw bad('Only pending orders can be cancelled.');
+  notify(`Order #${o.id} was cancelled by ${req.user.username}.`);
   res.json(o);
 }));
 
@@ -325,6 +379,7 @@ app.post('/api/custom-requests', auth, wrap(async (req, res) => {
   const { rows: [r] } = await pool.query(
     'INSERT INTO custom_requests (user_id, description) VALUES ($1,$2) RETURNING id,description,status,quoted_price,admin_note,created_at',
     [req.user.id, description]);
+  notify(`New custom request #${r.id} from ${req.user.username}:\n${description.slice(0, 300)}`);
   res.status(201).json(r);
 }));
 
@@ -362,11 +417,12 @@ app.patch('/api/custom-requests/:id/respond', auth, wrap(async (req, res) => {
      WHERE id=$2 AND user_id=$3 AND status='quoted' RETURNING id,status`,
     [status, req.params.id, req.user.id]);
   if (!r) throw bad('This request has no price to respond to.');
+  notify(`Custom request #${r.id}: ${req.user.username} ${status} your price.`);
   res.json(r);
 }));
 
 /* ---------- Backup / restore (admin only) ---------- */
-const BACKUP_TABLES = ['users', 'products', 'combos', 'combo_items', 'orders', 'order_items', 'custom_requests']; // parents first
+const BACKUP_TABLES = ['users', 'products', 'combos', 'combo_items', 'promo_codes', 'settings', 'orders', 'order_items', 'custom_requests']; // parents first
 
 app.get('/api/admin/export', auth, admin, wrap(async (req, res) => {
   const tables = {};
@@ -390,7 +446,7 @@ app.post('/api/admin/import', auth, admin, express.json({ limit: '100mb' }), wra
   const c = await pool.connect();
   try {
     await c.query('BEGIN');
-    await c.query('TRUNCATE order_items, orders, custom_requests, combo_items, combos, products, users RESTART IDENTITY CASCADE');
+    await c.query('TRUNCATE order_items, orders, custom_requests, combo_items, combos, promo_codes, settings, products, users RESTART IDENTITY CASCADE');
     for (const t of BACKUP_TABLES) {
       const { rows: colRows } = await c.query(
         'SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=$1', [t]);
@@ -413,6 +469,57 @@ app.post('/api/admin/import', auth, admin, express.json({ limit: '100mb' }), wra
   }
 }));
 
+/* ---------- Promo codes and settings ---------- */
+app.get('/api/promos/check', auth, wrap(async (req, res) => {
+  const p = await checkPromo(pool, req.query.code, req.user.id);
+  if (!p) throw bad('Type a promo code first.');
+  res.json({ code: p.code, percent: p.percent });
+}));
+
+app.get('/api/admin/promos', auth, admin, wrap(async (req, res) => {
+  res.json((await pool.query('SELECT * FROM promo_codes ORDER BY created_at DESC')).rows);
+}));
+
+app.post('/api/promos', auth, admin, wrap(async (req, res) => {
+  const code = String(req.body.code || '').trim().toUpperCase();
+  const percent = parseInt(req.body.percent);
+  const maxUses = req.body.max_uses === '' || req.body.max_uses == null ? null : parseInt(req.body.max_uses);
+  if (!/^[A-Z0-9_-]{3,30}$/.test(code)) throw bad('Code: 3-30 letters, numbers, - or _.');
+  if (!(percent >= 1 && percent <= 90)) throw bad('Percent must be between 1 and 90.');
+  if (maxUses !== null && !(maxUses >= 1)) throw bad('Max uses must be 1 or more.');
+  try {
+    const { rows: [p] } = await pool.query('INSERT INTO promo_codes (code, percent, max_uses) VALUES ($1,$2,$3) RETURNING *', [code, percent, maxUses]);
+    res.status(201).json(p);
+  } catch (e) {
+    if (e.code === '23505') throw bad('That code already exists.', 409);
+    throw e;
+  }
+}));
+
+app.patch('/api/promos/:id/active', auth, admin, wrap(async (req, res) => {
+  const { rows: [p] } = await pool.query('UPDATE promo_codes SET is_active = NOT is_active WHERE id=$1 RETURNING id,is_active', [req.params.id]);
+  if (!p) throw bad('Code not found.', 404);
+  res.json(p);
+}));
+
+app.delete('/api/promos/:id', auth, admin, wrap(async (req, res) => {
+  await pool.query('DELETE FROM promo_codes WHERE id=$1', [req.params.id]);
+  res.sendStatus(204);
+}));
+
+app.get('/api/settings', wrap(async (req, res) => {
+  const { rows } = await pool.query('SELECT key,value FROM settings');
+  const o = Object.fromEntries(rows.map((r) => [r.key, r.value]));
+  res.json({ banner: o.banner || '', stamp_reward: o.stamp_reward || 'a free snack' });
+}));
+
+app.put('/api/admin/settings', auth, admin, wrap(async (req, res) => {
+  const put = (k, v) => pool.query('INSERT INTO settings (key, value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value', [k, String(v || '').trim().slice(0, 200)]);
+  await put('banner', req.body.banner);
+  await put('stamp_reward', req.body.stamp_reward);
+  res.json({ ok: true });
+}));
+
 /* ---------- Errors & boot ---------- */
 app.use((err, req, res, next) => {
   if (err.code === 'LIMIT_FILE_SIZE') err = bad('Image must be 5 MB or smaller.');
@@ -425,5 +532,6 @@ init()
   .then(ensureCustomRequests)
   .then(ensureCategory)
   .then(ensureCombos)
+  .then(ensureShop)
   .then(() => app.listen(PORT, () => console.log(`Glass Shop running on :${PORT}`)))
   .catch((e) => { console.error('Startup failed:', e); process.exit(1); });
