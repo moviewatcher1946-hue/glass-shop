@@ -58,6 +58,23 @@ const notify = (text) => {
   Promise.allSettled(jobs).catch(() => {});
 };
 
+// Per-seller alerts through her own ntfy topic. Never blocks or breaks a request if an alert fails.
+const notifySellers = async (texts) => { // texts: Map(userId -> message)
+  try {
+    const { rows } = await pool.query(
+      "SELECT id, ntfy_topic FROM users WHERE role='seller' AND ntfy_topic <> '' AND id = ANY($1)", [[...texts.keys()]]);
+    await Promise.allSettled(rows.map((r) => fetch(`https://ntfy.sh/${encodeURIComponent(r.ntfy_topic)}`,
+      { method: 'POST', body: texts.get(r.id), headers: { Title: 'Glass Shop' } })));
+  } catch { /* ignore */ }
+};
+const notifyAll = async (text) => { // custom requests are a shared inbox: raven and every seller hear about them
+  notify(text);
+  try {
+    const { rows } = await pool.query("SELECT id FROM users WHERE role='seller' AND ntfy_topic <> ''");
+    await notifySellers(new Map(rows.map((r) => [r.id, text])));
+  } catch { /* ignore */ }
+};
+
 // A promo code gives % off the whole order, once per account.
 async function checkPromo(db, code, userId) {
   const clean = String(code || '').trim();
@@ -123,6 +140,13 @@ const ensureOwners = () => pool.query(`
   ALTER TABLE combos      ADD COLUMN IF NOT EXISTS owner_id INT REFERENCES users(id) ON DELETE SET NULL;
   ALTER TABLE promo_codes ADD COLUMN IF NOT EXISTS owner_id INT REFERENCES users(id) ON DELETE SET NULL;
   ALTER TABLE order_items ADD COLUMN IF NOT EXISTS owner_id INT REFERENCES users(id) ON DELETE SET NULL;
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS ntfy_topic VARCHAR(64) NOT NULL DEFAULT '';
+  CREATE TABLE IF NOT EXISTS order_approvals (
+    order_id INT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+    owner_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    status   VARCHAR(20) NOT NULL,
+    PRIMARY KEY (order_id, owner_id)
+  );
   UPDATE products    SET owner_id=(SELECT id FROM users WHERE role='admin' ORDER BY id LIMIT 1) WHERE owner_id IS NULL;
   UPDATE combos      SET owner_id=(SELECT id FROM users WHERE role='admin' ORDER BY id LIMIT 1) WHERE owner_id IS NULL;
   UPDATE promo_codes SET owner_id=(SELECT id FROM users WHERE role='admin' ORDER BY id LIMIT 1) WHERE owner_id IS NULL;
@@ -378,6 +402,10 @@ app.post('/api/orders', auth, wrap(async (req, res) => {
         [o.id, l.pid, l.title, l.price.toFixed(2), l.q, l.owner ?? null]);
     await c.query('COMMIT');
     notify(`New order #${o.id} from ${req.user.username} - total ${Number(o.total).toFixed(2)}\n${lines.map((l) => `${l.q}x ${l.title}`).join(', ')}${note ? `\nNote: ${note}` : ''}${promo ? `\nPromo: ${promo.code}` : ''}`);
+    const per = new Map();
+    for (const l of lines) if (l.owner) per.set(l.owner, [...(per.get(l.owner) || []), l]);
+    notifySellers(new Map([...per].map(([id, ls]) => [id,
+      `New order #${o.id} from ${req.user.username}\n${ls.map((l) => `${l.q}x ${l.title}`).join(', ')}${note ? `\nNote: ${note}` : ''}`])));
     res.status(201).json(o);
   } catch (e) {
     await c.query('ROLLBACK');
@@ -389,7 +417,12 @@ app.post('/api/orders', auth, wrap(async (req, res) => {
 
 const ORDER_SQL = `SELECT o.id,o.total,o.status,o.note,o.promo_code,o.discount,o.created_at,u.username,
   (SELECT json_agg(json_build_object('product_id',product_id,'title',title,'unit_price',unit_price,'quantity',quantity))
-   FROM order_items WHERE order_id=o.id) AS items FROM orders o JOIN users u ON u.id=o.user_id`;
+   FROM order_items WHERE order_id=o.id) AS items,
+  (SELECT json_agg(json_build_object('owner_id',x.owner_id,'username',pu.username,'status',COALESCE(a.status,'pending')) ORDER BY x.owner_id)
+     FROM (SELECT DISTINCT owner_id FROM order_items WHERE order_id=o.id AND owner_id IS NOT NULL) x
+     JOIN users pu ON pu.id=x.owner_id
+     LEFT JOIN order_approvals a ON a.order_id=o.id AND a.owner_id=x.owner_id) AS parts
+  FROM orders o JOIN users u ON u.id=o.user_id`;
 
 app.get('/api/orders/mine', auth, wrap(async (req, res) => {
   res.json((await pool.query(`${ORDER_SQL} WHERE o.user_id=$1 ORDER BY o.created_at DESC`, [req.user.id])).rows);
@@ -402,7 +435,11 @@ app.get('/api/orders', auth, staff, wrap(async (req, res) => {
     `SELECT o.id,o.status,o.note,o.promo_code,o.discount,o.created_at,u.username,
        (SELECT json_agg(json_build_object('product_id',oi.product_id,'title',oi.title,'unit_price',oi.unit_price,'quantity',oi.quantity) ORDER BY oi.id)
           FROM order_items oi WHERE oi.order_id=o.id AND oi.owner_id=$1) AS items,
-       EXISTS (SELECT 1 FROM promo_codes pc WHERE upper(pc.code)=upper(o.promo_code) AND pc.owner_id=$1) AS promo_mine
+       EXISTS (SELECT 1 FROM promo_codes pc WHERE upper(pc.code)=upper(o.promo_code) AND pc.owner_id=$1) AS promo_mine,
+       (SELECT json_agg(json_build_object('owner_id',x.owner_id,'username',pu.username,'status',COALESCE(a.status,'pending')) ORDER BY x.owner_id)
+     FROM (SELECT DISTINCT owner_id FROM order_items WHERE order_id=o.id AND owner_id IS NOT NULL) x
+     JOIN users pu ON pu.id=x.owner_id
+     LEFT JOIN order_approvals a ON a.order_id=o.id AND a.owner_id=x.owner_id) AS parts
      FROM orders o JOIN users u ON u.id=o.user_id
      WHERE EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id=o.id AND oi.owner_id=$1)
      ORDER BY o.created_at DESC`, [req.user.id]);
@@ -420,6 +457,8 @@ app.patch('/api/orders/:id/cancel', auth, wrap(async (req, res) => {
     [req.params.id, req.user.id]);
   if (!o) throw bad('Only pending orders can be cancelled.');
   notify(`Order #${o.id} was cancelled by ${req.user.username}.`);
+  const { rows: ow } = await pool.query('SELECT DISTINCT owner_id FROM order_items WHERE order_id=$1 AND owner_id IS NOT NULL', [o.id]);
+  notifySellers(new Map(ow.map((r) => [r.owner_id, `Order #${o.id} was cancelled by ${req.user.username}.`])));
   res.json(o);
 }));
 
@@ -427,16 +466,39 @@ app.patch('/api/orders/:id/cancel', auth, wrap(async (req, res) => {
 app.patch('/api/orders/:id/status', auth, staff, wrap(async (req, res) => {
   const { status } = req.body || {};
   if (!['pending', 'packed', 'completed', 'cancelled'].includes(status)) throw bad('Invalid status.');
-  if (!isMain(req.user)) {
-    const { rows: [c] } = await pool.query(
-      'SELECT count(*) FILTER (WHERE owner_id=$2::int) AS mine, count(*) FILTER (WHERE owner_id IS DISTINCT FROM $2::int) AS other FROM order_items WHERE order_id=$1',
-      [req.params.id, req.user.id]);
-    if (!Number(c.mine)) throw bad('Order not found.', 404);
-    if (Number(c.other)) throw bad('This order also has items from another seller, so only the main admin can change its status.', 403);
+  const id = parseInt(req.params.id);
+  if (!Number.isInteger(id)) throw bad('Order not found.', 404);
+  const { rows: [ord] } = await pool.query('SELECT status FROM orders WHERE id=$1', [id]);
+  if (!ord) throw bad('Order not found.', 404);
+  const { rows: ow } = await pool.query(
+    'SELECT DISTINCT oi.owner_id, u.username FROM order_items oi JOIN users u ON u.id=oi.owner_id WHERE oi.order_id=$1', [id]);
+  const owners = ow.map((r) => r.owner_id);
+  if (!isMain(req.user) && !owners.includes(req.user.id)) throw bad('Order not found.', 404);
+
+  // One owner (or raven stepping in on an order he has no items in): change the status directly.
+  if (owners.length < 2 || !owners.includes(req.user.id)) {
+    const { rows: [o] } = await pool.query('UPDATE orders SET status=$1 WHERE id=$2 RETURNING id,status', [status, id]);
+    return res.json(o);
   }
-  const { rows: [o] } = await pool.query('UPDATE orders SET status=$1 WHERE id=$2 RETURNING id,status', [status, req.params.id]);
-  if (!o) throw bad('Order not found.', 404);
-  res.json(o);
+
+  // Mixed order: every owner approves their own part; the order moves only as far as all of them have.
+  if (ord.status === 'cancelled') throw bad('This order was cancelled.', 409);
+  await pool.query(
+    'INSERT INTO order_approvals (order_id, owner_id, status) VALUES ($1,$2,$3) ON CONFLICT (order_id, owner_id) DO UPDATE SET status=EXCLUDED.status',
+    [id, req.user.id, status]);
+  const { rows: ap } = await pool.query('SELECT owner_id,status FROM order_approvals WHERE order_id=$1', [id]);
+  const got = new Map(ap.map((r) => [r.owner_id, r.status]));
+  const sts = owners.map((x) => got.get(x) || 'pending');
+  const rank = { pending: 0, packed: 1, completed: 2, cancelled: 0 };
+  const overall = sts.every((x) => x === 'cancelled') ? 'cancelled' : ['pending', 'packed', 'completed'][Math.min(...sts.map((x) => rank[x]))];
+  await pool.query('UPDATE orders SET status=$1 WHERE id=$2', [overall, id]);
+  const waiting = ow.filter((r) => (got.get(r.owner_id) || 'pending') !== status && r.owner_id !== req.user.id).map((r) => r.username);
+  if (waiting.length) {
+    const msg = `Order #${id}: ${req.user.username} marked their part ${status}. Your approval is needed.`;
+    notify(msg);
+    notifySellers(new Map(owners.filter((x) => x !== req.user.id).map((x) => [x, msg])));
+  }
+  res.json({ id, status: overall, waiting });
 }));
 
 /* ---------- Custom requests ---------- */
@@ -451,7 +513,7 @@ app.post('/api/custom-requests', auth, wrap(async (req, res) => {
   const { rows: [r] } = await pool.query(
     'INSERT INTO custom_requests (user_id, description) VALUES ($1,$2) RETURNING id,description,status,quoted_price,admin_note,created_at',
     [req.user.id, description]);
-  notify(`New custom request #${r.id} from ${req.user.username}:\n${description.slice(0, 300)}`);
+  notifyAll(`New custom request #${r.id} from ${req.user.username}:\n${description.slice(0, 300)}`);
   res.status(201).json(r);
 }));
 
@@ -459,12 +521,12 @@ app.get('/api/custom-requests/mine', auth, wrap(async (req, res) => {
   res.json((await pool.query(`${CR_SQL} WHERE r.user_id=$1 ORDER BY r.created_at DESC`, [req.user.id])).rows);
 }));
 
-app.get('/api/custom-requests', auth, admin, wrap(async (req, res) => {
+app.get('/api/custom-requests', auth, staff, wrap(async (req, res) => {
   res.json((await pool.query(`${CR_SQL} ORDER BY r.created_at DESC`)).rows);
 }));
 
 // Admin sets a price (quoted) or says it can't be provided (unavailable).
-app.patch('/api/custom-requests/:id/quote', auth, admin, wrap(async (req, res) => {
+app.patch('/api/custom-requests/:id/quote', auth, staff, wrap(async (req, res) => {
   const { price, note = '', unavailable = false } = req.body || {};
   let status = 'unavailable', amount = null;
   if (!unavailable) {
@@ -489,17 +551,17 @@ app.patch('/api/custom-requests/:id/respond', auth, wrap(async (req, res) => {
      WHERE id=$2 AND user_id=$3 AND status='quoted' RETURNING id,status`,
     [status, req.params.id, req.user.id]);
   if (!r) throw bad('This request has no price to respond to.');
-  notify(`Custom request #${r.id}: ${req.user.username} ${status} your price.`);
+  notifyAll(`Custom request #${r.id}: ${req.user.username} ${status} your price.`);
   res.json(r);
 }));
 
 /* ---------- Backup / restore (admin only) ---------- */
-const BACKUP_TABLES = ['users', 'products', 'combos', 'combo_items', 'promo_codes', 'settings', 'orders', 'order_items', 'custom_requests']; // parents first
+const BACKUP_TABLES = ['users', 'products', 'combos', 'combo_items', 'promo_codes', 'settings', 'orders', 'order_items', 'custom_requests', 'order_approvals']; // parents first
 
 app.get('/api/admin/export', auth, admin, wrap(async (req, res) => {
   const tables = {};
   for (const t of BACKUP_TABLES) {
-    const { rows } = await pool.query(`SELECT * FROM ${t} ORDER BY id`);
+    const { rows } = await pool.query(`SELECT * FROM ${t} ORDER BY ${t === 'order_approvals' ? 'order_id' : 'id'}`);
     tables[t] = rows.map((row) => {
       for (const k in row) if (Buffer.isBuffer(row[k])) row[k] = { $b64: row[k].toString('base64') }; // product photos
       return row;
@@ -518,7 +580,7 @@ app.post('/api/admin/import', auth, admin, express.json({ limit: '100mb' }), wra
   const c = await pool.connect();
   try {
     await c.query('BEGIN');
-    await c.query('TRUNCATE order_items, orders, custom_requests, combo_items, combos, promo_codes, settings, products, users RESTART IDENTITY CASCADE');
+    await c.query('TRUNCATE order_approvals, order_items, orders, custom_requests, combo_items, combos, promo_codes, settings, products, users RESTART IDENTITY CASCADE');
     for (const t of BACKUP_TABLES) {
       const { rows: colRows } = await c.query(
         'SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=$1', [t]);
@@ -529,7 +591,7 @@ app.post('/api/admin/import', auth, admin, express.json({ limit: '100mb' }), wra
         const vals = cols.map((k) => (row[k] && row[k].$b64 !== undefined ? Buffer.from(row[k].$b64, 'base64') : row[k]));
         await c.query(`INSERT INTO ${t} (${cols.join(',')}) VALUES (${cols.map((_, i) => '$' + (i + 1)).join(',')})`, vals);
       }
-      await c.query(`SELECT setval(pg_get_serial_sequence('${t}', 'id'), COALESCE((SELECT MAX(id) FROM ${t}), 0) + 1, false)`);
+      if (t !== 'order_approvals') await c.query(`SELECT setval(pg_get_serial_sequence('${t}', 'id'), COALESCE((SELECT MAX(id) FROM ${t}), 0) + 1, false)`);
     }
     await c.query('COMMIT');
     res.json({ ok: true });
@@ -539,6 +601,22 @@ app.post('/api/admin/import', auth, admin, express.json({ limit: '100mb' }), wra
   } finally {
     c.release();
   }
+}));
+
+/* ---------- Team names and seller alerts ---------- */
+app.get('/api/staff/team', auth, staff, wrap(async (req, res) => {
+  res.json((await pool.query("SELECT id,username FROM users WHERE role IN ('admin','seller') ORDER BY id")).rows);
+}));
+
+const sellerOnly = (req, res, next) => (req.user.role === 'seller' ? next() : res.status(403).json({ error: 'Sellers only.' }));
+app.get('/api/staff/alerts', auth, sellerOnly, wrap(async (req, res) => {
+  res.json((await pool.query('SELECT ntfy_topic FROM users WHERE id=$1', [req.user.id])).rows[0] || { ntfy_topic: '' });
+}));
+app.put('/api/staff/alerts', auth, sellerOnly, wrap(async (req, res) => {
+  const topic = String((req.body || {}).ntfy_topic || '').trim();
+  if (!/^[A-Za-z0-9_-]{0,64}$/.test(topic)) throw bad('Topic: up to 64 letters, numbers, - or _.');
+  await pool.query('UPDATE users SET ntfy_topic=$1 WHERE id=$2', [topic, req.user.id]);
+  res.json({ ok: true });
 }));
 
 /* ---------- Seller accounts (main admin only) ---------- */
@@ -598,9 +676,8 @@ app.get('/api/promos/check', auth, wrap(async (req, res) => {
 }));
 
 app.get('/api/admin/promos', auth, staff, wrap(async (req, res) => {
-  res.json((await (isMain(req.user)
-    ? pool.query('SELECT * FROM promo_codes ORDER BY created_at DESC')
-    : pool.query('SELECT * FROM promo_codes WHERE owner_id=$1 ORDER BY created_at DESC', [req.user.id]))).rows);
+  // Sellers can see every code but only change their own (the guard on toggle/delete enforces that).
+  res.json((await pool.query('SELECT p.*, u.username AS owner FROM promo_codes p LEFT JOIN users u ON u.id=p.owner_id ORDER BY p.created_at DESC')).rows);
 }));
 
 app.post('/api/promos', auth, staff, wrap(async (req, res) => {
