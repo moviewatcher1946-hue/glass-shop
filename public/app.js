@@ -2,6 +2,7 @@ const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const CURRENCY = '$';
 const money = (n) => CURRENCY + Number(n).toFixed(2);
+const CATS = { drinks: 'Drinks', snacks: 'Snacks' };
 const STATUS = { pending: 'Pending', packed: 'Packed - ready', completed: 'Completed', cancelled: 'Cancelled' };
 const CR_STATUS = { pending: 'Waiting for a price', quoted: 'Price offered', accepted: 'Accepted', declined: 'Declined', unavailable: "Can't provide" };
 
@@ -10,6 +11,7 @@ let user = JSON.parse(localStorage.user || 'null');
 let cart = JSON.parse(localStorage.cart || '{}');
 let products = [];
 let view = 'shop';
+let searchText = '', catFilter = 'all';
 let sig = '', lastOrderId = null, mineHtml = '', adminHtml = '', statusMap = null, adminTab = 'products', pendingCount = 0;
 let customHtml = '', customAdminHtml = '', crMap = null, crList = [], lastCrId = null, pendingCustom = 0;
 
@@ -43,20 +45,42 @@ function renderNav() {
           : '<button class="primary" data-act="auth">Log in / Sign up</button>');
 }
 
-function renderShop() {
-  $('#app').innerHTML = `<section class="grid">${products.map((p) => `
+const productCard = (p) => `
     <article class="card glass">
       <div class="img">${p.image_url ? `<img loading="lazy" src="${esc(p.image_url)}" alt="${esc(p.title)}">` : ''}
         ${p.is_sold_out ? '<span class="badge">Sold out</span>' : ''}</div>
       <h3>${esc(p.title)}</h3><p>${esc(p.description)}</p>
       <footer><b>${money(p.price)}</b>
         <button class="primary" data-act="add" data-id="${p.id}" ${p.is_sold_out ? 'disabled' : ''}>Add to cart</button></footer>
-    </article>`).join('') || '<p class="panel glass">No products yet.</p>'}</section>`;
+    </article>`;
+
+// Redraws only the product list, so the search box keeps focus while typing.
+function fillGrid() {
+  const el = $('#grid');
+  if (!el) return;
+  const text = searchText.trim().toLowerCase();
+  const match = (p) => !text || `${p.title} ${p.description}`.toLowerCase().includes(text);
+  const catOf = (p) => (CATS[p.category] ? p.category : 'snacks');
+  const groups = Object.keys(CATS)
+    .filter((c) => catFilter === 'all' || catFilter === c)
+    .map((c) => ({ c, list: products.filter((p) => catOf(p) === c && match(p)) }))
+    .filter((g) => g.list.length);
+  el.innerHTML = groups.map((g) => `<h2 class="cat-title">${CATS[g.c]}</h2><section class="grid">${g.list.map(productCard).join('')}</section>`).join('')
+    || `<p class="panel glass">${products.length ? 'No products match your search.' : 'No products yet.'}</p>`;
+}
+
+function renderShop() {
+  const chip = (id, label) => `<button class="${catFilter === id ? 'primary' : ''}" data-act="cat" data-cat="${id}">${label}</button>`;
+  $('#app').innerHTML = `<div class="toolbar">
+      <input id="search" type="search" placeholder="Search products..." value="${esc(searchText)}" autocomplete="off">
+      <div class="chips">${chip('all', 'All')}${Object.entries(CATS).map(([id, label]) => chip(id, label)).join('')}</div>
+    </div><div id="grid"></div>`;
+  fillGrid();
 }
 
 const productTable = () => `<table>${products.map((p) => `<tr>
     <td>${p.image_url ? `<img class="thumb" src="${esc(p.image_url)}" alt="">` : ''}</td>
-    <td><b>${esc(p.title)}</b><br>${money(p.price)}${p.is_sold_out ? ' - sold out' : ''}</td>
+    <td><b>${esc(p.title)}</b><br>${money(p.price)} | ${CATS[p.category] || 'Snacks'}${p.is_sold_out ? ' - sold out' : ''}</td>
     <td><div class="actions">
       <button data-act="edit" data-id="${p.id}">Edit</button>
       <button data-act="toggle" data-id="${p.id}">${p.is_sold_out ? 'Mark available' : 'Mark sold out'}</button>
@@ -120,6 +144,7 @@ function renderAdmin() {
       <form id="pform">
         <div class="row"><div><label>Title</label><input name="title" required></div>
           <div><label>Price</label><input name="price" type="number" step="0.01" min="0" required></div></div>
+        <label>Category</label><select name="category"><option value="drinks">Drinks</option><option value="snacks">Snacks</option></select>
         <label>Description</label><textarea name="description" rows="3"></textarea>
         <label>Image (max 5 MB; leave empty to keep the current one)</label><input name="image" type="file" accept="image/*">
         <button class="primary" type="submit" id="save">Add product</button>
@@ -282,6 +307,7 @@ function quoteDialog(id) {
 /* ---------- Actions ---------- */
 const actions = {
   shop: () => { view = 'shop'; render(); },
+  cat: (id, d) => { catFilter = d.cat; renderShop(); },
   admin: () => { view = 'admin'; render(); },
   orders: () => { view = 'orders'; render(); },
   custom: () => { view = 'custom'; render(); },
@@ -340,7 +366,7 @@ const actions = {
   delete: async (id) => { if (confirm('Delete this product?')) { await api(`/api/products/${id}`, { method: 'DELETE' }); await loadProducts(); toast('Deleted.'); } },
   edit: (id) => {
     const p = products.find((x) => x.id == id), f = $('#pform');
-    f.dataset.id = id; f.title.value = p.title; f.price.value = p.price; f.description.value = p.description;
+    f.dataset.id = id; f.title.value = p.title; f.price.value = p.price; f.description.value = p.description; f.category.value = p.category || 'snacks';
     $('#form-title').textContent = 'Edit product'; $('#save').textContent = 'Save changes';
     f.scrollIntoView({ behavior: 'smooth' });
   },
@@ -385,6 +411,10 @@ document.addEventListener('submit', async (e) => {
 // Close the dialog when clicking the dimmed backdrop
 $('#dlg').addEventListener('click', (e) => { if (e.target === $('#dlg')) $('#dlg').close(); });
 
+document.addEventListener('input', (e) => {
+  if (e.target.id === 'search') { searchText = e.target.value; fillGrid(); }
+});
+
 /* ---------- Live updates (checks the server every 5 seconds) ---------- */
 async function poll() {
   if (document.hidden) return;
@@ -393,7 +423,7 @@ async function poll() {
     const now = JSON.stringify(fresh);
     if (now !== sig) {
       sig = now; products = fresh;
-      if (view === 'shop') renderShop(); else if (view === 'admin') fillProducts();
+      if (view === 'shop') fillGrid(); else if (view === 'admin') fillProducts();
     }
     if (isAdmin()) { await refreshOrders(); await refreshCustom(); }
     if (user) {
