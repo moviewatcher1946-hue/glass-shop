@@ -79,6 +79,15 @@ const notifyAll = async (text) => { // custom requests are a shared inbox: raven
   } catch { /* ignore */ }
 };
 
+// Tells every seller when a shop-wide code (which also discounts her items) is switched on.
+const alertSellersShopWide = async (code, percent) => {
+  try {
+    const { rows } = await pool.query("SELECT id FROM users WHERE role='seller'");
+    const msg = `Shop-wide promo ${code} (${percent}% off) is on. It also discounts your items.`;
+    await notifySellers(new Map(rows.map((r) => [r.id, msg])));
+  } catch { /* ignore */ }
+};
+
 // A promo code gives % off the whole order, once per account.
 async function checkPromo(db, code, userId) {
   const clean = String(code || '').trim();
@@ -429,7 +438,7 @@ app.post('/api/orders', auth, wrap(async (req, res) => {
     const promo = await checkPromo(c, req.body.promo, req.user.id);
     // A promo discounts the items its owner sells (or everything if it has no owner),
     // and only the chosen products when it is a per-product code.
-    const eligible = (l) => (promo.owner_id == null || l.owner === promo.owner_id)
+    const eligible = (l) => (promo.shop_wide || promo.owner_id == null || l.owner === promo.owner_id)
       && (!promo.product_ids || !promo.product_ids.length || (l.pid != null && promo.product_ids.includes(l.pid)));
     const base = !promo ? total : lines.filter(eligible).reduce((s, l) => s + l.price * l.q, 0);
     if (promo && base === 0) throw bad('That promo code only applies to items that are not in your cart.');
@@ -715,7 +724,7 @@ app.delete('/api/admin/sellers/:id', auth, admin, wrap(async (req, res) => {
 app.get('/api/promos/check', auth, wrap(async (req, res) => {
   const p = await checkPromo(pool, req.query.code, req.user.id);
   if (!p) throw bad('Type a promo code first.');
-  res.json({ code: p.code, percent: p.percent, owner_id: p.owner_id, product_ids: p.product_ids });
+  res.json({ code: p.code, percent: p.percent, owner_id: p.owner_id, product_ids: p.product_ids, shop_wide: p.shop_wide });
 }));
 
 app.get('/api/admin/promos', auth, staff, wrap(async (req, res) => {
@@ -731,14 +740,17 @@ app.post('/api/promos', auth, staff, wrap(async (req, res) => {
   if (!(percent >= 1 && percent <= 90)) throw bad('Percent must be between 1 and 90.');
   if (maxUses !== null && !(maxUses >= 1)) throw bad('Max uses must be 1 or more.');
   const ids = (Array.isArray(req.body.product_ids) ? req.body.product_ids : []).map(Number).filter(Number.isInteger);
+  const wide = !!req.body.shop_wide; // works on every seller's items; only the main admin may switch it on
+  if (wide && !isMain(req.user)) throw bad('Only the main admin can make shop-wide codes.', 403);
   let productIds = null; // null = universal: everything this seller sells
-  if (ids.length) {
+  if (ids.length && !wide) {
     const { rows } = await pool.query('SELECT id FROM products WHERE id = ANY($1) AND ($2 OR owner_id = $3)', [ids, req.user.role === 'admin', req.user.id]);
     if (rows.length !== new Set(ids).size) throw bad('You can only pick your own products.');
     productIds = rows.map((r) => r.id);
   }
   try {
-    const { rows: [p] } = await pool.query('INSERT INTO promo_codes (code, percent, max_uses, owner_id, product_ids) VALUES ($1,$2,$3,$4,$5) RETURNING *', [code, percent, maxUses, req.user.id, productIds]);
+    const { rows: [p] } = await pool.query('INSERT INTO promo_codes (code, percent, max_uses, owner_id, product_ids, shop_wide) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *', [code, percent, maxUses, req.user.id, productIds, wide]);
+    if (wide) alertSellersShopWide(code, percent);
     res.status(201).json(p);
   } catch (e) {
     if (e.code === '23505') throw bad('That code already exists.', 409);
@@ -750,6 +762,16 @@ app.patch('/api/promos/:id/active', auth, staff, wrap(async (req, res) => {
   await guard('promo_codes', req.params.id, req.user);
   const { rows: [p] } = await pool.query('UPDATE promo_codes SET is_active = NOT is_active WHERE id=$1 RETURNING id,is_active', [req.params.id]);
   if (!p) throw bad('Code not found.', 404);
+  res.json(p);
+}));
+
+// The main admin switches a code between "my items only" and "every seller's items".
+app.patch('/api/promos/:id/shop-wide', auth, admin, wrap(async (req, res) => {
+  const { rows: [p] } = await pool.query(
+    'UPDATE promo_codes SET shop_wide = NOT shop_wide, product_ids = CASE WHEN NOT shop_wide THEN NULL ELSE product_ids END WHERE id=$1 RETURNING id,code,percent,shop_wide',
+    [req.params.id]);
+  if (!p) throw bad('Code not found.', 404);
+  if (p.shop_wide) alertSellersShopWide(p.code, p.percent);
   res.json(p);
 }));
 
@@ -788,6 +810,7 @@ init()
   .then(ensureOwners)
   .then(() => pool.query(`
     ALTER TABLE promo_codes ADD COLUMN IF NOT EXISTS product_ids INT[];
+    ALTER TABLE promo_codes ADD COLUMN IF NOT EXISTS shop_wide BOOLEAN NOT NULL DEFAULT false;
     CREATE TABLE IF NOT EXISTS combo_approvals (
       combo_id INT NOT NULL REFERENCES combos(id) ON DELETE CASCADE,
       owner_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
