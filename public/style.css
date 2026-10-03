@@ -189,3 +189,13 @@ select:focus { outline: none; border-color: var(--acc); box-shadow: 0 0 0 3px rg
 input[type="checkbox"] { width: 20px; height: 20px; margin: 0; padding: 0; accent-color: var(--acc); vertical-align: middle; }
 .bulk { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 12px; }
 .bulk label { display: flex; gap: 8px; align-items: center; margin: 0; color: var(--txt); }
+
+/* Discounts and combos */
+.was { color: var(--muted); text-decoration: line-through; font-size: .9rem; margin-right: 4px; }
+.badge.off { left: auto; right: 10px; background: var(--acc); }
+.combo-imgs { display: grid; grid-template-columns: 1fr 1fr; width: 100%; height: 100%; }
+.combo-imgs:has(img:only-child) { grid-template-columns: 1fr; }
+.combo-imgs img { width: 100%; height: 100%; object-fit: cover; }
+.picks { max-height: 260px; overflow-y: auto; margin-bottom: 12px; padding: 4px; border: 1px solid var(--border); border-radius: 12px; }
+.pickrow { display: flex; align-items: center; gap: 10px; padding: 6px 8px; margin: 0; color: var(--txt); }
+.pickrow input[type="number"] { width: 70px; margin: 0 0 0 auto; padding: 6px 8px; }
