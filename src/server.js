@@ -17,8 +17,12 @@ const upload = multer({
   fileFilter: (req, f, cb) => cb(null, /^image\/(png|jpe?g|webp|gif)$/.test(f.mimetype)),
 });
 const wrap = (fn) => (req, res, next) => fn(req, res, next).catch(next);
-const COLS = 'id,title,description,price,is_sold_out,image_url,created_at';
+const COLS = 'id,title,description,price,is_sold_out,category,image_url,created_at';
+const CATEGORIES = ['drinks', 'snacks'];
 const bad = (msg, status = 400) => Object.assign(new Error(msg), { status });
+
+// Adds the category column to products (safe to run every start; existing products become 'snacks').
+const ensureCategory = () => pool.query("ALTER TABLE products ADD COLUMN IF NOT EXISTS category VARCHAR(30) NOT NULL DEFAULT 'snacks'");
 
 // Creates the custom_requests table if it doesn't exist yet (never touches existing data).
 const ensureCustomRequests = () => pool.query(`
@@ -95,24 +99,26 @@ app.get('/api/products/:id/image', wrap(async (req, res) => {
 
 /* ---------- Products (admin write) ---------- */
 app.post('/api/products', auth, admin, upload.single('image'), wrap(async (req, res) => {
-  const { title, description = '', price } = req.body;
+  const { title, description = '', price, category = 'snacks' } = req.body;
   if (!title || price === '' || isNaN(price) || price < 0) throw bad('Title and a valid price are required.');
+  if (!CATEGORIES.includes(category)) throw bad('Pick Drinks or Snacks.');
   const f = req.file;
   const { rows: [p] } = await pool.query(
-    'INSERT INTO products (title, description, price, image_data, image_mime) VALUES ($1,$2,$3,$4,$5) RETURNING id',
-    [title, description, price, f ? f.buffer : null, f ? f.mimetype : null]
+    'INSERT INTO products (title, description, price, image_data, image_mime, category) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id',
+    [title, description, price, f ? f.buffer : null, f ? f.mimetype : null, category]
   );
   res.status(201).json(await withImage(p.id));
 }));
 
 app.put('/api/products/:id', auth, admin, upload.single('image'), wrap(async (req, res) => {
-  const { title, description, price } = req.body;
+  const { title, description, price, category } = req.body;
+  if (category !== undefined && !CATEGORIES.includes(category)) throw bad('Pick Drinks or Snacks.');
   if (price !== undefined && (price === '' || isNaN(price) || price < 0)) throw bad('Invalid price.');
   const f = req.file;
   const { rowCount } = await pool.query(
     `UPDATE products SET title=COALESCE($1,title), description=COALESCE($2,description), price=COALESCE($3,price),
-       image_data=COALESCE($4,image_data), image_mime=COALESCE($5,image_mime) WHERE id=$6`,
-    [title ?? null, description ?? null, price ?? null, f ? f.buffer : null, f ? f.mimetype : null, req.params.id]
+       image_data=COALESCE($4,image_data), image_mime=COALESCE($5,image_mime), category=COALESCE($6,category) WHERE id=$7`,
+    [title ?? null, description ?? null, price ?? null, f ? f.buffer : null, f ? f.mimetype : null, category ?? null, req.params.id]
   );
   if (!rowCount) throw bad('Product not found.', 404);
   res.json(await withImage(req.params.id));
@@ -306,5 +312,6 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 3000;
 init()
   .then(ensureCustomRequests)
+  .then(ensureCategory)
   .then(() => app.listen(PORT, () => console.log(`Glass Shop running on :${PORT}`)))
   .catch((e) => { console.error('Startup failed:', e); process.exit(1); });
