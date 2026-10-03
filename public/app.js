@@ -971,4 +971,20 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) poll
   renderNav();
 })();
 
+/* iPhone/iPad: Safari has no install button, so show the steps once (from the second visit). */
+(() => {
+  try {
+    const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) && !window.MSStream;
+    if (!ios || navigator.standalone || localStorage.a2hsDone) return;
+    const visits = (Number(localStorage.visits) || 0) + 1;
+    localStorage.visits = visits;
+    if (visits < 2) return;
+    document.body.insertAdjacentHTML('beforeend', `<div id="a2hs" class="glass">
+      <b>Get the shop on your Home Screen</b>
+      <p>Tap the Share button <span class="share-ic">&#8679;</span> in Safari, then <b>Add to Home Screen</b>. It opens like an app.</p>
+      <button class="primary" id="a2hs-ok" type="button">Got it</button></div>`);
+    $('#a2hs-ok').addEventListener('click', () => { localStorage.a2hsDone = '1'; $('#a2hs').remove(); });
+  } catch (e) { /* private browsing */ }
+})();
+
 loadProducts().catch((e) => toast(e.message));
