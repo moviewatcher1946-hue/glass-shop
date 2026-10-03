@@ -258,7 +258,7 @@ dialog { max-height: 88vh; overflow-y: auto; }
   .tools {
     display: none; position: absolute; top: calc(100% + 8px); left: 0; right: 0; z-index: 30;
     flex-wrap: wrap; gap: 8px; padding: 12px; border-radius: 16px;
-    background: color-mix(in srgb, var(--bg1) 94%, transparent);
+    background: var(--bg1); background: color-mix(in srgb, var(--bg1) 94%, transparent);
     backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
     border: 1px solid var(--border); box-shadow: var(--shadow-hover);
   }
@@ -295,7 +295,7 @@ dialog { max-height: 88vh; overflow-y: auto; }
     display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 8px;
     position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
     padding: 8px 10px calc(8px + env(safe-area-inset-bottom)); border-radius: 20px 20px 0 0;
-    background: color-mix(in srgb, var(--bg1) 92%, transparent);
+    background: var(--bg1); background: color-mix(in srgb, var(--bg1) 92%, transparent);
   }
   #bottomnav button { min-height: 52px; padding: 8px 6px; font-size: .95rem; font-weight: 700; border-radius: 14px; }
   #bottomnav button.on {
@@ -315,7 +315,7 @@ dialog { max-height: 88vh; overflow-y: auto; }
     display: block; position: fixed; right: 12px; bottom: calc(84px + env(safe-area-inset-bottom)); z-index: 35;
     min-height: 44px; padding: 10px 18px; border-radius: 999px; font-weight: 700; color: var(--acc);
     border: 1px solid var(--acc2); box-shadow: var(--shadow-hover);
-    background: color-mix(in srgb, var(--bg1) 92%, transparent);
+    background: var(--bg1); background: color-mix(in srgb, var(--bg1) 92%, transparent);
   }
   body:has(#tour) #helpfab { display: none; }
 }
@@ -329,3 +329,18 @@ dialog { max-height: 88vh; overflow-y: auto; }
 .toolbar select { width: auto; flex: 0 1 170px; margin: 0; }
 .toolbar input[type="date"] { flex: 0 1 170px; }
 @media (max-width: 640px) { .ogrid { grid-template-columns: 1fr; } }
+
+/* iPhone and iPad polish */
+html { -webkit-text-size-adjust: 100%; }
+* { -webkit-tap-highlight-color: transparent; }
+button, select, input { touch-action: manipulation; }
+input, select, textarea { font-size: max(16px, 1rem); } /* stops Safari zooming in when a field is tapped */
+input[type="date"], input[type="search"] { -webkit-appearance: none; appearance: none; min-height: 44px; }
+input[type="date"] { display: block; }
+#a2hs { display: none; }
+@media (max-width: 640px) {
+  #a2hs { display: block; position: fixed; left: 10px; right: 10px; bottom: calc(150px + env(safe-area-inset-bottom)); z-index: 36; padding: 14px 16px; box-shadow: var(--shadow-hover); background: var(--bg1); }
+  #a2hs p { margin: 4px 0 10px; color: var(--muted); font-size: .95rem; }
+  body:has(#tour) #a2hs { display: none; }
+}
+.share-ic { display: inline-block; border: 1px solid var(--acc2); border-radius: 6px; padding: 0 6px; color: var(--acc); }
