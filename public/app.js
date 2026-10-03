@@ -260,7 +260,7 @@ function updateComboSum() {
   el.textContent = sum ? `These items add up to ${money(sum)} at today's prices. Set the combo price lower to give a saving.` : '';
 }
 
-const promoScope = (p) => (p.product_ids && p.product_ids.length
+const promoScope = (p) => p.shop_wide ? "Shop-wide: every seller's items" : (p.product_ids && p.product_ids.length
   ? 'Only: ' + p.product_ids.map((id) => { const x = products.find((q) => q.id === id); return x ? esc(x.title) : 'removed product'; }).join(', ')
   : 'Everything ' + (p.owner ? esc(p.owner) + ' sells' : 'in the shop'));
 
@@ -271,6 +271,7 @@ async function refreshAdminPromos() {
   const html = list.length ? `<table>${list.map((p) => `<tr><td><b>${esc(p.code)}</b><br><span class="muted">${promoScope(p)}</span></td><td>${p.percent}% off</td>
       <td>${p.used_count}${p.max_uses ? ' / ' + p.max_uses : ''} used</td><td><span class="pill">${p.is_active ? 'On' : 'Off'}</span></td>
       <td>${canEdit(p.owner_id) ? `<div class="actions"><button data-act="promo-toggle" data-id="${p.id}">${p.is_active ? 'Turn off' : 'Turn on'}</button>
+        ${isRaven() ? `<button data-act="promo-wide" data-id="${p.id}">${p.shop_wide ? 'Make mine only' : 'Make shop-wide'}</button>` : ''}
         <button class="danger" data-act="promo-delete" data-id="${p.id}">Delete</button></div>` : `<span class="muted">View only${p.owner ? ' (' + esc(p.owner) + ')' : ''}</span>`}</td></tr>`).join('')}</table>` : '<p>No promo codes yet.</p>';
   if (html !== promoAdminHtml) { promoAdminHtml = html; el.innerHTML = html; }
 }
@@ -362,6 +363,7 @@ function renderAdmin() {
         <label>Max uses in total (optional)</label><input name="max_uses" type="number" min="1">
         <label>Only for these products (leave all unticked to discount everything you sell)</label>
         <div class="picks">${myProducts().map((p) => `<label class="pickrow"><input type="checkbox" name="pid" value="${p.id}"> ${esc(p.title)}</label>`).join('') || '<p>Add products first.</p>'}</div>
+        ${isRaven() ? '<label class="pickrow" style="padding-left:0"><input type="checkbox" name="shop_wide"> Shop-wide: also discounts every seller\'s items (the sellers get an alert)</label>' : ''}
         <button class="primary" type="submit">Create code</button>
       </form>
       <p class="muted">No products ticked = a universal code for everything you sell. Tick products to limit it to just those. Each customer can use a code once.</p>
@@ -558,8 +560,8 @@ function cartDialog() {
   // A promo discounts its owner's items, and only the chosen products when it is per-product.
   const perProduct = promo && promo.product_ids && promo.product_ids.length;
   const base = !promo ? sub : lines.reduce((s, l) => {
-    if (l.parts) return perProduct ? s : s + l.parts.filter((p) => promo.owner_id == null || p.owner === promo.owner_id).reduce((t, p) => t + p.price, 0) * l.q;
-    const ok = (promo.owner_id == null || l.owner === promo.owner_id) && (!perProduct || promo.product_ids.includes(Number(l.key)));
+    if (l.parts) return perProduct ? s : s + l.parts.filter((p) => promo.shop_wide || promo.owner_id == null || p.owner === promo.owner_id).reduce((t, p) => t + p.price, 0) * l.q;
+    const ok = (promo.shop_wide || promo.owner_id == null || l.owner === promo.owner_id) && (!perProduct || promo.product_ids.includes(Number(l.key)));
     return ok ? s + l.price * l.q : s;
   }, 0);
   const off = promo ? Math.round(base * promo.percent) / 100 : 0;
@@ -622,6 +624,7 @@ const actions = {
     if (!confirm('Remove this seller? Her products, combos and promos will become yours.')) return;
     await api(`/api/admin/sellers/${id}`, { method: 'DELETE' }); await refreshSellers(); await loadProducts(); toast('Seller removed.');
   },
+  'promo-wide': async (id) => { await api(`/api/promos/${id}/shop-wide`, { method: 'PATCH' }); await refreshAdminPromos(); toast('Updated. Sellers are alerted when a code goes shop-wide.'); },
   'promo-toggle': async (id) => { await api(`/api/promos/${id}/active`, { method: 'PATCH' }); await refreshAdminPromos(); },
   'promo-delete': async (id) => {
     if (!confirm('Delete this promo code?')) return;
@@ -755,7 +758,7 @@ document.addEventListener('submit', async (e) => {
       await api('/api/admin/sellers', { method: 'POST', json: Object.fromEntries(new FormData(e.target)) });
       e.target.reset(); await refreshSellers(); toast('Seller created.');
     } else if (e.target.id === 'promo-form') {
-      await api('/api/promos', { method: 'POST', json: { ...Object.fromEntries(new FormData(e.target)), product_ids: [...e.target.querySelectorAll('input[name="pid"]:checked')].map((b) => Number(b.value)) } });
+      await api('/api/promos', { method: 'POST', json: { ...Object.fromEntries(new FormData(e.target)), product_ids: [...e.target.querySelectorAll('input[name="pid"]:checked')].map((b) => Number(b.value)), shop_wide: !!e.target.querySelector('[name="shop_wide"]:checked') } });
       e.target.reset(); await refreshAdminPromos(); toast('Promo code created.');
     } else if (e.target.id === 'settings-form') {
       await api('/api/admin/settings', { method: 'PUT', json: Object.fromEntries(new FormData(e.target)) });
