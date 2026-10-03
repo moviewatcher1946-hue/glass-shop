@@ -42,6 +42,8 @@ const isAdmin = () => user && user.role === 'admin';
 /* ---------- Rendering ---------- */
 function renderNav() {
   const count = Object.values(cart).reduce((a, b) => a + b, 0);
+  const q = $('#cartq');
+  if (q) q.textContent = `Cart (${count})`;
   $('#nav').innerHTML =
     `<button data-act="shop">Shop</button><button data-act="custom">Custom order</button><button data-act="cart">Cart (${count})</button>` +
     (user ? '<button data-act="orders">My orders</button>' : '') +
@@ -662,5 +664,16 @@ async function poll() {
 }
 setInterval(poll, 5000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
+
+/* Phone menu: only Cart and Menu stay in the bar, everything else drops down. */
+(() => {
+  const bar = document.querySelector('.nav');
+  bar.insertAdjacentHTML('beforeend', '<button id="cartq" type="button" data-act="cart">Cart (0)</button><button id="menu-btn" type="button">Menu</button>');
+  $('#menu-btn').addEventListener('click', () => bar.classList.toggle('open'));
+  document.addEventListener('click', (e) => {
+    if (e.target.closest('#menu-btn')) return;
+    if (e.target.closest('.tools button') || !e.target.closest('.nav')) bar.classList.remove('open');
+  });
+})();
 
 loadProducts().catch((e) => toast(e.message));
