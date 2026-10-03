@@ -199,3 +199,8 @@ input[type="checkbox"] { width: 20px; height: 20px; margin: 0; padding: 0; accen
 .picks { max-height: 260px; overflow-y: auto; margin-bottom: 12px; padding: 4px; border: 1px solid var(--border); border-radius: 12px; }
 .pickrow { display: flex; align-items: center; gap: 10px; padding: 6px 8px; margin: 0; color: var(--txt); }
 .pickrow input[type="number"] { width: 70px; margin: 0 0 0 auto; padding: 6px 8px; }
+
+/* Banner, stamp card */
+.tabs { flex-wrap: wrap; }
+.banner { padding: 12px 18px; margin-bottom: 14px; text-align: center; font-weight: 600; border-color: var(--acc2); background: rgba(124, 58, 237, .14); }
+.stamps { letter-spacing: 4px; font-size: 1.3rem; color: var(--acc); margin: 6px 0; }
