@@ -247,3 +247,25 @@ dialog { max-height: 88vh; overflow-y: auto; }
 .st-quoted { background: rgba(245, 158, 11, .18); border-color: rgba(245, 158, 11, .6); }
 .st-accepted { background: rgba(16, 185, 129, .2); border-color: rgba(16, 185, 129, .65); }
 .st-declined, .st-unavailable { background: rgba(220, 38, 112, .14); border-color: rgba(220, 38, 112, .5); }
+
+/* Phone menu: less crowded top bar */
+#cartq, #menu-btn { display: none; }
+@media (max-width: 640px) {
+  .nav { position: relative; flex-wrap: nowrap; align-items: center; }
+  .nav h1 { order: 1; margin-right: auto; }
+  #cartq { display: inline-block; order: 2; }
+  #menu-btn { display: inline-block; order: 3; }
+  .tools {
+    display: none; position: absolute; top: calc(100% + 8px); left: 0; right: 0; z-index: 30;
+    flex-wrap: wrap; gap: 8px; padding: 12px; border-radius: 16px;
+    background: color-mix(in srgb, var(--bg1) 94%, transparent);
+    backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+    border: 1px solid var(--border); box-shadow: var(--shadow-hover);
+  }
+  .nav.open .tools { display: flex; }
+  nav { flex: 1 1 100%; order: 0; display: grid; grid-template-columns: 1fr 1fr; overflow: visible; gap: 8px; }
+  nav [data-act="cart"] { display: none; }
+  nav .pill { grid-column: 1 / -1; text-align: center; }
+  nav button { width: 100%; }
+  #tour-btn, #theme { flex: 1 1 45%; }
+}
