@@ -50,8 +50,7 @@ function renderMobileNav() {
     : `<button class="${on('custom')}" data-act="custom">Custom order</button>` +
       (user ? `<button class="${on('orders')}" data-act="orders">My orders</button>` : ''));
   $('#acct').innerHTML = user ? `<span class="pill">${esc(user.username)}</span>` : '<button class="primary" data-act="auth">Log in</button>';
-  $('#foot').innerHTML = (isAdmin() ? '' : '<button id="foot-tour" type="button">Tutorial</button>') +
-    `<button id="foot-theme" type="button">${document.documentElement.dataset.theme === 'dark' ? 'Light mode' : 'Dark mode'}</button>` +
+  $('#foot').innerHTML = `<button id="foot-theme" type="button">${document.documentElement.dataset.theme === 'dark' ? 'Light mode' : 'Dark mode'}</button>` +
     (user ? '<button data-act="logout">Log out</button>' : '');
 }
 
@@ -685,9 +684,9 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) poll
 (() => {
   document.querySelector('.nav').insertAdjacentHTML('beforeend',
     '<div id="acct"></div><button id="cartq" class="primary" type="button" data-act="cart">Cart (0)</button>');
-  document.body.insertAdjacentHTML('beforeend', '<footer id="foot"></footer><div id="bottomnav" class="glass"></div>');
+  document.body.insertAdjacentHTML('beforeend', '<footer id="foot"></footer><div id="bottomnav" class="glass"></div><button id="helpfab" type="button">Tutorial</button>');
   document.addEventListener('click', (e) => {
-    if (e.target.closest('#foot-tour')) $('#tour-btn').click();
+    if (e.target.closest('#helpfab')) $('#tour-btn').click();
     const th = e.target.closest('#foot-theme');
     if (th) { $('#theme').click(); th.textContent = document.documentElement.dataset.theme === 'dark' ? 'Light mode' : 'Dark mode'; }
   });
