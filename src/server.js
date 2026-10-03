@@ -23,9 +23,13 @@ const CATEGORIES = ['drinks', 'snacks'];
 const finalPrice = (p) => Math.round(Number(p.price) * (100 - (Number(p.discount_percent) || 0))) / 100;
 const COMBO_SQL = `SELECT c.id,c.title,c.description,c.price,c.is_active,c.created_at,c.owner_id,
   COALESCE((SELECT json_agg(json_build_object('product_id',p.id,'title',p.title,'quantity',ci.quantity,'price',p.price,
-      'discount_percent',p.discount_percent,'is_sold_out',p.is_sold_out,'image_url',p.image_url) ORDER BY p.title)
-    FROM combo_items ci JOIN products p ON p.id=ci.product_id WHERE ci.combo_id=c.id), '[]'::json) AS items
+      'discount_percent',p.discount_percent,'is_sold_out',p.is_sold_out,'image_url',p.image_url,'owner_id',p.owner_id) ORDER BY p.title)
+    FROM combo_items ci JOIN products p ON p.id=ci.product_id WHERE ci.combo_id=c.id), '[]'::json) AS items,
+  COALESCE((SELECT json_agg(json_build_object('owner_id',a.owner_id,'username',au.username,'status',a.status) ORDER BY a.owner_id)
+    FROM combo_approvals a JOIN users au ON au.id=a.owner_id WHERE a.combo_id=c.id), '[]'::json) AS approvals
   FROM combos c`;
+// A combo with other sellers' products goes live only when every one of them has approved it.
+const COMBO_LIVE = "c.is_active AND NOT EXISTS (SELECT 1 FROM combo_approvals a WHERE a.combo_id=c.id AND a.status <> 'approved')";
 const bad = (msg, status = 400) => Object.assign(new Error(msg), { status });
 const isMain = (u) => u.role === 'admin'; // raven: controls everything, including the sellers' items
 
@@ -296,14 +300,14 @@ app.patch('/api/products/discount', auth, staff, wrap(async (req, res) => {
 
 /* ---------- Combos ---------- */
 app.get('/api/combos', wrap(async (req, res) => {
-  const { rows } = await pool.query(`${COMBO_SQL} WHERE c.is_active ORDER BY c.created_at DESC`);
+  const { rows } = await pool.query(`${COMBO_SQL} WHERE ${COMBO_LIVE} ORDER BY c.created_at DESC`);
   res.json(rows.filter((c) => c.items.length));
 }));
 
 app.get('/api/admin/combos', auth, staff, wrap(async (req, res) => {
   res.json((await (isMain(req.user)
     ? pool.query(`${COMBO_SQL} ORDER BY c.created_at DESC`)
-    : pool.query(`${COMBO_SQL} WHERE c.owner_id=$1 ORDER BY c.created_at DESC`, [req.user.id]))).rows);
+    : pool.query(`${COMBO_SQL} WHERE c.owner_id=$1 OR EXISTS (SELECT 1 FROM combo_approvals a WHERE a.combo_id=c.id AND a.owner_id=$1) ORDER BY c.created_at DESC`, [req.user.id]))).rows);
 }));
 
 app.post('/api/combos', auth, staff, wrap(async (req, res) => {
@@ -317,24 +321,45 @@ app.post('/api/combos', auth, staff, wrap(async (req, res) => {
   const c = await pool.connect();
   try {
     await c.query('BEGIN');
-    // Sellers can only build combos from their own products; the main admin can use any.
-    const { rows: found } = isMain(req.user)
-      ? await c.query('SELECT id FROM products WHERE id = ANY($1)', [items.map((i) => i.pid)])
-      : await c.query('SELECT id FROM products WHERE id = ANY($1) AND owner_id=$2', [items.map((i) => i.pid), req.user.id]);
-    if (found.length !== new Set(items.map((i) => i.pid)).size) throw bad('One of the products no longer exists or is not yours.');
+    // Any seller's products can be paired. Every other seller involved must approve before the combo goes live.
+    const { rows: found } = await c.query('SELECT id, owner_id, title FROM products WHERE id = ANY($1)', [items.map((i) => i.pid)]);
+    if (found.length !== new Set(items.map((i) => i.pid)).size) throw bad('One of the products no longer exists.');
     const { rows: [cb] } = await c.query('INSERT INTO combos (title, description, price, owner_id) VALUES ($1,$2,$3,$4) RETURNING id',
       [title, description, price.toFixed(2), req.user.id]);
     for (const i of items)
       await c.query('INSERT INTO combo_items (combo_id, product_id, quantity) VALUES ($1,$2,$3) ON CONFLICT (combo_id, product_id) DO UPDATE SET quantity=EXCLUDED.quantity',
         [cb.id, i.pid, i.q]);
+    const others = [...new Set(found.map((p) => p.owner_id).filter((id) => id != null && id !== req.user.id))];
+    for (const o of others) await c.query("INSERT INTO combo_approvals (combo_id, owner_id, status) VALUES ($1,$2,'pending')", [cb.id, o]);
     await c.query('COMMIT');
-    res.status(201).json({ id: cb.id });
+    if (others.length) {
+      const msgs = new Map(others.map((o) => [o, `${req.user.username} wants to pair your ${found.filter((p) => p.owner_id === o).map((p) => p.title).join(', ')} in the combo "${title}". Open Combos to approve or decline.`]));
+      notifySellers(msgs);
+      const adm = (await pool.query("SELECT id FROM users WHERE role='admin'")).rows.map((r) => r.id);
+      const mine = others.find((o) => adm.includes(o));
+      if (mine) notify(msgs.get(mine));
+    }
+    res.status(201).json({ id: cb.id, waiting: others.length });
   } catch (e) {
     await c.query('ROLLBACK');
     throw e;
   } finally {
     c.release();
   }
+}));
+
+// A seller approves or declines the pairing of her products in someone else's combo.
+app.patch('/api/combos/:id/approval', auth, staff, wrap(async (req, res) => {
+  const approve = !!(req.body || {}).approve;
+  const { rows: [a] } = await pool.query(
+    'UPDATE combo_approvals SET status=$1 WHERE combo_id=$2 AND owner_id=$3 RETURNING combo_id',
+    [approve ? 'approved' : 'declined', req.params.id, req.user.id]);
+  if (!a) throw bad('This combo does not need your approval.', 404);
+  const { rows: [cb] } = await pool.query('SELECT title, owner_id FROM combos WHERE id=$1', [a.combo_id]);
+  const msg = `${req.user.username} ${approve ? 'approved' : 'declined'} the combo "${cb.title}".`;
+  notify(msg);
+  notifySellers(new Map([[cb.owner_id, msg]]));
+  res.json({ ok: true });
 }));
 
 app.patch('/api/combos/:id/active', auth, staff, wrap(async (req, res) => {
@@ -367,28 +392,46 @@ app.post('/api/orders', auth, wrap(async (req, res) => {
     await c.query('BEGIN');
     const { rows: prods } = await c.query('SELECT id,title,price,discount_percent,is_sold_out,owner_id FROM products WHERE id = ANY($1)', [prodIds]);
     const byId = new Map(prods.map((r) => [r.id, r]));
-    const { rows: combos } = await c.query(`${COMBO_SQL} WHERE c.id = ANY($1) AND c.is_active`, [comboIds]);
+    const { rows: combos } = await c.query(`${COMBO_SQL} WHERE c.id = ANY($1) AND ${COMBO_LIVE}`, [comboIds]);
     const comboById = new Map(combos.map((r) => [r.id, r]));
     let total = 0;
-    const lines = items.map((i) => {
+    const lines = items.flatMap((i) => {
       const q = Math.min(99, parseInt(i.quantity));
-      let line;
+      let parts;
       if (i.combo_id) {
         const cb = comboById.get(parseInt(i.combo_id));
         if (!cb || !cb.items.length || cb.items.some((x) => x.is_sold_out)) throw bad('A combo in your cart is no longer available.');
-        line = { pid: null, title: `Combo: ${cb.title} (${cb.items.map((x) => `${x.quantity}x ${x.title}`).join(', ')})`, price: Number(cb.price), q, owner: cb.owner_id };
+        // Each seller gets her own line with her share of the combo price (by value), so she sees and approves her part.
+        const groups = new Map();
+        for (const x of cb.items) {
+          const k = x.owner_id ?? cb.owner_id;
+          const g = groups.get(k) || { owner: k, names: [], value: 0 };
+          g.names.push(`${x.quantity}x ${x.title}`);
+          g.value += finalPrice(x) * x.quantity;
+          groups.set(k, g);
+        }
+        const list = [...groups.values()];
+        const worth = list.reduce((sum, g) => sum + g.value, 0) || 1;
+        let left = Number(cb.price);
+        parts = list.map((g, n) => {
+          const share = n === list.length - 1 ? left : Math.round((Number(cb.price) * g.value / worth) * 100) / 100;
+          left = Math.round((left - share) * 100) / 100;
+          return { pid: null, title: `Combo: ${cb.title} (${g.names.join(', ')})`, price: share, q, owner: g.owner };
+        });
       } else {
         const p = byId.get(parseInt(i.product_id));
         if (!p || p.is_sold_out) throw bad('An item in your cart is no longer available.');
-        line = { pid: p.id, title: p.title, price: finalPrice(p), q, owner: p.owner_id };
+        parts = [{ pid: p.id, title: p.title, price: finalPrice(p), q, owner: p.owner_id }];
       }
-      total += line.price * line.q;
-      return line;
+      parts.forEach((l) => { total += l.price * l.q; });
+      return parts;
     });
     const promo = await checkPromo(c, req.body.promo, req.user.id);
-    // A promo code discounts only the items its owner sells (or the whole order if it has no owner).
-    const base = !promo || promo.owner_id == null ? total
-      : lines.filter((l) => l.owner === promo.owner_id).reduce((s, l) => s + l.price * l.q, 0);
+    // A promo discounts the items its owner sells (or everything if it has no owner),
+    // and only the chosen products when it is a per-product code.
+    const eligible = (l) => (promo.owner_id == null || l.owner === promo.owner_id)
+      && (!promo.product_ids || !promo.product_ids.length || (l.pid != null && promo.product_ids.includes(l.pid)));
+    const base = !promo ? total : lines.filter(eligible).reduce((s, l) => s + l.price * l.q, 0);
     if (promo && base === 0) throw bad('That promo code only applies to items that are not in your cart.');
     const discount = promo ? Math.round(base * promo.percent) / 100 : 0;
     const note = String(req.body.note || '').trim().slice(0, 300);
@@ -556,12 +599,12 @@ app.patch('/api/custom-requests/:id/respond', auth, wrap(async (req, res) => {
 }));
 
 /* ---------- Backup / restore (admin only) ---------- */
-const BACKUP_TABLES = ['users', 'products', 'combos', 'combo_items', 'promo_codes', 'settings', 'orders', 'order_items', 'custom_requests', 'order_approvals']; // parents first
+const BACKUP_TABLES = ['users', 'products', 'combos', 'combo_items', 'combo_approvals', 'promo_codes', 'settings', 'orders', 'order_items', 'custom_requests', 'order_approvals']; // parents first
 
 app.get('/api/admin/export', auth, admin, wrap(async (req, res) => {
   const tables = {};
   for (const t of BACKUP_TABLES) {
-    const { rows } = await pool.query(`SELECT * FROM ${t} ORDER BY ${t === 'order_approvals' ? 'order_id' : 'id'}`);
+    const { rows } = await pool.query(`SELECT * FROM ${t} ORDER BY ${{ order_approvals: 'order_id', combo_approvals: 'combo_id' }[t] || 'id'}`);
     tables[t] = rows.map((row) => {
       for (const k in row) if (Buffer.isBuffer(row[k])) row[k] = { $b64: row[k].toString('base64') }; // product photos
       return row;
@@ -580,7 +623,7 @@ app.post('/api/admin/import', auth, admin, express.json({ limit: '100mb' }), wra
   const c = await pool.connect();
   try {
     await c.query('BEGIN');
-    await c.query('TRUNCATE order_approvals, order_items, orders, custom_requests, combo_items, combos, promo_codes, settings, products, users RESTART IDENTITY CASCADE');
+    await c.query('TRUNCATE order_approvals, order_items, orders, custom_requests, combo_approvals, combo_items, combos, promo_codes, settings, products, users RESTART IDENTITY CASCADE');
     for (const t of BACKUP_TABLES) {
       const { rows: colRows } = await c.query(
         'SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=$1', [t]);
@@ -591,7 +634,7 @@ app.post('/api/admin/import', auth, admin, express.json({ limit: '100mb' }), wra
         const vals = cols.map((k) => (row[k] && row[k].$b64 !== undefined ? Buffer.from(row[k].$b64, 'base64') : row[k]));
         await c.query(`INSERT INTO ${t} (${cols.join(',')}) VALUES (${cols.map((_, i) => '$' + (i + 1)).join(',')})`, vals);
       }
-      if (t !== 'order_approvals') await c.query(`SELECT setval(pg_get_serial_sequence('${t}', 'id'), COALESCE((SELECT MAX(id) FROM ${t}), 0) + 1, false)`);
+      if (!['order_approvals', 'combo_approvals'].includes(t)) await c.query(`SELECT setval(pg_get_serial_sequence('${t}', 'id'), COALESCE((SELECT MAX(id) FROM ${t}), 0) + 1, false)`);
     }
     await c.query('COMMIT');
     res.json({ ok: true });
@@ -672,7 +715,7 @@ app.delete('/api/admin/sellers/:id', auth, admin, wrap(async (req, res) => {
 app.get('/api/promos/check', auth, wrap(async (req, res) => {
   const p = await checkPromo(pool, req.query.code, req.user.id);
   if (!p) throw bad('Type a promo code first.');
-  res.json({ code: p.code, percent: p.percent, owner_id: p.owner_id });
+  res.json({ code: p.code, percent: p.percent, owner_id: p.owner_id, product_ids: p.product_ids });
 }));
 
 app.get('/api/admin/promos', auth, staff, wrap(async (req, res) => {
@@ -687,8 +730,15 @@ app.post('/api/promos', auth, staff, wrap(async (req, res) => {
   if (!/^[A-Z0-9_-]{3,30}$/.test(code)) throw bad('Code: 3-30 letters, numbers, - or _.');
   if (!(percent >= 1 && percent <= 90)) throw bad('Percent must be between 1 and 90.');
   if (maxUses !== null && !(maxUses >= 1)) throw bad('Max uses must be 1 or more.');
+  const ids = (Array.isArray(req.body.product_ids) ? req.body.product_ids : []).map(Number).filter(Number.isInteger);
+  let productIds = null; // null = universal: everything this seller sells
+  if (ids.length) {
+    const { rows } = await pool.query('SELECT id FROM products WHERE id = ANY($1) AND ($2 OR owner_id = $3)', [ids, req.user.role === 'admin', req.user.id]);
+    if (rows.length !== new Set(ids).size) throw bad('You can only pick your own products.');
+    productIds = rows.map((r) => r.id);
+  }
   try {
-    const { rows: [p] } = await pool.query('INSERT INTO promo_codes (code, percent, max_uses, owner_id) VALUES ($1,$2,$3,$4) RETURNING *', [code, percent, maxUses, req.user.id]);
+    const { rows: [p] } = await pool.query('INSERT INTO promo_codes (code, percent, max_uses, owner_id, product_ids) VALUES ($1,$2,$3,$4,$5) RETURNING *', [code, percent, maxUses, req.user.id, productIds]);
     res.status(201).json(p);
   } catch (e) {
     if (e.code === '23505') throw bad('That code already exists.', 409);
@@ -736,5 +786,13 @@ init()
   .then(ensureCombos)
   .then(ensureShop)
   .then(ensureOwners)
+  .then(() => pool.query(`
+    ALTER TABLE promo_codes ADD COLUMN IF NOT EXISTS product_ids INT[];
+    CREATE TABLE IF NOT EXISTS combo_approvals (
+      combo_id INT NOT NULL REFERENCES combos(id) ON DELETE CASCADE,
+      owner_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      status   VARCHAR(10) NOT NULL DEFAULT 'pending',
+      PRIMARY KEY (combo_id, owner_id)
+    );`))
   .then(() => app.listen(PORT, () => console.log(`Glass Shop running on :${PORT}`)))
   .catch((e) => { console.error('Startup failed:', e); process.exit(1); });
