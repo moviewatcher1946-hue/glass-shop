@@ -319,3 +319,13 @@ dialog { max-height: 88vh; overflow-y: auto; }
   }
   body:has(#tour) #helpfab { display: none; }
 }
+
+/* Orders grouped by day and hour */
+#olist { display: block; }
+.ogrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; align-items: start; }
+.ogrid .panel { margin: 0; }
+.day-title { margin: 24px 0 2px; font-size: 1.25rem; }
+.hour-title { margin: 14px 0 8px; color: var(--muted); font-weight: 600; }
+.toolbar select { width: auto; flex: 0 1 170px; margin: 0; }
+.toolbar input[type="date"] { flex: 0 1 170px; }
+@media (max-width: 640px) { .ogrid { grid-template-columns: 1fr; } }
