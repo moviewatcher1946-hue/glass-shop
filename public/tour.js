@@ -17,7 +17,7 @@
   const S = [
     { t: 'Welcome!', x: 'This quick tour shows you how to create an account, log in and order. You will try each step on the real site, so click along. The tour moves on by itself when you do.' },
     { t: 'Browse the products', x: 'Each product shows its photo, price and description. Items marked Sold out are greyed out and cannot be ordered.', target: () => $('.grid .card') },
-    { t: 'Custom orders', x: 'Cannot find what you want? Use Custom order to describe it. The shop replies with a price or tells you it cannot provide it. Some external charges may apply, and nothing is ordered until you accept the price.', target: () => $('[data-act="custom"]') },
+    { when: () => !isAdminUser(), t: 'Custom orders', x: 'Cannot find what you want? Use Custom order to describe it. The shop replies with a price or tells you it cannot provide it. Some external charges may apply, and nothing is ordered until you accept the price.', target: () => $('[data-act="custom"]') },
     { when: () => !loggedIn(), t: 'Step 1: open the sign-up window', x: 'Click Log in / Sign up in the top bar.', target: () => $('[data-act="auth"]'), wait: authOpen },
     { when: () => !loggedIn(), t: 'Step 2: create your account or log in',
       x: 'New here? Pick a username (letters, numbers or _) and a password of 8+ characters, then press Create account. Already registered? Type your details and press Log in.',
@@ -27,8 +27,8 @@
     { t: 'Open your cart', x: 'Click Cart in the top bar to see what you picked.', target: () => $('[data-act="cart"]'), wait: cartOpen },
     { t: 'Place your order', x: 'Check the items and total. Press Place order to send it to the shop (this is a real order). Or press Next to carry on without ordering.',
       target: () => $('[data-act="checkout"]', dlg), wait: onOrders },
-    { t: 'See your orders', x: 'Close the cart if it is open, then click My orders to see every order and its status.', target: () => $('[data-act="orders"]'), wait: onOrders },
-    { t: 'What the statuses mean', x: 'Pending: the shop received your order. Packed - ready: it is ready, and you get a popup when that happens. Completed: all done. You can press Cancel order only while it is Pending.', target: () => $('#mine .panel') },
+    { when: () => !isAdminUser(), t: 'See your orders', x: 'Close the cart if it is open, then click My orders to see every order and its status.', target: () => $('[data-act="orders"]'), wait: onOrders },
+    { when: () => !isAdminUser(), t: 'What the statuses mean', x: 'Pending: the shop received your order. Packed - ready: it is ready, and you get a popup when that happens. Completed: all done. You can press Cancel order only while it is Pending.', target: () => $('#mine .panel') },
     { t: 'Light or dark', x: 'Switch between light and dark mode here. The shop remembers your choice.', target: () => $('#theme, #foot-theme') },
     { t: 'You are all set!', x: 'Open this tour again any time with the Tutorial button.' },
   ];
@@ -102,14 +102,6 @@
     timer = setInterval(tick, 300);
     go(1);
   }
-
-  // Tutorial is for customers only: hide the button for admins and stop any running tour.
-  const guardAdmin = () => {
-    const admin = isAdminUser();
-    $('#tour-btn').style.display = admin ? 'none' : '';
-    if (admin && card) finish();
-  };
-  setInterval(guardAdmin, 1000);
 
   $('#tour-btn').addEventListener('click', start);
   let seen = false, hasToken = false;
