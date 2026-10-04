@@ -1116,8 +1116,8 @@ const reportData = async (user, days) => {
   };
 };
 
-// Per seller / admin (never a grand total): gross = completed orders, potential = pending + packed orders still to come.
-// Each person's figure is her own items after her share of any promo. Raven sees one row per person; a seller sees only her own row.
+// Per seller / admin (never a grand total). Gross = sales of completed orders. Potential income = what is left of pending + packed
+// orders after the cost prices (sales after her share of any promo, minus costs). Raven sees one row per person; a seller sees only her own row.
 const peopleTotals = async (user) => {
   const main = isMain(user);
   const { rows: ords } = await pool.query(`SELECT o.id,o.status,o.discount,pc.owner_id AS promo_owner,COALESCE(pc.shop_wide,false) AS shop_wide
@@ -1125,13 +1125,20 @@ const peopleTotals = async (user) => {
   const { rows: its } = await pool.query('SELECT order_id,owner_id,SUM(unit_price*quantity)::float AS sub FROM order_items WHERE owner_id IS NOT NULL GROUP BY order_id,owner_id');
   const subs = new Map();
   for (const r of its) { if (!subs.has(r.order_id)) subs.set(r.order_id, new Map()); subs.get(r.order_id).set(r.owner_id, r.sub); }
+  const { rows: cs } = await pool.query('SELECT order_id,owner_id,SUM(COALESCE(cost_price,0)*quantity)::float AS cost,bool_or(cost_price IS NULL) AS missing FROM order_items WHERE owner_id IS NOT NULL GROUP BY order_id,owner_id');
+  const costs = new Map(cs.map((r) => [`${r.order_id}>${r.owner_id}`, r]));
   const { rows: team } = await pool.query("SELECT id,username,role FROM users WHERE role IN ('admin','seller') ORDER BY (role='admin') DESC, id");
-  const out = new Map(team.map((u) => [u.id, { id: u.id, username: u.username, role: u.role, gross: 0, potential: 0, done: 0, open: 0 }]));
+  const out = new Map(team.map((u) => [u.id, { id: u.id, username: u.username, role: u.role, gross: 0, potential: 0, done: 0, open: 0, missing_cost: false }]));
   for (const o of ords) {
     const sub = subs.get(o.id); if (!sub) continue;
     for (const [id, v] of shareOf(o, sub)) {
       const row = out.get(id); if (!row) continue;
-      if (o.status === 'completed') { row.gross += v; row.done++; } else { row.potential += v; row.open++; }
+      if (o.status === 'completed') { row.gross += v; row.done++; }
+      else {
+        const c = costs.get(`${o.id}>${id}`) || { cost: 0, missing: false };
+        row.potential += v - c.cost; row.open++;
+        if (c.missing) row.missing_cost = true;
+      }
     }
   }
   return [...out.values()].filter((r) => main || r.id === user.id).map((r) => ({ ...r, gross: r2(r.gross), potential: r2(r.potential) }));
