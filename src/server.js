@@ -590,8 +590,23 @@ app.get('/api/orders/mine', auth, wrap(async (req, res) => {
 }));
 
 // The main admin sees every order. A seller sees only orders that contain her items, and only those items.
+// Adds what each owner's items in an order cost you (for the profit on printed lists). Staff only: customers never get this.
+// Raven gets every owner's cost; a seller gets only her own. A finished order uses the cost saved on it, an open one the product's current cost.
+const withCosts = async (rows, user) => {
+  if (!rows.length) return rows;
+  const { rows: cs } = await pool.query(`SELECT oi.order_id,oi.owner_id,
+      SUM(CASE WHEN o.status='completed' THEN COALESCE(oi.cost_price,p.cost,0) ELSE COALESCE(p.cost,oi.cost_price,0) END * oi.quantity)::float AS cost,
+      bool_or(COALESCE(oi.cost_price,p.cost) IS NULL) AS missing
+    FROM order_items oi JOIN orders o ON o.id=oi.order_id LEFT JOIN products p ON p.id=oi.product_id
+    WHERE oi.order_id = ANY($1) AND oi.owner_id IS NOT NULL AND ($2 OR oi.owner_id=$3)
+    GROUP BY oi.order_id,oi.owner_id`, [rows.map((r) => r.id), isMain(user), user.id]);
+  const by = new Map();
+  for (const r of cs) { if (!by.has(r.order_id)) by.set(r.order_id, []); by.get(r.order_id).push({ owner_id: r.owner_id, cost: r.cost, missing: r.missing }); }
+  return rows.map((o) => ({ ...o, costs: by.get(o.id) || [] }));
+};
+
 app.get('/api/orders', auth, staff, wrap(async (req, res) => {
-  if (isMain(req.user)) return res.json((await pool.query(`${ORDER_SQL} ORDER BY o.created_at DESC`)).rows);
+  if (isMain(req.user)) return res.json(await withCosts((await pool.query(`${ORDER_SQL} ORDER BY o.created_at DESC`)).rows, req.user));
   const { rows } = await pool.query(
     `SELECT o.id,o.user_id,o.status,o.note,o.promo_code,o.discount,o.created_at,o.paid_by,o.paid_at,(SELECT username FROM users WHERE id=o.paid_by) AS paid_name,u.username,
        (SELECT json_agg(json_build_object('product_id',oi.product_id,'title',oi.title,'unit_price',oi.unit_price,'quantity',oi.quantity) ORDER BY oi.id)
@@ -604,11 +619,11 @@ app.get('/api/orders', auth, staff, wrap(async (req, res) => {
      FROM orders o JOIN users u ON u.id=o.user_id
      WHERE EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id=o.id AND oi.owner_id=$1)
      ORDER BY o.created_at DESC`, [req.user.id]);
-  res.json(rows.map(({ promo_mine, ...o }) => {
+  res.json(await withCosts(rows.map(({ promo_mine, ...o }) => {
     const sub = o.items.reduce((s, i) => s + Number(i.unit_price) * i.quantity, 0);
     const discount = promo_mine ? Number(o.discount) : 0;
     return { ...o, promo_code: promo_mine ? o.promo_code : null, discount, total: (sub - discount).toFixed(2) };
-  }));
+  }), req.user));
 }));
 
 // Customer cancels their own order, only while it is still pending.
