@@ -258,6 +258,8 @@ app.post('/api/products', auth, staff, upload.single('image'), wrap(async (req, 
   const { title, description = '', price, category = 'snacks', discount_percent = 0 } = req.body;
   const stock = req.body.stock === undefined || req.body.stock === '' ? null : parseInt(req.body.stock);
   if (stock !== null && !(stock >= 0)) throw bad('Stock must be 0 or more.');
+  const cost = req.body.cost === undefined || req.body.cost === '' ? null : Number(req.body.cost);
+  if (cost !== null && !(cost >= 0)) throw bad('Cost must be 0 or more.');
   if (!title || price === '' || isNaN(price) || price < 0) throw bad('Title and a valid price are required.');
   if (!CATEGORIES.includes(category)) throw bad('Pick Drinks or Snacks.');
   const disc = parseInt(discount_percent) || 0;
@@ -265,8 +267,8 @@ app.post('/api/products', auth, staff, upload.single('image'), wrap(async (req, 
   const f = req.file;
   const owner = await pickOwner(req.user, req.body.owner_id);
   const { rows: [p] } = await pool.query(
-    'INSERT INTO products (title, description, price, image_data, image_mime, category, discount_percent, owner_id, stock, is_sold_out) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id',
-    [title, description, price, f ? f.buffer : null, f ? f.mimetype : null, category, disc, owner, stock, stock === 0]
+    'INSERT INTO products (title, description, price, image_data, image_mime, category, discount_percent, owner_id, stock, is_sold_out, cost) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id',
+    [title, description, price, f ? f.buffer : null, f ? f.mimetype : null, category, disc, owner, stock, stock === 0, cost]
   );
   res.status(201).json(await withImage(p.id));
 }));
@@ -283,14 +285,24 @@ app.put('/api/products/:id', auth, staff, upload.single('image'), wrap(async (re
   const setStock = req.body.stock !== undefined; // empty = stop counting
   const stock = !setStock || req.body.stock === '' ? null : parseInt(req.body.stock);
   if (stock !== null && !(stock >= 0)) throw bad('Stock must be 0 or more.');
+  const setCost = req.body.cost !== undefined; // empty = clear the cost
+  const cost = !setCost || req.body.cost === '' ? null : Number(req.body.cost);
+  if (cost !== null && !(cost >= 0)) throw bad('Cost must be 0 or more.');
   const { rowCount } = await pool.query(
-    `UPDATE products SET stock=CASE WHEN $10::boolean THEN $11::int ELSE stock END,
+    `UPDATE products SET cost=CASE WHEN $12::boolean THEN $13::numeric ELSE cost END,
+       stock=CASE WHEN $10::boolean THEN $11::int ELSE stock END,
        is_sold_out=CASE WHEN $10::boolean AND $11::int IS NOT NULL THEN $11::int = 0 ELSE is_sold_out END, title=COALESCE($1,title), description=COALESCE($2,description), price=COALESCE($3,price),
        image_data=COALESCE($4,image_data), image_mime=COALESCE($5,image_mime), category=COALESCE($6,category), discount_percent=COALESCE($7,discount_percent), owner_id=COALESCE($9,owner_id) WHERE id=$8`,
-    [title ?? null, description ?? null, price ?? null, f ? f.buffer : null, f ? f.mimetype : null, category ?? null, disc, req.params.id, newOwner, setStock, stock]
+    [title ?? null, description ?? null, price ?? null, f ? f.buffer : null, f ? f.mimetype : null, category ?? null, disc, req.params.id, newOwner, setStock, stock, setCost, cost]
   );
   if (!rowCount) throw bad('Product not found.', 404);
   res.json(await withImage(req.params.id));
+}));
+
+// Cost prices are private: only the owner (and Raven) can read them, and they never go out in the public product list.
+app.get('/api/admin/costs', auth, staff, wrap(async (req, res) => {
+  const { rows } = await pool.query('SELECT id,cost FROM products WHERE cost IS NOT NULL AND ($1 OR owner_id=$2)', [isMain(req.user), req.user.id]);
+  res.json(Object.fromEntries(rows.map((r) => [r.id, Number(r.cost)])));
 }));
 
 app.patch('/api/products/:id/sold-out', auth, staff, wrap(async (req, res) => {
@@ -422,6 +434,8 @@ app.post('/api/orders', auth, wrap(async (req, res) => {
     const byId = new Map(prods.map((r) => [r.id, r]));
     const { rows: combos } = await c.query(`${COMBO_SQL} WHERE c.id = ANY($1) AND ${COMBO_LIVE}`, [comboIds]);
     const comboById = new Map(combos.map((r) => [r.id, r]));
+    const allIds = [...new Set([...prodIds, ...combos.flatMap((cb) => cb.items.map((x) => x.product_id))])];
+    const costOf = new Map((await c.query('SELECT id,cost FROM products WHERE id = ANY($1)', [allIds])).rows.map((r) => [r.id, r.cost == null ? null : Number(r.cost)]));
     let total = 0;
     const lines = items.flatMap((i) => {
       const q = Math.min(99, parseInt(i.quantity));
@@ -433,9 +447,10 @@ app.post('/api/orders', auth, wrap(async (req, res) => {
         const groups = new Map();
         for (const x of cb.items) {
           const k = x.owner_id ?? cb.owner_id;
-          const g = groups.get(k) || { owner: k, names: [], value: 0 };
+          const g = groups.get(k) || { owner: k, names: [], value: 0, cost: 0 };
           g.names.push(`${x.quantity}x ${x.title}`);
           g.value += finalPrice(x) * x.quantity;
+          g.cost = g.cost === null || costOf.get(x.product_id) == null ? null : g.cost + costOf.get(x.product_id) * x.quantity;
           groups.set(k, g);
         }
         const list = [...groups.values()];
@@ -444,12 +459,12 @@ app.post('/api/orders', auth, wrap(async (req, res) => {
         parts = list.map((g, n) => {
           const share = n === list.length - 1 ? left : Math.round((Number(cb.price) * g.value / worth) * 100) / 100;
           left = Math.round((left - share) * 100) / 100;
-          return { pid: null, title: `Combo: ${cb.title} (${g.names.join(', ')})`, price: share, q, owner: g.owner };
+          return { pid: null, title: `Combo: ${cb.title} (${g.names.join(', ')})`, price: share, q, owner: g.owner, cost: g.cost };
         });
       } else {
         const p = byId.get(parseInt(i.product_id));
         if (!p || p.is_sold_out) throw bad('An item in your cart is no longer available.');
-        parts = [{ pid: p.id, title: p.title, price: finalPrice(p), q, owner: p.owner_id }];
+        parts = [{ pid: p.id, title: p.title, price: finalPrice(p), q, owner: p.owner_id, cost: costOf.get(p.id) ?? null }];
       }
       parts.forEach((l) => { total += l.price * l.q; });
       return parts;
@@ -489,8 +504,8 @@ app.post('/api/orders', auth, wrap(async (req, res) => {
     );
     if (promo) await c.query('UPDATE promo_codes SET used_count = used_count + 1 WHERE id=$1', [promo.id]);
     for (const l of lines)
-      await c.query('INSERT INTO order_items (order_id, product_id, title, unit_price, quantity, owner_id) VALUES ($1,$2,$3,$4,$5,$6)',
-        [o.id, l.pid, l.title, l.price.toFixed(2), l.q, l.owner ?? null]);
+      await c.query('INSERT INTO order_items (order_id, product_id, title, unit_price, quantity, owner_id, cost_price) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+        [o.id, l.pid, l.title, l.price.toFixed(2), l.q, l.owner ?? null, l.cost == null ? null : l.cost.toFixed(2)]);
     for (const p of counted) await c.query('INSERT INTO order_stock (order_id, product_id, qty) VALUES ($1,$2,$3)', [o.id, p.id, need.get(p.id)]);
     await c.query('COMMIT');
     for (const p of low) {
@@ -622,8 +637,8 @@ app.patch('/api/orders/:id/paid', auth, staff, wrap(async (req, res) => {
 
 // Cash page: what is still to collect, what each seller collected, and who owes whom.
 // Raven sees everything; a seller sees only her own figures.
-app.get('/api/admin/cash', auth, staff, wrap(async (req, res) => {
-  const me = req.user.id, main = isMain(req.user);
+const cashSummary = async (user) => {
+  const me = user.id, main = isMain(user);
   const { rows: ords } = await pool.query(`SELECT o.id,o.created_at,o.status,o.discount,o.paid_by,pc.owner_id AS promo_owner,COALESCE(pc.shop_wide,false) AS shop_wide
     FROM orders o LEFT JOIN promo_codes pc ON upper(pc.code)=upper(o.promo_code) WHERE o.status<>'cancelled'`);
   const { rows: its } = await pool.query('SELECT order_id,owner_id,SUM(unit_price*quantity)::float AS sub FROM order_items WHERE owner_id IS NOT NULL GROUP BY order_id,owner_id');
@@ -657,13 +672,14 @@ app.get('/api/admin/cash', auth, staff, wrap(async (req, res) => {
   }
   const { rows: recent } = await pool.query(`SELECT s.id,s.from_id,s.to_id,s.amount,s.created_at FROM settlements s
     WHERE $1 OR s.from_id=$2 OR s.to_id=$2 ORDER BY s.created_at DESC LIMIT 15`, [main, me]);
-  res.json({
+  return {
     unpaid,
     collected: [...collected].filter(([id]) => main || id === me).map(([id, c]) => ({ id, username: name.get(id), amount: Math.round(c.amount * 100) / 100, orders: c.orders })),
     balances,
     settlements: recent.map((r) => ({ ...r, from_name: name.get(r.from_id), to_name: name.get(r.to_id) })),
-  });
-}));
+  };
+};
+app.get('/api/admin/cash', auth, staff, wrap(async (req, res) => res.json(await cashSummary(req.user))));
 
 // Record money handed over between sellers. Only the one who received it (or Raven) can record it.
 app.post('/api/admin/settlements', auth, staff, wrap(async (req, res) => {
@@ -736,9 +752,8 @@ app.patch('/api/custom-requests/:id/respond', auth, wrap(async (req, res) => {
 /* ---------- Backup / restore (admin only) ---------- */
 const BACKUP_TABLES = ['users', 'customer_blocks', 'products', 'combos', 'combo_items', 'combo_approvals', 'promo_codes', 'settings', 'orders', 'order_items', 'custom_requests', 'order_approvals', 'order_stock', 'settlements']; // parents first
 
-app.get('/api/admin/export', auth, admin, wrap(async (req, res) => {
+const buildBackup = async () => {
   const tables = {};
-  await pool.query("INSERT INTO settings (key, value) VALUES ('last_backup', $1) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value", [new Date().toISOString()]);
   for (const t of BACKUP_TABLES) {
     const { rows } = await pool.query(`SELECT * FROM ${t} ORDER BY ${{ order_approvals: 'order_id', combo_approvals: 'combo_id', order_stock: 'order_id' }[t] || 'id'}`);
     tables[t] = rows.map((row) => {
@@ -746,8 +761,15 @@ app.get('/api/admin/export', auth, admin, wrap(async (req, res) => {
       return row;
     });
   }
-  res.set('Content-Type', 'application/json')
-    .send(JSON.stringify({ app: 'glass-shop', version: 1, exported_at: new Date().toISOString(), tables }));
+  return JSON.stringify({ app: 'glass-shop', version: 1, exported_at: new Date().toISOString(), tables });
+};
+const putSetting = (k, v) => pool.query('INSERT INTO settings (key, value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value', [k, String(v)]);
+const getSetting = async (k) => ((await pool.query('SELECT value FROM settings WHERE key=$1', [k])).rows[0] || {}).value || '';
+
+app.get('/api/admin/export', auth, admin, wrap(async (req, res) => {
+  const body = await buildBackup();
+  await putSetting('last_backup', new Date().toISOString());
+  res.set('Content-Type', 'application/json').send(body);
 }));
 
 // Replaces ALL data with the contents of a backup file, in one transaction (all or nothing).
@@ -969,6 +991,132 @@ app.delete('/api/customers/:id/block', auth, staff, wrap(async (req, res) => {
   res.sendStatus(204);
 }));
 
+/* ---------- Sales and profit report ---------- */
+const TZ = process.env.REPORT_TZ || 'Asia/Manila';
+const peso = (n) => '\u20B1' + Number(n).toFixed(2);
+const r2 = (n) => Math.round(n * 100) / 100;
+const localParts = () => {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hourCycle: 'h23', weekday: 'short' })
+    .formatToParts(new Date()).map((x) => [x.type, x.value]));
+  return { date: `${p.year}-${p.month}-${p.day}`, hour: Number(p.hour), dow: p.weekday };
+};
+const teamNames = async () => new Map((await pool.query("SELECT id,username FROM users WHERE role IN ('admin','seller')")).rows.map((r) => [r.id, r.username]));
+
+// Completed orders only. Raven sees the whole shop; a seller sees only her own items.
+// Profit = what she sold (after her share of any promo) minus the cost prices saved on the order lines.
+const reportData = async (user, days) => {
+  const main = isMain(user), mine = (id) => main || id === user.id;
+  const { rows: ords } = await pool.query(`SELECT o.id, to_char(o.created_at AT TIME ZONE $1,'YYYY-MM-DD') AS day, o.discount, pc.owner_id AS promo_owner, COALESCE(pc.shop_wide,false) AS shop_wide
+    FROM orders o LEFT JOIN promo_codes pc ON upper(pc.code)=upper(o.promo_code)
+    WHERE o.status='completed' AND o.created_at >= now() - make_interval(days => $2::int)`, [TZ, days]);
+  const { rows: its } = await pool.query(`SELECT order_id,owner_id,title,quantity,unit_price::float AS price,cost_price::float AS cost
+    FROM order_items WHERE owner_id IS NOT NULL AND order_id = ANY($1)`, [ords.map((o) => o.id)]);
+  const byOrder = new Map();
+  for (const i of its) { if (!byOrder.has(i.order_id)) byOrder.set(i.order_id, []); byOrder.get(i.order_id).push(i); }
+  const dayMap = new Map(), itemMap = new Map();
+  let missing = 0;
+  for (const o of ords) {
+    const lines = byOrder.get(o.id) || [], sub = new Map(), cost = new Map();
+    for (const i of lines) {
+      sub.set(i.owner_id, (sub.get(i.owner_id) || 0) + i.price * i.quantity);
+      if (i.cost != null) cost.set(i.owner_id, (cost.get(i.owner_id) || 0) + i.cost * i.quantity);
+    }
+    const owners = [...sub.keys()].filter(mine);
+    if (!owners.length) continue;
+    const share = shareOf(o, sub), d = dayMap.get(o.day) || { day: o.day, orders: 0, revenue: 0, profit: 0 };
+    d.orders++;
+    for (const id of owners) { d.revenue += share.get(id); d.profit += share.get(id) - (cost.get(id) || 0); }
+    dayMap.set(o.day, d);
+    for (const i of lines.filter((x) => mine(x.owner_id))) {
+      const t = itemMap.get(i.title) || { title: i.title, qty: 0, revenue: 0, profit: 0, known: true };
+      t.qty += i.quantity; t.revenue += i.price * i.quantity;
+      if (i.cost == null) { t.known = false; missing++; } else t.profit += (i.price - i.cost) * i.quantity;
+      itemMap.set(i.title, t);
+    }
+  }
+  return {
+    days: [...dayMap.values()].sort((a, b) => b.day.localeCompare(a.day)).map((d) => ({ ...d, revenue: r2(d.revenue), profit: r2(d.profit) })),
+    items: [...itemMap.values()].sort((a, b) => b.profit - a.profit).map((t) => ({ ...t, revenue: r2(t.revenue), profit: r2(t.profit) })),
+    missing_cost: missing,
+  };
+};
+
+app.get('/api/admin/report', auth, staff, wrap(async (req, res) => {
+  const days = Math.min(90, Math.max(1, parseInt(req.query.days) || 30));
+  res.json({ today: localParts().date, ...(await reportData(req.user, days)) });
+}));
+
+// Nightly message to Raven: today's sales, cash that was delivered but never marked paid, and who owes whom.
+async function sendClosing() {
+  const { rows: [a] } = await pool.query("SELECT id FROM users WHERE role='admin' ORDER BY id LIMIT 1");
+  if (!a) return;
+  const u = { id: a.id, role: 'admin' }, today = localParts().date, names = await teamNames();
+  const rep = await reportData(u, 2), cash = await cashSummary(u);
+  const d = rep.days.find((x) => x.day === today) || { orders: 0, revenue: 0, profit: 0 };
+  const miss = new Map();
+  for (const o of cash.unpaid) if (o.status === 'completed') for (const [id, v] of Object.entries(o.shares)) miss.set(Number(id), (miss.get(Number(id)) || 0) + v);
+  const L = [`Closing report ${today}`, `Completed today: ${d.orders} orders, sales ${peso(d.revenue)}, profit ${peso(d.profit)}${rep.missing_cost ? ' (some costs missing)' : ''}`];
+  L.push(miss.size ? 'Delivered but NOT marked paid: ' + [...miss].map(([id, v]) => `${names.get(id)} ${peso(v)}`).join(', ') : 'All delivered orders are marked paid.');
+  for (const b of cash.balances) L.push(`${b.from_name} owes ${b.to_name} ${peso(b.amount)}`);
+  notify(L.join('\n'));
+}
+app.post('/api/admin/report/send', auth, admin, wrap(async (req, res) => { await sendClosing(); res.json({ ok: true }); }));
+
+// Sunday message to each seller who has set a phone alert topic.
+async function sendWeekly() {
+  const { rows } = await pool.query("SELECT id FROM users WHERE role='seller' AND ntfy_topic <> ''");
+  const msgs = new Map();
+  for (const r of rows) {
+    const u = { id: r.id, role: 'seller' }, rep = await reportData(u, 7), cash = await cashSummary(u);
+    const sum = (k) => rep.days.reduce((t, d) => t + d[k], 0);
+    const unpaid = cash.unpaid.reduce((t, o) => t + (o.shares[r.id] || 0), 0);
+    const L = [`Your week: ${sum('orders')} orders, sales ${peso(sum('revenue'))}, profit ${peso(sum('profit'))}${rep.missing_cost ? ' (some costs missing)' : ''}`];
+    if (unpaid > 0) L.push(`Not yet paid on your orders: ${peso(unpaid)}`);
+    for (const b of cash.balances) L.push(b.from === r.id ? `You owe ${b.to_name} ${peso(b.amount)}` : `${b.from_name} owes you ${peso(b.amount)}`);
+    msgs.set(r.id, L.join('\n'));
+  }
+  if (msgs.size) await notifySellers(msgs);
+}
+
+/* ---------- Automatic backup and scheduled messages ---------- */
+// Sends the backup file to Telegram (best: keeps the file) or ntfy (the file is only kept a few hours, so open it soon).
+async function autoBackup() {
+  const tg = process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID, nt = process.env.NTFY_TOPIC;
+  if (!tg && !nt) return;
+  const name = `shop-backup-${new Date().toISOString().slice(0, 10)}.json`;
+  try {
+    const body = await buildBackup();
+    let r;
+    if (tg) {
+      const fd = new FormData();
+      fd.append('chat_id', process.env.TELEGRAM_CHAT_ID);
+      fd.append('document', new Blob([body], { type: 'application/json' }), name);
+      r = await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendDocument`, { method: 'POST', body: fd });
+    } else {
+      r = await fetch(`https://ntfy.sh/${encodeURIComponent(nt)}`, { method: 'PUT', body, headers: { Filename: name, Title: 'Glass Shop backup' } });
+    }
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    await putSetting('last_backup', new Date().toISOString());
+  } catch (e) {
+    console.error('Auto backup failed:', e.message);
+    notify('Auto backup failed. Please download one by hand in Admin > Backup.');
+  }
+}
+
+// Checked every 5 minutes. If the free server was asleep at the set hour, it catches up when it wakes the same day.
+let busy = false, lastBackupTry = 0;
+async function tick() {
+  if (busy) return;
+  busy = true;
+  try {
+    const t = localParts(), hour = Number(process.env.REPORT_HOUR ?? 21);
+    if (t.hour >= hour && (await getSetting('last_daily')) !== t.date) { await putSetting('last_daily', t.date); await sendClosing(); }
+    if (t.dow === 'Sun' && t.hour >= hour && (await getSetting('last_weekly')) !== t.date) { await putSetting('last_weekly', t.date); await sendWeekly(); }
+    const last = await getSetting('last_backup');
+    if ((!last || Date.now() - new Date(last) > 24 * 3600e3) && Date.now() - lastBackupTry > 3600e3) { lastBackupTry = Date.now(); await autoBackup(); }
+  } catch (e) { console.error('Scheduled job failed:', e.message); } finally { busy = false; }
+}
+
 /* ---------- Errors & boot ---------- */
 app.use((err, req, res, next) => {
   if (err.code === 'LIMIT_FILE_SIZE') err = bad('Image must be 5 MB or smaller.');
@@ -993,6 +1141,8 @@ init()
       PRIMARY KEY (combo_id, owner_id)
     );
     ALTER TABLE products ADD COLUMN IF NOT EXISTS stock INT CHECK (stock >= 0);
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS cost NUMERIC(10,2) CHECK (cost >= 0);
+    ALTER TABLE order_items ADD COLUMN IF NOT EXISTS cost_price NUMERIC(10,2);
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS paid_by INT REFERENCES users(id) ON DELETE SET NULL;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS paid_at TIMESTAMPTZ;
     CREATE TABLE IF NOT EXISTS order_stock (
@@ -1017,5 +1167,5 @@ init()
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       UNIQUE (user_id, blocked_by)
     );`))
-  .then(() => app.listen(PORT, () => console.log(`Glass Shop running on :${PORT}`)))
+  .then(() => app.listen(PORT, () => { console.log(`Glass Shop running on :${PORT}`); setInterval(tick, 5 * 60 * 1000); setTimeout(tick, 20000); }))
   .catch((e) => { console.error('Startup failed:', e); process.exit(1); });
