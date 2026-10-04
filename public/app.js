@@ -45,6 +45,11 @@ function toast(msg) {
   t.textContent = msg; t.classList.add('show');
   setTimeout(() => t.classList.remove('show'), 2600);
 }
+// Replays the soft entrance animation on whatever is below the tab bar (see .fx in style.css).
+function animateApp() {
+  const a = $('#app'); if (!a) return;
+  a.classList.remove('fx'); void a.offsetWidth; a.classList.add('fx');
+}
 const saveCart = () => { localStorage.cart = JSON.stringify(cart); renderNav(); };
 const setSession = (t, u) => { token = t; user = u; statusMap = null; crMap = null; localStorage.token = t; localStorage.user = JSON.stringify(u); };
 const clearSession = () => { token = ''; user = null; statusMap = null; crMap = null; localStorage.removeItem('token'); localStorage.removeItem('user'); };
@@ -491,8 +496,8 @@ async function refreshReport() { repData = await api('/api/admin/report?days=30'
 function drawReport() {
   const el = $('#reportbox'); if (!el || !repData) return;
   const t = repData.days.find((d) => d.day === repData.today) || { orders: 0, revenue: 0, profit: 0 };
-  const who = (repData.people || []).map((x) => `<tr><td><b>${esc(x.username)}</b>${x.role === 'admin' ? ' <span class="muted">(admin)</span>' : ''}</td><td>Potential income <b>${money(x.potential)}</b> <span class="muted">(${x.open} open order${x.open === 1 ? '' : 's'})</span></td><td>Gross <b>${money(x.gross)}</b> <span class="muted">(${x.done} completed)</span></td></tr>`).join('');
-  el.innerHTML = `<h3>${isRaven() ? 'Income per seller' : 'Your income'}</h3><p class="muted">Potential income = pending and packed orders still to come. Gross = completed orders. Each person's own items only, all time.</p>${who ? `<table>${who}</table>` : ''}
+  const who = (repData.people || []).map((x) => `<tr><td><b>${esc(x.username)}</b>${x.role === 'admin' ? ' <span class="muted">(admin)</span>' : ''}</td><td>Potential income <b>${money(x.potential)}</b> <span class="muted">(${x.open} open order${x.open === 1 ? '' : 's'}${x.missing_cost ? ', some costs missing' : ''})</span></td><td>Gross <b>${money(x.gross)}</b> <span class="muted">(${x.done} completed)</span></td></tr>`).join('');
+  el.innerHTML = `<h3>${isRaven() ? 'Income per seller' : 'Your income'}</h3><p class="muted">Potential income = what is left of pending and packed orders after the cost prices. Gross = sales of completed orders (before costs). Each person's own items only, all time.</p>${who ? `<table>${who}</table>` : ''}
     <h3>Today</h3><p><b>${t.orders}</b> completed orders | Sales <b>${money(t.revenue)}</b> | Profit <b>${money(t.profit)}</b></p>
     ${repData.missing_cost ? `<p class="muted">${repData.missing_cost} order lines have no cost price, so profit is too high. Set a cost on each product (Products tab, Edit). Only new orders pick it up.</p>` : ''}
     <h3>Last 30 days</h3>${repData.days.length ? `<table>${repData.days.map((d) => `<tr><td><b>${esc(d.day)}</b></td><td>${d.orders} order${d.orders === 1 ? '' : 's'}</td><td>Sales ${money(d.revenue)}</td><td>Profit <b>${money(d.profit)}</b></td></tr>`).join('')}</table>` : '<p>No completed orders yet.</p>'}
@@ -870,7 +875,7 @@ function quoteDialog(id) {
 
 /* ---------- Actions ---------- */
 const actions = {
-  shop: () => { view = 'shop'; render(); },
+  shop: () => { view = 'shop'; render(); animateApp(); },
   cat: (id, d) => { catFilter = d.cat; renderShop(); },
   'cust-block': async (id, d) => {
     const reason = prompt(`Block ${d.name || 'this customer'}? They will not be able to order ${isRaven() ? 'from anyone' : 'your items'}.\nWhy? (optional)`);
@@ -939,10 +944,20 @@ const actions = {
     await api('/api/products/category', { method: 'PATCH', json: { ids: [...selected], category: d.cat } });
     selected.clear(); await loadProducts(); toast(`Moved to ${CATS[d.cat]}.`);
   },
-  admin: () => { view = 'admin'; render(); },
-  orders: () => { view = 'orders'; render(); },
-  custom: () => { view = 'custom'; render(); },
-  admintab: (id, d) => { adminTab = d.tab; renderAdmin(); },
+  admin: () => { view = 'admin'; render(); animateApp(); },
+  orders: () => { view = 'orders'; render(); animateApp(); },
+  custom: () => { view = 'custom'; render(); animateApp(); },
+  admintab: (id, d) => {
+    // Keep the page where it was: remember the scroll position and how far the tab bar was scrolled sideways,
+    // and hold the page height while the new tab loads so the browser doesn't jump up.
+    const app = $('#app'), y = window.scrollY, tx = ($('.tabs') || {}).scrollLeft || 0;
+    app.style.minHeight = app.offsetHeight + 'px';
+    adminTab = d.tab; renderAdmin();
+    const bar = $('.tabs'); if (bar) bar.scrollLeft = tx;
+    window.scrollTo(0, y);
+    animateApp();
+    setTimeout(() => { app.style.minHeight = ''; }, 900);
+  },
   quote: (id) => quoteDialog(id),
   backup: async () => {
     const r = await fetch('/api/admin/export', { headers: { Authorization: 'Bearer ' + token } });
