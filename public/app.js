@@ -4,6 +4,7 @@ const CURRENCY = '₱';
 const money = (n) => CURRENCY + Number(n).toFixed(2);
 // Price after the product's % discount (the server works it out again when you order).
 const fin = (p) => Math.round(Number(p.price) * (100 - (Number(p.discount_percent) || 0))) / 100;
+const LOW_STOCK = 5;
 const CATS = { drinks: 'Drinks', snacks: 'Snacks' };
 const STATUS = { pending: 'Pending', packed: 'Packed', completed: 'Completed', cancelled: 'Cancelled' };
 const CR_STATUS = { pending: 'Waiting for a price', quoted: 'Price offered', accepted: 'Accepted', declined: 'Declined', unavailable: "Can't provide" };
@@ -81,6 +82,7 @@ const productCard = (p) => {
       <div class="img">${p.image_url ? `<img loading="lazy" src="${esc(p.image_url)}" alt="${esc(p.title)}">` : ''}
         ${p.is_sold_out ? '<span class="badge">Sold out</span>' : ''}${off ? `<span class="badge off">-${off}%</span>` : ''}</div>
       <h3>${esc(p.title)}</h3><p>${esc(p.description)}</p>
+      ${!p.is_sold_out && p.stock != null && p.stock <= LOW_STOCK ? `<p class="muted"><b>Only ${p.stock} left</b></p>` : ''}
       <footer><span>${off ? `<span class="was">${money(p.price)}</span> ` : ''}<b>${money(fin(p))}</b></span>
         <button class="primary" data-act="add" data-id="${p.id}" ${p.is_sold_out ? 'disabled' : ''}>Add to cart</button></footer>
     </article>`;
@@ -140,7 +142,7 @@ const productTable = () => `<table>${products.map((p) => {
   return `<tr>
     <td>${mine ? `<input type="checkbox" class="pick" value="${p.id}" ${selected.has(p.id) ? 'checked' : ''}>` : ''}</td>
     <td>${p.image_url ? `<img class="thumb" src="${esc(p.image_url)}" alt="">` : ''}</td>
-    <td><b>${esc(p.title)}</b><br>${money(p.price)}${p.discount_percent ? ` (-${p.discount_percent}%)` : ''} | ${CATS[p.category] || 'Snacks'}${p.is_sold_out ? ' - sold out' : ''}${ownerName(p.owner_id) ? ` | by ${esc(ownerName(p.owner_id))}` : ''}</td>
+    <td><b>${esc(p.title)}</b><br>${money(p.price)}${p.discount_percent ? ` (-${p.discount_percent}%)` : ''} | ${CATS[p.category] || 'Snacks'}${p.stock != null ? ` | Stock: ${p.stock}${p.stock > 0 && p.stock <= LOW_STOCK ? ' (low!)' : ''}` : ''}${p.is_sold_out ? ' - sold out' : ''}${ownerName(p.owner_id) ? ` | by ${esc(ownerName(p.owner_id))}` : ''}</td>
     <td>${mine ? `<div class="actions">
       <button data-act="edit" data-id="${p.id}">Edit</button>
       <button data-act="toggle" data-id="${p.id}">${p.is_sold_out ? 'Mark available' : 'Mark sold out'}</button>
@@ -155,6 +157,11 @@ function fillProducts() {
   for (const id of [...selected]) if (!myProducts().some((p) => p.id === id)) selected.delete(id);
   const el = $('#plist');
   if (el) el.innerHTML = productTable();
+  const lb = $('#lowbox');
+  if (lb) {
+    const m = myProducts().filter((p) => p.stock != null), out = m.filter((p) => p.stock === 0), low = m.filter((p) => p.stock > 0 && p.stock <= LOW_STOCK);
+    lb.innerHTML = out.length || low.length ? `<section class="panel glass">${low.length ? `<p style="margin:0"><b>Running low:</b> ${low.map((p) => `${esc(p.title)} (${p.stock})`).join(', ')}</p>` : ''}${out.length ? `<p style="margin:0"><b>Sold out:</b> ${out.map((p) => esc(p.title)).join(', ')}</p>` : ''}</section>` : '';
+  }
   updatePicks();
 }
 
@@ -185,14 +192,19 @@ const statusOf = (o) => {
   return me ? me.status : o.status;
 };
 
+const paidTag = (o) => (o.paid_by ? `<span class="pill st-packed">Paid - ${esc(o.paid_name || '')}</span>`
+  : ['packed', 'completed'].includes(o.status) ? `<span class="pill st-cancelled">Not paid yet</span>` : '');
+const paidBtn = (o) => (!['packed', 'completed'].includes(o.status) ? ''
+  : !o.paid_by ? `<button class="primary" data-act="paid" data-id="${o.id}" data-paid="1">Mark paid (cash in hand)</button>`
+  : o.paid_by === user.id || isRaven() ? `<button data-act="paid" data-id="${o.id}" data-paid="0">Undo paid</button>` : '');
 const orderCard = (o) => `
     <section class="panel glass">
-      <div class="between"><b>#${o.id} - ${esc(o.username)}</b><span class="pill st-${statusOf(o)}">${STATUS[statusOf(o)] || esc(statusOf(o))}</span></div>
+      <div class="between"><b>#${o.id} - ${esc(o.username)}</b><span>${paidTag(o)} <span class="pill st-${statusOf(o)}">${STATUS[statusOf(o)] || esc(statusOf(o))}</span></span></div>
       <p class="muted" style="margin:2px 0 10px">${new Date(o.created_at).toLocaleString()}</p>
       ${orderLines(o)}
       ${partsLine(o)}
       ${o.note ? `<p class="muted" style="margin:8px 0 0">Note: ${esc(o.note)}</p>` : ''}
-      <div class="actions" style="margin-top:12px">${adminBtns(o)}<button data-act="print-order" data-id="${o.id}">Print receipt</button>${o.user_id ? `<button class="danger" data-act="cust-block" data-id="${o.user_id}" data-name="${esc(o.username)}">Block customer</button>` : ''}</div>
+      <div class="actions" style="margin-top:12px">${adminBtns(o)}${paidBtn(o)}<button data-act="print-order" data-id="${o.id}">Print receipt</button>${o.user_id ? `<button class="danger" data-act="cust-block" data-id="${o.user_id}" data-name="${esc(o.username)}">Block customer</button>` : ''}</div>
     </section>`;
 
 const dayLabel = (d) => {
@@ -462,11 +474,45 @@ async function refreshSellers() {
   fillProducts();
 }
 
+async function refreshBackup() {
+  const { last } = await api('/api/admin/backup-status');
+  const el = $('#bkbanner'); if (!el) return;
+  const days = last ? Math.floor((Date.now() - new Date(last)) / 86400000) : null, late = days === null || days >= 7;
+  el.innerHTML = `<section class="panel glass between" style="${late ? 'border-color:rgba(220,38,112,.7)' : ''}"><span>${days === null ? 'No backup has been downloaded yet.' : `Last backup was ${days === 0 ? 'today' : `${days} day${days === 1 ? '' : 's'} ago`}.`}${late ? ' Render can delete the database, so download one now.' : ''}</span><button class="primary" data-act="backup">Download backup</button></section>`;
+}
+
+// Cash page: cash still to collect per seller, what each collected, and who owes whom.
+let cashData = null;
+async function refreshCash() { cashData = await api('/api/admin/cash'); drawCash(); }
+const tname = (id) => (team.find((x) => x.id === id) || {}).username || '?';
+function drawCash() {
+  const el = $('#cashbox'); if (!el || !cashData) return;
+  const today = new Date().toDateString(), by = {};
+  for (const o of cashData.unpaid) for (const [id, amt] of Object.entries(o.shares)) {
+    const r = by[id] ||= { t: 0, tn: 0, e: 0, en: 0, m: 0, mn: 0 };
+    if (new Date(o.created_at).toDateString() === today) { r.t += amt; r.tn++; } else { r.e += amt; r.en++; }
+    if (o.status === 'completed') { r.m += amt; r.mn++; }
+  }
+  const rows = Object.entries(by).map(([id, r]) => `<tr><td><b>${esc(tname(Number(id)))}</b></td>
+    <td>Today: <b>${money(r.t)}</b> <span class="muted">(${r.tn})</span></td>
+    <td>Earlier: <b>${money(r.e)}</b> <span class="muted">(${r.en})</span></td>
+    <td>${r.mn ? `<b style="color:#dc2670">Delivered, not marked paid: ${money(r.m)} (${r.mn})</b>` : '<span class="muted">Nothing missing</span>'}</td></tr>`).join('');
+  const bal = cashData.balances.map((b) => `<tr><td><b>${esc(b.from_name)}</b> owes <b>${esc(b.to_name)}</b></td><td><b>${money(b.amount)}</b></td>
+    <td>${isRaven() || b.to === user.id ? `<button data-act="settle" data-from="${b.from}" data-to="${b.to}" data-amt="${b.amount}" data-names="${esc(b.from_name)} to ${esc(b.to_name)}">Mark paid</button>` : ''}</td></tr>`).join('');
+  el.innerHTML = `<h3>Cash still to collect</h3><p class="muted">Unpaid orders by seller. Tick Paid on the order when the money is in your hand.</p>
+    ${rows ? `<table>${rows}</table>` : '<p>Nothing to collect.</p>'}
+    <h3>What each seller collected</h3>
+    ${cashData.collected.length ? `<table>${cashData.collected.map((c) => `<tr><td><b>${esc(c.username)}</b></td><td>${money(c.amount)}</td><td class="muted">${c.orders} order${c.orders === 1 ? '' : 's'}</td></tr>`).join('')}</table>` : '<p>No cash marked paid yet.</p>'}
+    <h3>Who owes who</h3>
+    ${bal ? `<table>${bal}</table>` : '<p>Everyone is settled up.</p>'}
+    ${cashData.settlements.length ? `<h3>Settled so far</h3><p class="muted">${cashData.settlements.map((x) => `${new Date(x.created_at).toLocaleDateString()}: ${esc(x.from_name)} paid ${esc(x.to_name)} ${money(x.amount)}`).join('<br>')}</p>` : ''}`;
+}
+
 function renderAdmin() {
   adminHtml = ''; customAdminHtml = '';
   const tab = (id, label, extra = '') =>
     `<button id="tab-${id}" class="${adminTab === id ? 'primary' : ''}" data-act="admintab" data-tab="${id}">${label}${extra}</button>`;
-  const tabs = `<div class="tabs">${tab('products', 'Products')}${tab('orders', 'Orders', pendingCount ? ` (${pendingCount})` : '')}${tab('custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : '')}${tab('combos', 'Combos')}${tab('promos', 'Promos')}${tab('customers', 'Customers')}${isRaven() ? tab('sellers', 'Sellers') + tab('backup', 'Backup') : tab('alerts', 'Alerts')}</div>`;
+  const tabs = `<div class="tabs">${tab('products', 'Products')}${tab('orders', 'Orders', pendingCount ? ` (${pendingCount})` : '')}${tab('custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : '')}${tab('cash', 'Cash')}${tab('combos', 'Combos')}${tab('promos', 'Promos')}${tab('customers', 'Customers')}${isRaven() ? tab('sellers', 'Sellers') + tab('backup', 'Backup') : tab('alerts', 'Alerts')}</div>`;
   const productsView = `
     <section class="panel glass">
       <h2 id="form-title">Add a product</h2>
@@ -476,12 +522,14 @@ function renderAdmin() {
         <div id="ownerbox"></div>
         <label>Category</label><select name="category"><option value="drinks">Drinks</option><option value="snacks">Snacks</option></select>
         <label>Discount % (0 for none)</label><input name="discount_percent" type="number" min="0" max="90" value="0">
+        <label>Stock (how many you have; leave empty to not count)</label><input name="stock" type="number" min="0" step="1">
         <label>Description</label><textarea name="description" rows="3"></textarea>
         <label>Image (max 5 MB; leave empty to keep the current one)</label><input name="image" type="file" accept="image/*">
         <button class="primary" type="submit" id="save">Add product</button>
         <button type="button" data-act="reset-form">Clear</button>
       </form>
     </section>
+    <div id="lowbox"></div>
     <section class="panel glass table-wrap"><h2>Products</h2>
       <div class="bulk">
         <label><input type="checkbox" id="pickall"> Select all</label>
@@ -506,6 +554,7 @@ function renderAdmin() {
     </div>
     <p class="muted" id="ocount" style="margin:0 0 4px"></p>
     <div id="olist"><p>Loading...</p></div>`;
+  const cashView = '<section class="panel glass"><h2>Cash</h2><div id="cashbox"><p>Loading...</p></div></section>';
   const customView = '<section class="panel glass table-wrap"><h2>Custom orders</h2><div id="clist"><p>Loading...</p></div></section>';
   const combosView = `<section class="panel glass">
       <h2>Create a combo</h2>
@@ -575,7 +624,7 @@ function renderAdmin() {
   const customersView = `<h2>Customers</h2>
     <p class="muted">Block people who abuse the shop (fake orders, not showing up). ${isRaven() ? 'Your block covers the whole shop.' : 'Your block stops them ordering your items only.'} The list shows the most cancelled orders first.</p>
     <div id="custlist"><p>Loading...</p></div>`;
-  $('#app').innerHTML = tabs + (adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'alerts' && !isRaven() ? alertsView : adminTab === 'combos' ? combosView : adminTab === 'promos' ? promosView : adminTab === 'customers' ? customersView : productsView);
+  $('#app').innerHTML = (isRaven() ? '<div id="bkbanner"></div>' : '') + tabs + (adminTab === 'cash' ? cashView : adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'alerts' && !isRaven() ? alertsView : adminTab === 'combos' ? combosView : adminTab === 'promos' ? promosView : adminTab === 'customers' ? customersView : productsView);
   fillProducts();
   comboAdminHtml = ''; refreshAdminCombos().catch(() => {});
   promoAdminHtml = ''; refreshAdminPromos().catch(() => {});
@@ -584,6 +633,8 @@ function renderAdmin() {
   refreshOrders().catch(() => {});
   refreshCustom().catch(() => {});
   refreshTeam().catch(() => {});
+  if (adminTab === 'cash') refreshCash().catch(() => {});
+  if (isRaven()) refreshBackup().catch(() => {});
   if (isRaven()) refreshSellers().catch(() => {}); else loadAlerts().catch(() => {});
 }
 
@@ -859,6 +910,7 @@ const actions = {
     document.body.appendChild(link); link.click(); link.remove();
     setTimeout(() => URL.revokeObjectURL(link.href), 10000);
     toast('Backup downloaded. Keep the file somewhere safe.');
+    refreshBackup().catch(() => {});
   },
   restore: async () => {
     const f = $('#bfile').files[0];
@@ -882,9 +934,23 @@ const actions = {
     if (!confirm('Cancel this order?')) return;
     await api(`/api/orders/${id}/cancel`, { method: 'PATCH' }); await fillMine(); toast('Order cancelled.');
   },
+  paid: async (id, d) => {
+    await api(`/api/orders/${id}/paid`, { method: 'PATCH', json: { paid: d.paid === '1' } });
+    await refreshOrders(); if (adminTab === 'cash') await refreshCash(); toast(d.paid === '1' ? 'Marked paid.' : 'Paid tick removed.');
+  },
+  settle: async (id, d) => {
+    const v = prompt(`How much did ${d.names} hand over?`, d.amt);
+    if (v === null) return;
+    await api('/api/admin/settlements', { method: 'POST', json: { from_id: d.from, to_id: d.to, amount: v } });
+    await refreshCash(); toast('Recorded.');
+  },
   setstatus: async (id, d) => {
     if (d.status === 'cancelled' && !confirm('Cancel this order?')) return;
     const r = await api(`/api/orders/${id}/status`, { method: 'PATCH', json: { status: d.status } });
+    const o0 = ordersCache.find((x) => x.id == id);
+    if (d.status === 'completed' && o0 && !o0.paid_by && confirm('Did you collect the cash?\nOK = tick Paid. Cancel = not yet.')) {
+      try { await api(`/api/orders/${id}/paid`, { method: 'PATCH', json: { paid: true } }); } catch (e) { toast(e.message); }
+    }
     await refreshOrders();
     toast(r.waiting && r.waiting.length ? `Saved. Waiting for ${r.waiting.join(', ')} to approve too.`
       : d.status === 'packed' ? 'Marked packed. The customer is notified.' : 'Order updated.');
@@ -905,7 +971,7 @@ const actions = {
   delete: async (id) => { if (confirm('Delete this product?')) { await api(`/api/products/${id}`, { method: 'DELETE' }); await loadProducts(); toast('Deleted.'); } },
   edit: (id) => {
     const p = products.find((x) => x.id == id), f = $('#pform');
-    f.dataset.id = id; f.title.value = p.title; f.price.value = p.price; f.description.value = p.description; f.category.value = p.category || 'snacks'; f.discount_percent.value = p.discount_percent || 0; if (f.owner_id) f.owner_id.value = p.owner_id || user.id;
+    f.dataset.id = id; f.title.value = p.title; f.price.value = p.price; f.description.value = p.description; f.category.value = p.category || 'snacks'; f.discount_percent.value = p.discount_percent || 0; f.stock.value = p.stock ?? ''; if (f.owner_id) f.owner_id.value = p.owner_id || user.id;
     $('#form-title').textContent = 'Edit product'; $('#save').textContent = 'Save changes';
     f.scrollIntoView({ behavior: 'smooth' });
   },
