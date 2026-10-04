@@ -994,7 +994,8 @@ app.delete('/api/promos/:id', auth, staff, wrap(async (req, res) => {
 app.get('/api/settings', wrap(async (req, res) => {
   const { rows } = await pool.query('SELECT key,value FROM settings');
   const o = Object.fromEntries(rows.map((r) => [r.key, r.value]));
-  res.json({ banner: o.banner || '', stamp_reward: o.stamp_reward || 'a free snack' });
+  const { rows: [m] } = await pool.query("SELECT id FROM users WHERE role='admin' ORDER BY id LIMIT 1"); // raven: his products are pinned to the top of the shop
+  res.json({ banner: o.banner || '', stamp_reward: o.stamp_reward || 'a free snack', main_owner_id: m ? m.id : null });
 }));
 
 app.put('/api/admin/settings', auth, admin, wrap(async (req, res) => {
