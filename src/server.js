@@ -1116,8 +1116,9 @@ const reportData = async (user, days) => {
   };
 };
 
-// Per seller / admin (never a grand total). Gross = sales of completed orders. Potential income = what is left of pending + packed
-// orders after the cost prices (sales after her share of any promo, minus costs). Raven sees one row per person; a seller sees only her own row.
+// Per seller / admin (never a grand total). Gross = sales of completed orders. Income = gross minus the cost prices (the same profit the
+// report uses). Potential income = the same thing for pending + packed orders. Her own items only, after her share of any promo.
+// Raven sees one row per person; a seller sees only her own row.
 const peopleTotals = async (user) => {
   const main = isMain(user);
   const { rows: ords } = await pool.query(`SELECT o.id,o.status,o.discount,pc.owner_id AS promo_owner,COALESCE(pc.shop_wide,false) AS shop_wide
@@ -1128,20 +1129,18 @@ const peopleTotals = async (user) => {
   const { rows: cs } = await pool.query('SELECT order_id,owner_id,SUM(COALESCE(cost_price,0)*quantity)::float AS cost,bool_or(cost_price IS NULL) AS missing FROM order_items WHERE owner_id IS NOT NULL GROUP BY order_id,owner_id');
   const costs = new Map(cs.map((r) => [`${r.order_id}>${r.owner_id}`, r]));
   const { rows: team } = await pool.query("SELECT id,username,role FROM users WHERE role IN ('admin','seller') ORDER BY (role='admin') DESC, id");
-  const out = new Map(team.map((u) => [u.id, { id: u.id, username: u.username, role: u.role, gross: 0, potential: 0, done: 0, open: 0, missing_cost: false }]));
+  const out = new Map(team.map((u) => [u.id, { id: u.id, username: u.username, role: u.role, gross: 0, income: 0, potential: 0, done: 0, open: 0, missing_cost: false }]));
   for (const o of ords) {
     const sub = subs.get(o.id); if (!sub) continue;
     for (const [id, v] of shareOf(o, sub)) {
       const row = out.get(id); if (!row) continue;
-      if (o.status === 'completed') { row.gross += v; row.done++; }
-      else {
-        const c = costs.get(`${o.id}>${id}`) || { cost: 0, missing: false };
-        row.potential += v - c.cost; row.open++;
-        if (c.missing) row.missing_cost = true;
-      }
+      const c = costs.get(`${o.id}>${id}`) || { cost: 0, missing: false };
+      if (o.status === 'completed') { row.gross += v; row.income += v - c.cost; row.done++; }
+      else { row.potential += v - c.cost; row.open++; }
+      if (c.missing) row.missing_cost = true;
     }
   }
-  return [...out.values()].filter((r) => main || r.id === user.id).map((r) => ({ ...r, gross: r2(r.gross), potential: r2(r.potential) }));
+  return [...out.values()].filter((r) => main || r.id === user.id).map((r) => ({ ...r, gross: r2(r.gross), income: r2(r.income), potential: r2(r.potential) }));
 };
 
 app.get('/api/admin/report', auth, staff, wrap(async (req, res) => {
