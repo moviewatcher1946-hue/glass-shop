@@ -20,6 +20,7 @@ let combos = [], comboAdminHtml = '';
 let ordersCache = [], shownOrders = [], ordStatus = 'active', ordRange = 'all', ordDay = '', custHtml = '';
 let promo = null, cartNote = '', settings = { banner: '', stamp_reward: 'a free snack' }, promoAdminHtml = '', myOrders = [];
 let sig = '', lastOrderId = null, mineHtml = '', adminHtml = '', statusMap = null, adminTab = 'products', pendingCount = 0;
+let ordSearch = '', costMap = {}, repData = null;
 let customHtml = '', customAdminHtml = '', crMap = null, crList = [], lastCrId = null, pendingCustom = 0;
 
 async function api(url, { json, ...opt } = {}) {
@@ -142,7 +143,7 @@ const productTable = () => `<table>${products.map((p) => {
   return `<tr>
     <td>${mine ? `<input type="checkbox" class="pick" value="${p.id}" ${selected.has(p.id) ? 'checked' : ''}>` : ''}</td>
     <td>${p.image_url ? `<img class="thumb" src="${esc(p.image_url)}" alt="">` : ''}</td>
-    <td><b>${esc(p.title)}</b><br>${money(p.price)}${p.discount_percent ? ` (-${p.discount_percent}%)` : ''} | ${CATS[p.category] || 'Snacks'}${p.stock != null ? ` | Stock: ${p.stock}${p.stock > 0 && p.stock <= LOW_STOCK ? ' (low!)' : ''}` : ''}${p.is_sold_out ? ' - sold out' : ''}${ownerName(p.owner_id) ? ` | by ${esc(ownerName(p.owner_id))}` : ''}</td>
+    <td><b>${esc(p.title)}</b><br>${money(p.price)}${p.discount_percent ? ` (-${p.discount_percent}%)` : ''} | ${CATS[p.category] || 'Snacks'}${mine && costMap[p.id] != null ? ` | Profit ${money(fin(p) - Number(costMap[p.id]))} each` : ''}${p.stock != null ? ` | Stock: ${p.stock}${p.stock > 0 && p.stock <= LOW_STOCK ? ' (low!)' : ''}` : ''}${p.is_sold_out ? ' - sold out' : ''}${ownerName(p.owner_id) ? ` | by ${esc(ownerName(p.owner_id))}` : ''}</td>
     <td>${mine ? `<div class="actions">
       <button data-act="edit" data-id="${p.id}">Edit</button>
       <button data-act="toggle" data-id="${p.id}">${p.is_sold_out ? 'Mark available' : 'Mark sold out'}</button>
@@ -225,6 +226,7 @@ function paintOrderFilters() {
   if ($('#orange')) $('#orange').value = ordRange;
   if ($('#oday')) $('#oday').value = ordDay;
   if ($('#onlymine')) $('#onlymine').checked = mineOnly();
+  if ($('#osearch')) $('#osearch').value = ordSearch;
 }
 
 function drawOrders() {
@@ -239,7 +241,8 @@ function drawOrders() {
     if (ordRange === 'week') return d >= new Date(now.getTime() - 7 * 86400000);
     return true;
   };
-  shownOrders = ordersCache.filter((o) => inRange(o) && (ordStatus === 'all' || (ordStatus === 'active' ? ['pending', 'packed'].includes(statusOf(o)) : statusOf(o) === ordStatus)));
+  const q = ordSearch.trim().toLowerCase().replace(/^#/, ''); // searching looks through every order, whatever the filters say
+  shownOrders = q ? ordersCache.filter((o) => String(o.id) === q || String(o.username).toLowerCase().includes(q)) : ordersCache.filter((o) => inRange(o) && (ordStatus === 'all' || (ordStatus === 'active' ? ['pending', 'packed'].includes(statusOf(o)) : statusOf(o) === ordStatus)));
   const c = $('#ocount');
   if (c) c.textContent = `${shownOrders.length} order${shownOrders.length === 1 ? '' : 's'} shown`;
 
@@ -474,6 +477,17 @@ async function refreshSellers() {
   fillProducts();
 }
 
+async function refreshCosts() { costMap = await api('/api/admin/costs'); fillProducts(); }
+async function refreshReport() { repData = await api('/api/admin/report?days=30'); drawReport(); }
+function drawReport() {
+  const el = $('#reportbox'); if (!el || !repData) return;
+  const t = repData.days.find((d) => d.day === repData.today) || { orders: 0, revenue: 0, profit: 0 };
+  el.innerHTML = `<h3>Today</h3><p><b>${t.orders}</b> completed orders | Sales <b>${money(t.revenue)}</b> | Profit <b>${money(t.profit)}</b></p>
+    ${repData.missing_cost ? `<p class="muted">${repData.missing_cost} order lines have no cost price, so profit is too high. Set a cost on each product (Products tab, Edit). Only new orders pick it up.</p>` : ''}
+    <h3>Last 30 days</h3>${repData.days.length ? `<table>${repData.days.map((d) => `<tr><td><b>${esc(d.day)}</b></td><td>${d.orders} order${d.orders === 1 ? '' : 's'}</td><td>Sales ${money(d.revenue)}</td><td>Profit <b>${money(d.profit)}</b></td></tr>`).join('')}</table>` : '<p>No completed orders yet.</p>'}
+    <h3>By item (best profit first)</h3>${repData.items.length ? `<table>${repData.items.map((i) => `<tr><td>${esc(i.title)}</td><td>${i.qty} sold</td><td>Sales ${money(i.revenue)}</td><td>${i.known ? `Profit <b>${money(i.profit)}</b>` : '<span class="muted">Set a cost to see profit</span>'}</td></tr>`).join('')}</table>` : '<p>Nothing yet.</p>'}
+    ${isRaven() ? '<p><button data-act="sendreport">Send closing report to my phone now</button></p>' : ''}`;
+}
 async function refreshBackup() {
   const { last } = await api('/api/admin/backup-status');
   const el = $('#bkbanner'); if (!el) return;
@@ -512,7 +526,7 @@ function renderAdmin() {
   adminHtml = ''; customAdminHtml = '';
   const tab = (id, label, extra = '') =>
     `<button id="tab-${id}" class="${adminTab === id ? 'primary' : ''}" data-act="admintab" data-tab="${id}">${label}${extra}</button>`;
-  const tabs = `<div class="tabs">${tab('products', 'Products')}${tab('orders', 'Orders', pendingCount ? ` (${pendingCount})` : '')}${tab('custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : '')}${tab('cash', 'Cash')}${tab('combos', 'Combos')}${tab('promos', 'Promos')}${tab('customers', 'Customers')}${isRaven() ? tab('sellers', 'Sellers') + tab('backup', 'Backup') : tab('alerts', 'Alerts')}</div>`;
+  const tabs = `<div class="tabs">${tab('products', 'Products')}${tab('orders', 'Orders', pendingCount ? ` (${pendingCount})` : '')}${tab('custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : '')}${tab('cash', 'Cash')}${tab('report', 'Report')}${tab('combos', 'Combos')}${tab('promos', 'Promos')}${tab('customers', 'Customers')}${isRaven() ? tab('sellers', 'Sellers') + tab('backup', 'Backup') : tab('alerts', 'Alerts')}</div>`;
   const productsView = `
     <section class="panel glass">
       <h2 id="form-title">Add a product</h2>
@@ -522,6 +536,7 @@ function renderAdmin() {
         <div id="ownerbox"></div>
         <label>Category</label><select name="category"><option value="drinks">Drinks</option><option value="snacks">Snacks</option></select>
         <label>Discount % (0 for none)</label><input name="discount_percent" type="number" min="0" max="90" value="0">
+        <label>Cost price (what it costs you; optional, customers never see it)</label><input name="cost" type="number" step="0.01" min="0">
         <label>Stock (how many you have; leave empty to not count)</label><input name="stock" type="number" min="0" step="1">
         <label>Description</label><textarea name="description" rows="3"></textarea>
         <label>Image (max 5 MB; leave empty to keep the current one)</label><input name="image" type="file" accept="image/*">
@@ -542,6 +557,7 @@ function renderAdmin() {
       <div id="plist"></div></section>`;
   const ordersView = `<h2>Orders</h2>
     <div class="toolbar" id="ofilters">
+      <input type="search" id="osearch" placeholder="Search customer or order #" autocomplete="off" style="max-width:240px">
       <div class="chips">
         <button data-act="ofilter" data-st="active">Active</button><button data-act="ofilter" data-st="pending">To pack</button><button data-act="ofilter" data-st="packed">Packed</button>
         <button data-act="ofilter" data-st="completed">Completed</button><button data-act="ofilter" data-st="all">All</button>
@@ -555,6 +571,7 @@ function renderAdmin() {
     <p class="muted" id="ocount" style="margin:0 0 4px"></p>
     <div id="olist"><p>Loading...</p></div>`;
   const cashView = '<section class="panel glass"><h2>Cash</h2><div id="cashbox"><p>Loading...</p></div></section>';
+  const reportView = '<section class="panel glass table-wrap"><h2>Sales and profit</h2><div id="reportbox"><p>Loading...</p></div></section>';
   const customView = '<section class="panel glass table-wrap"><h2>Custom orders</h2><div id="clist"><p>Loading...</p></div></section>';
   const combosView = `<section class="panel glass">
       <h2>Create a combo</h2>
@@ -624,7 +641,7 @@ function renderAdmin() {
   const customersView = `<h2>Customers</h2>
     <p class="muted">Block people who abuse the shop (fake orders, not showing up). ${isRaven() ? 'Your block covers the whole shop.' : 'Your block stops them ordering your items only.'} The list shows the most cancelled orders first.</p>
     <div id="custlist"><p>Loading...</p></div>`;
-  $('#app').innerHTML = (isRaven() ? '<div id="bkbanner"></div>' : '') + tabs + (adminTab === 'cash' ? cashView : adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'alerts' && !isRaven() ? alertsView : adminTab === 'combos' ? combosView : adminTab === 'promos' ? promosView : adminTab === 'customers' ? customersView : productsView);
+  $('#app').innerHTML = (isRaven() ? '<div id="bkbanner"></div>' : '') + tabs + (adminTab === 'report' ? reportView : adminTab === 'cash' ? cashView : adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'alerts' && !isRaven() ? alertsView : adminTab === 'combos' ? combosView : adminTab === 'promos' ? promosView : adminTab === 'customers' ? customersView : productsView);
   fillProducts();
   comboAdminHtml = ''; refreshAdminCombos().catch(() => {});
   promoAdminHtml = ''; refreshAdminPromos().catch(() => {});
@@ -634,6 +651,8 @@ function renderAdmin() {
   refreshCustom().catch(() => {});
   refreshTeam().catch(() => {});
   if (adminTab === 'cash') refreshCash().catch(() => {});
+  if (adminTab === 'report') refreshReport().catch(() => {});
+  refreshCosts().catch(() => {});
   if (isRaven()) refreshBackup().catch(() => {});
   if (isRaven()) refreshSellers().catch(() => {}); else loadAlerts().catch(() => {});
 }
@@ -934,6 +953,7 @@ const actions = {
     if (!confirm('Cancel this order?')) return;
     await api(`/api/orders/${id}/cancel`, { method: 'PATCH' }); await fillMine(); toast('Order cancelled.');
   },
+  sendreport: async () => { await api('/api/admin/report/send', { method: 'POST' }); toast('Sent to your phone alerts.'); },
   paid: async (id, d) => {
     await api(`/api/orders/${id}/paid`, { method: 'PATCH', json: { paid: d.paid === '1' } });
     await refreshOrders(); if (adminTab === 'cash') await refreshCash(); toast(d.paid === '1' ? 'Marked paid.' : 'Paid tick removed.');
@@ -971,7 +991,7 @@ const actions = {
   delete: async (id) => { if (confirm('Delete this product?')) { await api(`/api/products/${id}`, { method: 'DELETE' }); await loadProducts(); toast('Deleted.'); } },
   edit: (id) => {
     const p = products.find((x) => x.id == id), f = $('#pform');
-    f.dataset.id = id; f.title.value = p.title; f.price.value = p.price; f.description.value = p.description; f.category.value = p.category || 'snacks'; f.discount_percent.value = p.discount_percent || 0; f.stock.value = p.stock ?? ''; if (f.owner_id) f.owner_id.value = p.owner_id || user.id;
+    f.dataset.id = id; f.title.value = p.title; f.price.value = p.price; f.description.value = p.description; f.category.value = p.category || 'snacks'; f.discount_percent.value = p.discount_percent || 0; f.stock.value = p.stock ?? ''; f.cost.value = costMap[id] ?? ''; if (f.owner_id) f.owner_id.value = p.owner_id || user.id;
     $('#form-title').textContent = 'Edit product'; $('#save').textContent = 'Save changes';
     f.scrollIntoView({ behavior: 'smooth' });
   },
@@ -1027,13 +1047,15 @@ document.addEventListener('submit', async (e) => {
       const fd = new FormData(e.target);
       if (!fd.get('image').size) fd.delete('image');
       await api(id ? `/api/products/${id}` : '/api/products', { method: id ? 'PUT' : 'POST', body: fd });
-      await loadProducts(); toast(id ? 'Changes saved.' : 'Product added.');
+      await loadProducts(); refreshCosts().catch(() => {}); toast(id ? 'Changes saved.' : 'Product added.');
     }
   } catch (err) { toast(err.message); }
 });
 
 // Close the dialog when clicking the dimmed backdrop
 $('#dlg').addEventListener('click', (e) => { if (e.target === $('#dlg')) $('#dlg').close(); });
+
+document.addEventListener('input', (e) => { if (e.target.id === 'osearch') { ordSearch = e.target.value; drawOrders(); } });
 
 document.addEventListener('change', (e) => {
   if (e.target.id === 'onlymine') {
