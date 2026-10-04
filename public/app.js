@@ -16,7 +16,7 @@ let view = 'shop';
 let searchText = '', catFilter = 'all';
 const selected = new Set(); // products ticked in Admin for bulk changes
 let combos = [], comboAdminHtml = '';
-let ordersCache = [], shownOrders = [], ordStatus = 'active', ordRange = 'all', ordDay = '';
+let ordersCache = [], shownOrders = [], ordStatus = 'active', ordRange = 'all', ordDay = '', custHtml = '';
 let promo = null, cartNote = '', settings = { banner: '', stamp_reward: 'a free snack' }, promoAdminHtml = '', myOrders = [];
 let sig = '', lastOrderId = null, mineHtml = '', adminHtml = '', statusMap = null, adminTab = 'products', pendingCount = 0;
 let customHtml = '', customAdminHtml = '', crMap = null, crList = [], lastCrId = null, pendingCustom = 0;
@@ -192,7 +192,7 @@ const orderCard = (o) => `
       ${orderLines(o)}
       ${partsLine(o)}
       ${o.note ? `<p class="muted" style="margin:8px 0 0">Note: ${esc(o.note)}</p>` : ''}
-      <div class="actions" style="margin-top:12px">${adminBtns(o)}<button data-act="print-order" data-id="${o.id}">Print receipt</button></div>
+      <div class="actions" style="margin-top:12px">${adminBtns(o)}<button data-act="print-order" data-id="${o.id}">Print receipt</button>${o.user_id ? `<button class="danger" data-act="cust-block" data-id="${o.user_id}" data-name="${esc(o.username)}">Block customer</button>` : ''}</div>
     </section>`;
 
 const dayLabel = (d) => {
@@ -212,6 +212,7 @@ function paintOrderFilters() {
   document.querySelectorAll('#ofilters [data-st]').forEach((b) => b.classList.toggle('primary', b.dataset.st === ordStatus));
   if ($('#orange')) $('#orange').value = ordRange;
   if ($('#oday')) $('#oday').value = ordDay;
+  if ($('#onlymine')) $('#onlymine').checked = mineOnly();
 }
 
 function drawOrders() {
@@ -256,9 +257,30 @@ function drawOrders() {
   if (html !== adminHtml) { adminHtml = html; el.innerHTML = html; }
 }
 
+const mineOnly = () => { try { return isRaven() && localStorage.onlyMine === '1'; } catch (e) { return false; } };
+
+// Raven's view of an order: only his own items, his own total, and his share of the promo discount.
+function myView(o) {
+  const all = o.items || [];
+  const items = all.filter((i) => i.owner_id === user.id);
+  const sum = (list) => list.reduce((s, i) => s + Number(i.unit_price) * i.quantity, 0);
+  const mine = sum(items), whole = sum(all);
+  let discount = 0;
+  if (Number(o.discount) > 0) {
+    if (o.promo_owner === user.id) discount = Number(o.discount);
+    else if (o.promo_wide && whole) discount = Math.round(Number(o.discount) * mine / whole * 100) / 100;
+  }
+  return { ...o, items, discount, total: Math.round((mine - discount) * 100) / 100, hidden: all.length - items.length };
+}
+
 // A printable page: Save as PDF from the print window, or print it. Works for one order (receipt) or many (packing list).
 function printOrders(list, mode) {
   if (!list.length) return toast('Nothing to print for this filter.');
+  const mine = mineOnly();
+  if (mine) {
+    list = list.map(myView).filter((o) => (o.items || []).length);
+    if (!list.length) return toast('None of these orders have your items.');
+  }
   const single = mode === 'receipt';
   const shop = ($('.nav h1') || {}).textContent || 'Shop';
   const wantDone = ordStatus === 'completed';
@@ -284,6 +306,7 @@ function printOrders(list, mode) {
       ${Number(o.discount) > 0 ? `<div class="tot small">Promo ${esc(o.promo_code)}: -${money(o.discount)}</div>` : ''}
       <div class="tot">Total: ${money(o.total)}</div>
       ${o.note ? `<div class="note">Note: ${esc(o.note)}</div>` : ''}
+      ${o.hidden ? '<div class="small">Items from other sellers are not on this receipt.</div>' : ''}
       <div>Payment: cash on delivery</div>
       ${single ? '' : '<div class="check">[ &nbsp; ] Packed &nbsp;&nbsp;&nbsp; [ &nbsp; ] Delivered</div>'}
     </div>`;
@@ -307,10 +330,23 @@ function printOrders(list, mode) {
     <title>${esc(title)}</title><style>${css}</style></head><body class="${single ? '' : 'compact'}">
     <div class="bar"><button onclick="window.print()">Print / Save as PDF</button><button onclick="window.close()">Close</button></div>
     <h1>${esc(shop)}</h1>
-    <p class="meta">${single ? 'Receipt' : 'Packing list'} | ${esc(isRaven() ? 'All sellers' : 'Seller: ' + user.username)}${single ? '' : ' | ' + esc(filt)} | Printed ${new Date().toLocaleString()}</p>
+    <p class="meta">${single ? 'Receipt' : 'Packing list'} | ${esc(isRaven() ? (mine ? 'My items only' : 'All sellers') : 'Seller: ' + user.username)}${single ? '' : ' | ' + esc(filt)} | Printed ${new Date().toLocaleString()}</p>
     ${single ? list.map(block).join('') : listHtml}</body></html>`);
   w.document.close();
   setTimeout(() => { try { w.focus(); w.print(); } catch (e) { /* use the button */ } }, 500);
+}
+
+async function refreshCustomers() {
+  const list = await api('/api/customers');
+  const el = $('#custlist');
+  if (!el) return;
+  const html = list.map((c) => `<div class="req">
+      <div class="between"><b>${esc(c.username)}</b>${c.blocked_shop ? '<span class="pill st-cancelled">Blocked everywhere</span>' : c.blocked_by_me ? '<span class="pill st-cancelled">Blocked by you</span>' : ''}</div>
+      <p class="muted" style="margin:2px 0 8px">${c.orders} order${c.orders === 1 ? '' : 's'} | ${c.completed} completed | ${c.cancelled} cancelled${c.my_reason ? ` | Reason: ${esc(c.my_reason)}` : ''}</p>
+      ${c.blocked_by_me ? `<button data-act="cust-unblock" data-id="${c.id}">Unblock</button>`
+        : `<button class="danger" data-act="cust-block" data-id="${c.id}" data-name="${esc(c.username)}">Block</button>`}
+    </div>`).join('') || '<p>No customers yet.</p>';
+  if (html !== custHtml) { custHtml = html; el.innerHTML = html; }
 }
 
 async function refreshOrders() {
@@ -430,7 +466,7 @@ function renderAdmin() {
   adminHtml = ''; customAdminHtml = '';
   const tab = (id, label, extra = '') =>
     `<button id="tab-${id}" class="${adminTab === id ? 'primary' : ''}" data-act="admintab" data-tab="${id}">${label}${extra}</button>`;
-  const tabs = `<div class="tabs">${tab('products', 'Products')}${tab('orders', 'Orders', pendingCount ? ` (${pendingCount})` : '')}${tab('custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : '')}${tab('combos', 'Combos')}${tab('promos', 'Promos')}${isRaven() ? tab('sellers', 'Sellers') + tab('backup', 'Backup') : tab('alerts', 'Alerts')}</div>`;
+  const tabs = `<div class="tabs">${tab('products', 'Products')}${tab('orders', 'Orders', pendingCount ? ` (${pendingCount})` : '')}${tab('custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : '')}${tab('combos', 'Combos')}${tab('promos', 'Promos')}${tab('customers', 'Customers')}${isRaven() ? tab('sellers', 'Sellers') + tab('backup', 'Backup') : tab('alerts', 'Alerts')}</div>`;
   const productsView = `
     <section class="panel glass">
       <h2 id="form-title">Add a product</h2>
@@ -466,6 +502,7 @@ function renderAdmin() {
         <option value="yesterday">Yesterday</option><option value="week">Last 7 days</option></select>
       <input type="date" id="oday" aria-label="Pick a day">
       <button class="primary" data-act="print-orders">Print packing list</button>
+      ${isRaven() ? '<label class="pickrow" style="padding:0"><input type="checkbox" id="onlymine"> Print only my items</label>' : ''}
     </div>
     <p class="muted" id="ocount" style="margin:0 0 4px"></p>
     <div id="olist"><p>Loading...</p></div>`;
@@ -535,11 +572,15 @@ function renderAdmin() {
       <input id="bfile" type="file" accept=".json,application/json">
       <button class="danger" data-act="restore">Restore from backup</button>
     </section>`;
-  $('#app').innerHTML = tabs + (adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'alerts' && !isRaven() ? alertsView : adminTab === 'combos' ? combosView : adminTab === 'promos' ? promosView : productsView);
+  const customersView = `<h2>Customers</h2>
+    <p class="muted">Block people who abuse the shop (fake orders, not showing up). ${isRaven() ? 'Your block covers the whole shop.' : 'Your block stops them ordering your items only.'} The list shows the most cancelled orders first.</p>
+    <div id="custlist"><p>Loading...</p></div>`;
+  $('#app').innerHTML = tabs + (adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'alerts' && !isRaven() ? alertsView : adminTab === 'combos' ? combosView : adminTab === 'promos' ? promosView : adminTab === 'customers' ? customersView : productsView);
   fillProducts();
   comboAdminHtml = ''; refreshAdminCombos().catch(() => {});
   promoAdminHtml = ''; refreshAdminPromos().catch(() => {});
   paintOrderFilters();
+  custHtml = ''; refreshCustomers().catch(() => {});
   refreshOrders().catch(() => {});
   refreshCustom().catch(() => {});
   refreshTeam().catch(() => {});
@@ -737,6 +778,16 @@ function quoteDialog(id) {
 const actions = {
   shop: () => { view = 'shop'; render(); },
   cat: (id, d) => { catFilter = d.cat; renderShop(); },
+  'cust-block': async (id, d) => {
+    const reason = prompt(`Block ${d.name || 'this customer'}? They will not be able to order ${isRaven() ? 'from anyone' : 'your items'}.\nWhy? (optional)`);
+    if (reason === null) return;
+    await api(`/api/customers/${id}/block`, { method: 'POST', json: { reason } });
+    custHtml = ''; await refreshCustomers(); toast('Customer blocked.');
+  },
+  'cust-unblock': async (id) => {
+    await api(`/api/customers/${id}/block`, { method: 'DELETE' });
+    custHtml = ''; await refreshCustomers(); toast('Customer unblocked.');
+  },
   ofilter: (id, d) => { ordStatus = d.st; paintOrderFilters(); drawOrders(); },
   'print-orders': () => printOrders(shownOrders, 'list'),
   'print-order': (id) => { const o = ordersCache.find((x) => x.id == id); if (o) printOrders([o], 'receipt'); },
@@ -919,6 +970,11 @@ document.addEventListener('submit', async (e) => {
 $('#dlg').addEventListener('click', (e) => { if (e.target === $('#dlg')) $('#dlg').close(); });
 
 document.addEventListener('change', (e) => {
+  if (e.target.id === 'onlymine') {
+    try { localStorage.onlyMine = e.target.checked ? '1' : ''; } catch (err) { /* ignore */ }
+    toast(e.target.checked ? 'Receipts and packing lists will show only your items.' : 'Receipts and packing lists will show every seller\'s items.');
+    return;
+  }
   if (e.target.id === 'orange') { ordRange = e.target.value; ordDay = ''; paintOrderFilters(); drawOrders(); return; }
   if (e.target.id === 'oday') { ordDay = e.target.value; drawOrders(); return; }
   if (e.target.classList.contains('pick')) {
