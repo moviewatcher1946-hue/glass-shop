@@ -491,17 +491,20 @@ async function refreshReport() { repData = await api('/api/admin/report?days=30'
 function drawReport() {
   const el = $('#reportbox'); if (!el || !repData) return;
   const t = repData.days.find((d) => d.day === repData.today) || { orders: 0, revenue: 0, profit: 0 };
-  el.innerHTML = `<h3>Today</h3><p><b>${t.orders}</b> completed orders | Sales <b>${money(t.revenue)}</b> | Profit <b>${money(t.profit)}</b></p>
+  const who = (repData.people || []).map((x) => `<tr><td><b>${esc(x.username)}</b>${x.role === 'admin' ? ' <span class="muted">(admin)</span>' : ''}</td><td>Potential income <b>${money(x.potential)}</b> <span class="muted">(${x.open} open order${x.open === 1 ? '' : 's'})</span></td><td>Gross <b>${money(x.gross)}</b> <span class="muted">(${x.done} completed)</span></td></tr>`).join('');
+  el.innerHTML = `<h3>${isRaven() ? 'Income per seller' : 'Your income'}</h3><p class="muted">Potential income = pending and packed orders still to come. Gross = completed orders. Each person's own items only, all time.</p>${who ? `<table>${who}</table>` : ''}
+    <h3>Today</h3><p><b>${t.orders}</b> completed orders | Sales <b>${money(t.revenue)}</b> | Profit <b>${money(t.profit)}</b></p>
     ${repData.missing_cost ? `<p class="muted">${repData.missing_cost} order lines have no cost price, so profit is too high. Set a cost on each product (Products tab, Edit). Only new orders pick it up.</p>` : ''}
     <h3>Last 30 days</h3>${repData.days.length ? `<table>${repData.days.map((d) => `<tr><td><b>${esc(d.day)}</b></td><td>${d.orders} order${d.orders === 1 ? '' : 's'}</td><td>Sales ${money(d.revenue)}</td><td>Profit <b>${money(d.profit)}</b></td></tr>`).join('')}</table>` : '<p>No completed orders yet.</p>'}
-    <h3>By item (best profit first)</h3>${repData.items.length ? `<table>${repData.items.map((i) => `<tr><td>${esc(i.title)}</td><td>${i.qty} sold</td><td>Sales ${money(i.revenue)}</td><td>${i.known ? `Profit <b>${money(i.profit)}</b>` : '<span class="muted">Set a cost to see profit</span>'}</td></tr>`).join('')}</table>` : '<p>Nothing yet.</p>'}
-    ${isRaven() ? '<p><button data-act="sendreport">Send closing report to my phone now</button></p>' : ''}`;
+    <h3>By item (best profit first)</h3>${repData.items.length ? `<table>${repData.items.map((i) => `<tr><td>${esc(i.title)}</td><td>${i.qty} sold</td><td>Sales ${money(i.revenue)}</td><td>${i.known ? `Profit <b>${money(i.profit)}</b>` : '<span class="muted">Set a cost to see profit</span>'}</td></tr>`).join('')}</table>` : '<p>Nothing yet.</p>'}`;
 }
 async function refreshBackup() {
-  const { last } = await api('/api/admin/backup-status');
-  const el = $('#bkbanner'); if (!el) return;
-  const days = last ? Math.floor((Date.now() - new Date(last)) / 86400000) : null, late = days === null || days >= 7;
-  el.innerHTML = `<section class="panel glass between" style="${late ? 'border-color:rgba(220,38,112,.7)' : ''}"><span>${days === null ? 'No backup has been downloaded yet.' : `Last backup was ${days === 0 ? 'today' : `${days} day${days === 1 ? '' : 's'} ago`}.`}${late ? ' Render can delete the database, so download one now.' : ''}</span><button class="primary" data-act="backup">Download backup</button></section>`;
+  const el = $('#autobk'); if (!el) return;
+  const list = await api('/api/admin/backups');
+  const when = (d) => new Date(d).toLocaleString();
+  el.innerHTML = list.length
+    ? `<table>${list.map((b) => `<tr><td>${esc(when(b.created_at))}</td><td>${(b.size / 1048576).toFixed(2)} MB</td><td><button data-act="dlbackup" data-id="${b.id}">Download</button></td></tr>`).join('')}</table>`
+    : '<p class="muted">No automatic backup yet. The first one is made shortly after the site starts.</p>';
 }
 
 // Cash page: cash still to collect per seller, what each collected, and who owes whom.
@@ -643,6 +646,9 @@ function renderAdmin() {
       <p>Download everything (products with photos, accounts, orders and custom requests) as one file. Keep it private, because it contains customer accounts.</p>
       <button class="primary" data-act="backup">Download backup</button>
       <hr style="border:0;border-top:1px solid var(--border);margin:22px 0">
+      <p><b>Automatic backups</b> are saved here every 3 days (the newest 5 are kept). They live in the same database as the shop, so still download one by hand now and then and keep it somewhere safe.</p>
+      <div id="autobk"><p>Loading...</p></div>
+      <hr style="border:0;border-top:1px solid var(--border);margin:22px 0">
       <p><b>Restore</b> replaces everything on the site with the contents of a backup file. Use it on a new, empty database.</p>
       <input id="bfile" type="file" accept=".json,application/json">
       <button class="danger" data-act="restore">Restore from backup</button>
@@ -650,7 +656,7 @@ function renderAdmin() {
   const customersView = `<h2>Customers</h2>
     <p class="muted">Block people who abuse the shop (fake orders, not showing up). ${isRaven() ? 'Your block covers the whole shop.' : 'Your block stops them ordering your items only.'} The list shows the most cancelled orders first.</p>
     <div id="custlist"><p>Loading...</p></div>`;
-  $('#app').innerHTML = (isRaven() ? '<div id="bkbanner"></div>' : '') + tabs + (adminTab === 'report' ? reportView : adminTab === 'cash' ? cashView : adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'alerts' && !isRaven() ? alertsView : adminTab === 'combos' ? combosView : adminTab === 'promos' ? promosView : adminTab === 'customers' ? customersView : productsView);
+  $('#app').innerHTML = tabs + (adminTab === 'report' ? reportView : adminTab === 'cash' ? cashView : adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'alerts' && !isRaven() ? alertsView : adminTab === 'combos' ? combosView : adminTab === 'promos' ? promosView : adminTab === 'customers' ? customersView : productsView);
   fillProducts();
   comboAdminHtml = ''; refreshAdminCombos().catch(() => {});
   promoAdminHtml = ''; refreshAdminPromos().catch(() => {});
@@ -662,7 +668,7 @@ function renderAdmin() {
   if (adminTab === 'cash') refreshCash().catch(() => {});
   if (adminTab === 'report') refreshReport().catch(() => {});
   refreshCosts().catch(() => {});
-  if (isRaven()) refreshBackup().catch(() => {});
+  if (isRaven() && adminTab === 'backup') refreshBackup().catch(() => {});
   if (isRaven()) refreshSellers().catch(() => {}); else loadAlerts().catch(() => {});
 }
 
@@ -947,7 +953,15 @@ const actions = {
     document.body.appendChild(link); link.click(); link.remove();
     setTimeout(() => URL.revokeObjectURL(link.href), 10000);
     toast('Backup downloaded. Keep the file somewhere safe.');
-    refreshBackup().catch(() => {});
+  },
+  dlbackup: async (id) => {
+    const r = await fetch(`/api/admin/backups/${encodeURIComponent(id)}/download`, { headers: { Authorization: 'Bearer ' + token } });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Download failed.');
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(await r.blob());
+    link.download = (r.headers.get('Content-Disposition') || '').match(/filename="([^"]+)"/)?.[1] || 'shop-backup.json';
+    document.body.appendChild(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(link.href), 10000);
   },
   restore: async () => {
     const f = $('#bfile').files[0];
@@ -971,7 +985,6 @@ const actions = {
     if (!confirm('Cancel this order?')) return;
     await api(`/api/orders/${id}/cancel`, { method: 'PATCH' }); await fillMine(); toast('Order cancelled.');
   },
-  sendreport: async () => { await api('/api/admin/report/send', { method: 'POST' }); toast('Sent to your phone alerts.'); },
   paid: async (id, d) => {
     await api(`/api/orders/${id}/paid`, { method: 'PATCH', json: { paid: d.paid === '1' } });
     await refreshOrders(); if (adminTab === 'cash') await refreshCash(); toast(d.paid === '1' ? 'Marked paid.' : 'Paid tick removed.');
