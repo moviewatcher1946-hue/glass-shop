@@ -344,3 +344,5 @@ input[type="date"] { display: block; }
   body:has(#tour) #a2hs { display: none; }
 }
 .share-ic { display: inline-block; border: 1px solid var(--acc2); border-radius: 6px; padding: 0 6px; color: var(--acc); }
+
+.toolbar input[type="checkbox"] { flex: none; }
