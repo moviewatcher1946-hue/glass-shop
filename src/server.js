@@ -2,10 +2,12 @@ const express = require('express');
 const multer = require('multer');
 const bcrypt = require('bcryptjs');
 const path = require('path');
+const crypto = require('crypto');
 const { pool, init } = require('./db');
 const { sign, auth, admin, staff } = require('./auth');
 
 const app = express();
+app.set('trust proxy', 1); // Render sits behind a proxy; this makes req.ip the visitor's real address
 const json = express.json();
 // The restore route accepts big files, so it brings its own larger body parser.
 app.use((req, res, next) => (req.path === '/api/admin/import' ? next() : json(req, res, next)));
@@ -210,14 +212,35 @@ const withImage = async (id) =>
 app.get('/healthz', (req, res) => res.send('ok'));
 
 /* ---------- Auth ---------- */
+// Login guard: 10 wrong passwords from one address locks that address out for 15 minutes.
+const LOGIN_MAX = 10, LOGIN_WINDOW = 15 * 60e3, loginFails = new Map();
+const lockedOut = (ip) => {
+  const f = loginFails.get(ip);
+  if (f && Date.now() - f.t > LOGIN_WINDOW) { loginFails.delete(ip); return 0; }
+  return f && f.n >= LOGIN_MAX ? Math.ceil((LOGIN_WINDOW - (Date.now() - f.t)) / 60e3) : 0;
+};
+const failLogin = (ip) => {
+  const f = loginFails.get(ip);
+  loginFails.set(ip, f && Date.now() - f.t <= LOGIN_WINDOW ? { n: f.n + 1, t: f.t } : { n: 1, t: Date.now() });
+};
+setInterval(() => { for (const [ip, f] of loginFails) if (Date.now() - f.t > LOGIN_WINDOW) loginFails.delete(ip); }, LOGIN_WINDOW).unref();
+// Signup guard: each IP address can own at most 10 accounts in total (the address is saved on the account).
+const MAX_ACCOUNTS_PER_IP = 10, MAX_ACCOUNTS_PER_DEVICE = 5;
 app.post('/api/auth/signup', wrap(async (req, res) => {
+  const { rows: [n] } = await pool.query('SELECT count(*)::int AS n FROM users WHERE signup_ip=$1', [req.ip]);
+  if (n.n >= MAX_ACCOUNTS_PER_IP) throw bad('This connection has reached the limit of accounts. Please talk to the seller.', 429);
   const { username = '', password = '' } = req.body || {};
   if (!/^[a-zA-Z0-9_]{3,30}$/.test(username) || password.length < 8)
     throw bad('Username: 3-30 letters, numbers or _. Password: at least 8 characters.');
+  // Device guard: each browser/device gets a random ID and can own at most 5 accounts.
+  const device = String((req.body || {}).device_id || '');
+  if (!/^[A-Za-z0-9-]{16,64}$/.test(device)) throw bad('Please refresh the page and try again.');
+  const { rows: [dv] } = await pool.query('SELECT count(*)::int AS n FROM users WHERE device_id=$1', [device]);
+  if (dv.n >= MAX_ACCOUNTS_PER_DEVICE) throw bad('This device has reached the limit of accounts. Please talk to the seller.', 429);
   try {
     const { rows: [u] } = await pool.query(
-      "INSERT INTO users (username, password_hash, role) VALUES ($1,$2,'customer') RETURNING id,username,role",
-      [username, await bcrypt.hash(password, 12)]
+      "INSERT INTO users (username, password_hash, role, signup_ip, device_id) VALUES ($1,$2,'customer',$3,$4) RETURNING id,username,role",
+      [username, await bcrypt.hash(password, 12), req.ip, device]
     );
     res.status(201).json({ token: sign(u), user: u });
   } catch (e) {
@@ -228,8 +251,30 @@ app.post('/api/auth/signup', wrap(async (req, res) => {
 
 app.post('/api/auth/login', wrap(async (req, res) => {
   const { username = '', password = '' } = req.body || {};
+  const wait = lockedOut(req.ip);
+  if (wait) throw bad(`Too many wrong attempts. Try again in ${wait} minute${wait === 1 ? '' : 's'}.`, 429);
   const { rows: [u] } = await pool.query('SELECT * FROM users WHERE lower(username)=lower($1)', [username]);
-  if (!u || !(await bcrypt.compare(password, u.password_hash))) throw bad('Wrong username or password.', 401);
+  if (!u || !(await bcrypt.compare(password, u.password_hash))) {
+    failLogin(req.ip);
+    throw bad('Wrong username or password.', 401);
+  }
+  loginFails.delete(req.ip);
+  if (u.must_change && u.temp_expires && new Date(u.temp_expires) < new Date())
+    throw bad('That temporary password expired. Ask the seller for a new one.', 401);
+  const user = { id: u.id, username: u.username, role: u.role };
+  res.json({ token: sign(user, u.must_change), user, must_change: !!u.must_change });
+}));
+
+// Used after a reset (temporary password) and open to everyone who wants to change their own password.
+app.post('/api/auth/change-password', auth, wrap(async (req, res) => {
+  const { current_password = '', new_password = '' } = req.body || {};
+  const wait = lockedOut(req.ip);
+  if (wait) throw bad(`Too many wrong attempts. Try again in ${wait} minute${wait === 1 ? '' : 's'}.`, 429);
+  if (String(new_password).length < 8) throw bad('New password: at least 8 characters.');
+  const { rows: [u] } = await pool.query('SELECT * FROM users WHERE id=$1', [req.user.id]);
+  if (!u || !(await bcrypt.compare(String(current_password), u.password_hash))) { failLogin(req.ip); throw bad('The current password is wrong.', 401); }
+  if (current_password === new_password) throw bad('Pick a different password.');
+  await pool.query('UPDATE users SET password_hash=$1, must_change=false, temp_expires=NULL WHERE id=$2', [await bcrypt.hash(String(new_password), 12), u.id]);
   const user = { id: u.id, username: u.username, role: u.role };
   res.json({ token: sign(user), user });
 }));
@@ -750,7 +795,7 @@ app.patch('/api/custom-requests/:id/respond', auth, wrap(async (req, res) => {
 }));
 
 /* ---------- Backup / restore (admin only) ---------- */
-const BACKUP_TABLES = ['users', 'customer_blocks', 'products', 'combos', 'combo_items', 'combo_approvals', 'promo_codes', 'settings', 'orders', 'order_items', 'custom_requests', 'order_approvals', 'order_stock', 'settlements']; // parents first
+const BACKUP_TABLES = ['users', 'customer_blocks', 'products', 'combos', 'combo_items', 'combo_approvals', 'promo_codes', 'settings', 'orders', 'order_items', 'custom_requests', 'order_approvals', 'order_stock', 'settlements', 'password_resets']; // parents first
 
 const buildBackup = async () => {
   const tables = {};
@@ -781,7 +826,7 @@ app.post('/api/admin/import', auth, admin, express.json({ limit: '100mb' }), wra
   const c = await pool.connect();
   try {
     await c.query('BEGIN');
-    await c.query('TRUNCATE settlements, order_stock, customer_blocks, order_approvals, order_items, orders, custom_requests, combo_approvals, combo_items, combos, promo_codes, settings, products, users RESTART IDENTITY CASCADE');
+    await c.query('TRUNCATE password_resets, settlements, order_stock, customer_blocks, order_approvals, order_items, orders, custom_requests, combo_approvals, combo_items, combos, promo_codes, settings, products, users RESTART IDENTITY CASCADE');
     for (const t of BACKUP_TABLES) {
       const { rows: colRows } = await c.query(
         'SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=$1', [t]);
@@ -959,7 +1004,8 @@ app.get('/api/customers', auth, staff, wrap(async (req, res) => {
       (count(DISTINCT o.id) FILTER (WHERE o.status='cancelled'))::int AS cancelled,
       EXISTS (SELECT 1 FROM customer_blocks b WHERE b.user_id=u.id AND b.shop_wide) AS blocked_shop,
       EXISTS (SELECT 1 FROM customer_blocks b WHERE b.user_id=u.id AND b.blocked_by=$1) AS blocked_by_me,
-      (SELECT reason FROM customer_blocks b WHERE b.user_id=u.id AND b.blocked_by=$1) AS my_reason
+      (SELECT reason FROM customer_blocks b WHERE b.user_id=u.id AND b.blocked_by=$1) AS my_reason,
+      (SELECT max(created_at) FROM password_resets r WHERE r.user_id=u.id) AS last_reset
     FROM users u
     LEFT JOIN orders o ON o.user_id=u.id AND ($2::boolean OR EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id=o.id AND oi.owner_id=$1))
     WHERE u.role='customer'
@@ -982,6 +1028,27 @@ app.post('/api/customers/:id/block', auth, staff, wrap(async (req, res) => {
     [u.id, req.user.id, isMain(req.user), reason]);
   if (!isMain(req.user)) notify(`${req.user.username} blocked ${u.username}${reason ? ': ' + reason : ''}`);
   res.json({ ok: true });
+}));
+
+// Raven resets a customer's password: needs Raven's own password again, max 5 per hour, every reset is logged and alerts his phone.
+// The customer gets a random temporary password that works for 24 hours and only lets them set a new one.
+const TEMP_CHARS = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+app.post('/api/admin/customers/:id/reset-password', auth, admin, wrap(async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) throw bad('Customer not found.', 404);
+  const wait = lockedOut(req.ip);
+  if (wait) throw bad(`Too many wrong attempts. Try again in ${wait} minute${wait === 1 ? '' : 's'}.`, 429);
+  const { rows: [me] } = await pool.query('SELECT password_hash FROM users WHERE id=$1', [req.user.id]);
+  if (!me || !(await bcrypt.compare(String((req.body || {}).admin_password || ''), me.password_hash))) { failLogin(req.ip); throw bad('Your admin password is wrong.', 401); }
+  const { rows: [n] } = await pool.query("SELECT count(*)::int AS n FROM password_resets WHERE by_id=$1 AND created_at > now() - interval '1 hour'", [req.user.id]);
+  if (n.n >= 5) throw bad('You reset 5 passwords in the last hour. Try again later.', 429);
+  const { rows: [u] } = await pool.query("SELECT id, username FROM users WHERE id=$1 AND role='customer'", [id]);
+  if (!u) throw bad('Customer not found.', 404);
+  const temp = Array.from(crypto.randomBytes(10), (b) => TEMP_CHARS[b % TEMP_CHARS.length]).join('');
+  await pool.query("UPDATE users SET password_hash=$1, must_change=true, temp_expires=now() + interval '24 hours' WHERE id=$2", [await bcrypt.hash(temp, 12), u.id]);
+  await pool.query('INSERT INTO password_resets (user_id, by_id) VALUES ($1,$2)', [u.id, req.user.id]);
+  notify(`Password reset for ${u.username} by ${req.user.username}.`);
+  res.json({ username: u.username, password: temp });
 }));
 
 app.delete('/api/customers/:id/block', auth, staff, wrap(async (req, res) => {
@@ -1139,6 +1206,16 @@ init()
       owner_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       status   VARCHAR(10) NOT NULL DEFAULT 'pending',
       PRIMARY KEY (combo_id, owner_id)
+    );
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS signup_ip VARCHAR(64);
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS device_id VARCHAR(64);
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change BOOLEAN NOT NULL DEFAULT false;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS temp_expires TIMESTAMPTZ;
+    CREATE TABLE IF NOT EXISTS password_resets (
+      id         SERIAL PRIMARY KEY,
+      user_id    INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      by_id      INT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
     ALTER TABLE products ADD COLUMN IF NOT EXISTS stock INT CHECK (stock >= 0);
     ALTER TABLE products ADD COLUMN IF NOT EXISTS cost NUMERIC(10,2) CHECK (cost >= 0);
