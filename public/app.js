@@ -333,15 +333,24 @@ function printOrders(list, mode) {
   const summary = [...tally].sort((x, y) => x[0].localeCompare(y[0]))
     .map(([t, q]) => `<li>${esc(t)} <b>x${q}</b></li>`).join('');
   if (!single && !live.length) return toast('Nothing left to pack for this filter.');
+  // Profit of an order = its total minus what its items cost you (only the items shown: just yours, or all sellers' for Raven's full view).
+  const profitOf = (o) => {
+    const own = mine || !isRaven();
+    const cs = (o.costs || []).filter((c) => !own || c.owner_id === user.id);
+    return { p: Number(o.total) - cs.reduce((s, c) => s + c.cost, 0), missing: cs.some((c) => c.missing) };
+  };
+  const prof = new Map(live.map((o) => [o.id, profitOf(o)]));
+  const sumProfit = [...prof.values()].reduce((s, x) => s + x.p, 0), anyMissing = [...prof.values()].some((x) => x.missing);
   // Packing list: one short row per order (who has what), not a big box each.
   const when = (o) => { const d = new Date(o.created_at); return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`; };
   const rows = live.map((o) => `<tr><td>#${o.id}</td><td><b>${esc(o.username)}</b><br><span class="s">${when(o)}</span></td>
       <td>${(o.items || []).map((i) => `${i.quantity} ${esc(i.title)}`).join(', ')}${o.note ? `<br><span class="s">Note: ${esc(o.note)}</span>` : ''}</td>
-      <td class="r"><b>${money(o.total)}</b></td><td>[&nbsp;&nbsp;&nbsp;]</td></tr>`).join('');
+      <td class="r"><b>${money(o.total)}</b></td><td class="r">${money(prof.get(o.id).p)}${prof.get(o.id).missing ? '*' : ''}</td><td>[&nbsp;&nbsp;&nbsp;]</td></tr>`).join('');
   const sumTotal = live.reduce((s, o) => s + Number(o.total), 0);
   const listHtml = `<h2>${wantDone ? 'Items' : 'To pack'}</h2><ul class="sum">${summary}</ul>
-    <h2>Who has what</h2><table><tr><th>Order</th><th>Customer</th><th>Items</th><th class="r">Total</th><th>Packed</th></tr>${rows}</table>
-    <div class="foot">${live.length} order${live.length === 1 ? '' : 's'} | Total ${money(sumTotal)} | Cash on delivery</div>`;
+    <h2>Who has what</h2><table><tr><th>Order</th><th>Customer</th><th>Items</th><th class="r">Total</th><th class="r">Profit</th><th>Packed</th></tr>${rows}</table>
+    <div class="foot">${live.length} order${live.length === 1 ? '' : 's'} | Total ${money(sumTotal)} | Profit ${money(sumProfit)} | Cash on delivery</div>
+    ${anyMissing ? '<div class="s">* Some items have no cost set, so that profit is too high.</div>' : ''}`;
   const block = (o) => `<div class="order">
       <div class="head"><span>Order #${o.id} - ${esc(o.username)}</span><span>${esc(STATUS[statusOf(o)] || statusOf(o))}</span></div>
       <div>${new Date(o.created_at).toLocaleString()}</div>
