@@ -119,6 +119,21 @@ const comboCard = (c) => {
 };
 
 // Redraws only the product list, so the search box keeps focus while typing.
+// Random order in the shop so no seller's items always sit on top. Picked once per page load,
+// so the grid doesn't reshuffle while you search, filter or the page refreshes in the background.
+const shuffleRank = new Map();
+const rank = (key) => { if (!shuffleRank.has(key)) shuffleRank.set(key, Math.random()); return shuffleRank.get(key); };
+const shuffled = (list, keyOf) => [...list].sort((a, b) => rank(keyOf(a)) - rank(keyOf(b)));
+// Raven (the main admin) always gets up to 3 of his own products at the top of each section (in-stock ones first);
+// everything else follows in random order.
+const PINNED = 3;
+const shuffledPinned = (list) => {
+  const mix = shuffled(list, (p) => 'p' + p.id);
+  const mine = mix.filter((p) => settings.main_owner_id != null && p.owner_id === settings.main_owner_id)
+    .sort((a, b) => Number(!!a.is_sold_out) - Number(!!b.is_sold_out)); // stable: keeps the random order among equals
+  const top = mine.slice(0, PINNED);
+  return [...top, ...mix.filter((p) => !top.includes(p))];
+};
 function fillGrid() {
   const el = $('#grid');
   if (!el) return;
@@ -126,10 +141,10 @@ function fillGrid() {
   const match = (p) => !text || `${p.title} ${p.description}`.toLowerCase().includes(text);
   const catOf = (p) => (CATS[p.category] ? p.category : 'snacks');
   const comboList = catFilter === 'all' || catFilter === 'combos'
-    ? combos.filter((c) => match({ title: c.title, description: `${c.description} ${c.items.map((x) => x.title).join(' ')}` })) : [];
+    ? shuffled(combos.filter((c) => match({ title: c.title, description: `${c.description} ${c.items.map((x) => x.title).join(' ')}` })), (c) => 'c' + c.id) : [];
   const groups = Object.keys(CATS)
     .filter((c) => catFilter === 'all' || catFilter === c)
-    .map((c) => ({ c, list: products.filter((p) => catOf(p) === c && match(p)) }))
+    .map((c) => ({ c, list: shuffledPinned(products.filter((p) => catOf(p) === c && match(p))) }))
     .filter((g) => g.list.length);
   el.innerHTML = (comboList.length ? `<h2 class="cat-title">Combos</h2><section class="grid">${comboList.map(comboCard).join('')}</section>` : '')
     + groups.map((g) => `<h2 class="cat-title">${CATS[g.c]}</h2><section class="grid">${g.list.map(productCard).join('')}</section>`).join('')
