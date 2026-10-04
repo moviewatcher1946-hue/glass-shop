@@ -23,12 +23,20 @@ let sig = '', lastOrderId = null, mineHtml = '', adminHtml = '', statusMap = nul
 let ordSearch = '', costMap = {}, repData = null;
 let customHtml = '', customAdminHtml = '', crMap = null, crList = [], lastCrId = null, pendingCustom = 0;
 
+// A random ID this browser keeps, so the server can limit how many accounts one device makes.
+const deviceId = () => {
+  try {
+    if (!localStorage.deviceId) localStorage.deviceId = (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2));
+    return localStorage.deviceId;
+  } catch (e) { return 'nostorage-' + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2); }
+};
 async function api(url, { json, ...opt } = {}) {
   const headers = { ...(opt.headers || {}) };
   if (token) headers.Authorization = 'Bearer ' + token;
   if (json) { headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(json); }
   const r = await fetch(url, { ...opt, headers });
   const d = r.status === 204 ? {} : await r.json().catch(() => ({}));
+  if (r.status === 403 && /new password first/i.test(d.error || '')) changePwDialog();
   if (!r.ok) throw new Error(d.error || 'Request failed.');
   return d;
 }
@@ -357,9 +365,10 @@ async function refreshCustomers() {
   if (!el) return;
   const html = list.map((c) => `<div class="req">
       <div class="between"><b>${esc(c.username)}</b>${c.blocked_shop ? '<span class="pill st-cancelled">Blocked everywhere</span>' : c.blocked_by_me ? '<span class="pill st-cancelled">Blocked by you</span>' : ''}</div>
-      <p class="muted" style="margin:2px 0 8px">${c.orders} order${c.orders === 1 ? '' : 's'} | ${c.completed} completed | ${c.cancelled} cancelled${c.my_reason ? ` | Reason: ${esc(c.my_reason)}` : ''}</p>
+      <p class="muted" style="margin:2px 0 8px">${c.orders} order${c.orders === 1 ? '' : 's'} | ${c.completed} completed | ${c.cancelled} cancelled${c.my_reason ? ` | Reason: ${esc(c.my_reason)}` : ''}${isRaven() && c.last_reset ? ` | Password reset ${new Date(c.last_reset).toLocaleDateString()}` : ''}</p>
       ${c.blocked_by_me ? `<button data-act="cust-unblock" data-id="${c.id}">Unblock</button>`
         : `<button class="danger" data-act="cust-block" data-id="${c.id}" data-name="${esc(c.username)}">Block</button>`}
+      ${isRaven() ? `<button data-act="cust-reset" data-id="${c.id}" data-name="${esc(c.username)}">Reset password</button>` : ''}
     </div>`).join('') || '<p>No customers yet.</p>';
   if (html !== custHtml) { custHtml = html; el.innerHTML = html; }
 }
@@ -767,6 +776,15 @@ async function loadProducts() {
 }
 
 /* ---------- Dialogs ---------- */
+let forcePw = false;
+function changePwDialog() {
+  forcePw = true;
+  $('#dlg').innerHTML = `<h2>Choose a new password</h2><p class="muted">You logged in with a temporary password. Pick your own to continue.</p><form data-form="changepw">
+    <label>Temporary password</label><input name="current_password" type="password" required autocomplete="current-password">
+    <label>New password (8+ characters)</label><input name="new_password" type="password" required minlength="8" autocomplete="new-password">
+    <button class="primary">Save new password</button><button type="button" data-act="logout">Log out</button></form>`;
+  if (!$('#dlg').open) $('#dlg').showModal();
+}
 function authDialog() {
   $('#dlg').innerHTML = `<h2>Welcome</h2><form data-form="auth">
     <label>Username</label><input name="username" required autocomplete="username">
@@ -978,7 +996,17 @@ const actions = {
   close: () => $('#dlg').close(),
   auth: authDialog,
   cart: cartDialog,
-  logout: () => { clearSession(); view = 'shop'; render(); toast('Logged out.'); },
+  logout: () => { forcePw = false; $('#dlg').close(); clearSession(); view = 'shop'; render(); toast('Logged out.'); },
+  'cust-reset': (id, d) => {
+    $('#dlg').innerHTML = `<h2>Reset password for ${esc(d.name)}</h2><p class="muted">Type your own admin password to confirm. This is logged and sent to your phone.</p><form data-form="reset" data-id="${id}">
+      <label>Your admin password</label><input name="admin_password" type="password" required autocomplete="current-password">
+      <button class="primary">Reset and show temporary password</button><button type="button" data-act="close">Cancel</button></form>`;
+    $('#dlg').showModal();
+  },
+  copytemp: async () => {
+    const i = $('#temppw'); i.select();
+    try { await navigator.clipboard.writeText(i.value); toast('Copied.'); } catch (e) { document.execCommand('copy'); toast('Copied.'); }
+  },
   add: (id) => { cart[id] = (cart[id] || 0) + 1; saveCart(); toast('Added to cart.'); },
   remove: (id) => { delete cart[id]; saveCart(); cartDialog(); },
   checkout: async () => {
@@ -1009,8 +1037,19 @@ document.addEventListener('submit', async (e) => {
   try {
     if (e.target.dataset.form === 'auth') {
       const mode = e.submitter.dataset.mode;
-      const d = await api(`/api/auth/${mode}`, { method: 'POST', json: Object.fromEntries(new FormData(e.target)) });
-      setSession(d.token, d.user); $('#dlg').close(); render(); toast(`Welcome, ${d.user.username}.`);
+      const d = await api(`/api/auth/${mode}`, { method: 'POST', json: { ...Object.fromEntries(new FormData(e.target)), device_id: deviceId() } });
+      setSession(d.token, d.user);
+      if (d.must_change) { changePwDialog(); render(); return; }
+      $('#dlg').close(); render(); toast(`Welcome, ${d.user.username}.`);
+    } else if (e.target.dataset.form === 'changepw') {
+      const d = await api('/api/auth/change-password', { method: 'POST', json: Object.fromEntries(new FormData(e.target)) });
+      setSession(d.token, d.user); forcePw = false; $('#dlg').close(); render(); toast('Password changed.');
+    } else if (e.target.dataset.form === 'reset') {
+      const d = await api(`/api/admin/customers/${e.target.dataset.id}/reset-password`, { method: 'POST', json: Object.fromEntries(new FormData(e.target)) });
+      $('#dlg').innerHTML = `<h2>Temporary password</h2><p>For <b>${esc(d.username)}</b>. It is shown <b>once</b>, works for 24 hours, and they must choose their own password when they log in.</p>
+        <input id="temppw" readonly value="${esc(d.password)}" style="font-size:1.2rem;letter-spacing:1px">
+        <button class="primary" type="button" data-act="copytemp">Copy</button><button type="button" data-act="close">Done</button>`;
+      custHtml = ''; refreshCustomers().catch(() => {});
     } else if (e.target.dataset.form === 'quote') {
       const fd = Object.fromEntries(new FormData(e.target));
       const unavailable = e.submitter.dataset.mode === 'unavailable';
@@ -1053,7 +1092,8 @@ document.addEventListener('submit', async (e) => {
 });
 
 // Close the dialog when clicking the dimmed backdrop
-$('#dlg').addEventListener('click', (e) => { if (e.target === $('#dlg')) $('#dlg').close(); });
+$('#dlg').addEventListener('click', (e) => { if (e.target === $('#dlg') && !forcePw) $('#dlg').close(); });
+$('#dlg').addEventListener('cancel', (e) => { if (forcePw) e.preventDefault(); }); // Esc cannot skip the forced password change
 
 document.addEventListener('input', (e) => { if (e.target.id === 'osearch') { ordSearch = e.target.value; drawOrders(); } });
 
