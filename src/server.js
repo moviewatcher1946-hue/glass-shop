@@ -435,6 +435,11 @@ app.post('/api/orders', auth, wrap(async (req, res) => {
       parts.forEach((l) => { total += l.price * l.q; });
       return parts;
     });
+    // Blocked customers: shop-wide by the main admin, or from one seller's items by that seller.
+    const { rows: blocks } = await c.query('SELECT blocked_by, shop_wide FROM customer_blocks WHERE user_id=$1', [req.user.id]);
+    if (blocks.some((b) => b.shop_wide)) throw bad('Your account cannot place orders. Please talk to the seller.', 403);
+    const hit = lines.find((l) => blocks.some((b) => b.blocked_by === l.owner));
+    if (hit) throw bad(`A seller has blocked your account, so you cannot order "${hit.title}". Remove it from your cart.`, 403);
     const promo = await checkPromo(c, req.body.promo, req.user.id);
     // A promo discounts the items its owner sells (or everything if it has no owner),
     // and only the chosen products when it is a per-product code.
@@ -467,13 +472,15 @@ app.post('/api/orders', auth, wrap(async (req, res) => {
   }
 }));
 
-const ORDER_SQL = `SELECT o.id,o.total,o.status,o.note,o.promo_code,o.discount,o.created_at,u.username,
-  (SELECT json_agg(json_build_object('product_id',product_id,'title',title,'unit_price',unit_price,'quantity',quantity))
+const ORDER_SQL = `SELECT o.id,o.user_id,o.total,o.status,o.note,o.promo_code,o.discount,o.created_at,u.username,
+  (SELECT json_agg(json_build_object('product_id',product_id,'title',title,'unit_price',unit_price,'quantity',quantity,'owner_id',owner_id))
    FROM order_items WHERE order_id=o.id) AS items,
   (SELECT json_agg(json_build_object('owner_id',x.owner_id,'username',pu.username,'status',COALESCE(a.status,'pending')) ORDER BY x.owner_id)
      FROM (SELECT DISTINCT owner_id FROM order_items WHERE order_id=o.id AND owner_id IS NOT NULL) x
      JOIN users pu ON pu.id=x.owner_id
-     LEFT JOIN order_approvals a ON a.order_id=o.id AND a.owner_id=x.owner_id) AS parts
+     LEFT JOIN order_approvals a ON a.order_id=o.id AND a.owner_id=x.owner_id) AS parts,
+  (SELECT pc.owner_id FROM promo_codes pc WHERE upper(pc.code)=upper(o.promo_code) LIMIT 1) AS promo_owner,
+  (SELECT pc.shop_wide FROM promo_codes pc WHERE upper(pc.code)=upper(o.promo_code) LIMIT 1) AS promo_wide
   FROM orders o JOIN users u ON u.id=o.user_id`;
 
 app.get('/api/orders/mine', auth, wrap(async (req, res) => {
@@ -484,7 +491,7 @@ app.get('/api/orders/mine', auth, wrap(async (req, res) => {
 app.get('/api/orders', auth, staff, wrap(async (req, res) => {
   if (isMain(req.user)) return res.json((await pool.query(`${ORDER_SQL} ORDER BY o.created_at DESC`)).rows);
   const { rows } = await pool.query(
-    `SELECT o.id,o.status,o.note,o.promo_code,o.discount,o.created_at,u.username,
+    `SELECT o.id,o.user_id,o.status,o.note,o.promo_code,o.discount,o.created_at,u.username,
        (SELECT json_agg(json_build_object('product_id',oi.product_id,'title',oi.title,'unit_price',oi.unit_price,'quantity',oi.quantity) ORDER BY oi.id)
           FROM order_items oi WHERE oi.order_id=o.id AND oi.owner_id=$1) AS items,
        EXISTS (SELECT 1 FROM promo_codes pc WHERE upper(pc.code)=upper(o.promo_code) AND pc.owner_id=$1) AS promo_mine,
@@ -559,6 +566,8 @@ const CR_SQL = `SELECT r.id,r.description,r.status,r.quoted_price,r.admin_note,r
 
 // Customer submits a request.
 app.post('/api/custom-requests', auth, wrap(async (req, res) => {
+  const { rowCount: blockedAll } = await pool.query('SELECT 1 FROM customer_blocks WHERE user_id=$1 AND shop_wide', [req.user.id]);
+  if (blockedAll) throw bad('Your account cannot send requests. Please talk to the seller.', 403);
   const description = String((req.body || {}).description || '').trim();
   if (description.length < 10 || description.length > 2000)
     throw bad('Please describe what you want (10-2000 characters).');
@@ -608,7 +617,7 @@ app.patch('/api/custom-requests/:id/respond', auth, wrap(async (req, res) => {
 }));
 
 /* ---------- Backup / restore (admin only) ---------- */
-const BACKUP_TABLES = ['users', 'products', 'combos', 'combo_items', 'combo_approvals', 'promo_codes', 'settings', 'orders', 'order_items', 'custom_requests', 'order_approvals']; // parents first
+const BACKUP_TABLES = ['users', 'customer_blocks', 'products', 'combos', 'combo_items', 'combo_approvals', 'promo_codes', 'settings', 'orders', 'order_items', 'custom_requests', 'order_approvals']; // parents first
 
 app.get('/api/admin/export', auth, admin, wrap(async (req, res) => {
   const tables = {};
@@ -632,7 +641,7 @@ app.post('/api/admin/import', auth, admin, express.json({ limit: '100mb' }), wra
   const c = await pool.connect();
   try {
     await c.query('BEGIN');
-    await c.query('TRUNCATE order_approvals, order_items, orders, custom_requests, combo_approvals, combo_items, combos, promo_codes, settings, products, users RESTART IDENTITY CASCADE');
+    await c.query('TRUNCATE customer_blocks, order_approvals, order_items, orders, custom_requests, combo_approvals, combo_items, combos, promo_codes, settings, products, users RESTART IDENTITY CASCADE');
     for (const t of BACKUP_TABLES) {
       const { rows: colRows } = await c.query(
         'SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=$1', [t]);
@@ -794,6 +803,48 @@ app.put('/api/admin/settings', auth, admin, wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
+/* ---------- Blocking customers who abuse the shop ---------- */
+// Raven sees every customer; a seller sees customers who ordered her items (or whom she blocked).
+app.get('/api/customers', auth, staff, wrap(async (req, res) => {
+  const { rows } = await pool.query(`
+    SELECT u.id, u.username,
+      count(DISTINCT o.id)::int AS orders,
+      (count(DISTINCT o.id) FILTER (WHERE o.status='completed'))::int AS completed,
+      (count(DISTINCT o.id) FILTER (WHERE o.status='cancelled'))::int AS cancelled,
+      EXISTS (SELECT 1 FROM customer_blocks b WHERE b.user_id=u.id AND b.shop_wide) AS blocked_shop,
+      EXISTS (SELECT 1 FROM customer_blocks b WHERE b.user_id=u.id AND b.blocked_by=$1) AS blocked_by_me,
+      (SELECT reason FROM customer_blocks b WHERE b.user_id=u.id AND b.blocked_by=$1) AS my_reason
+    FROM users u
+    LEFT JOIN orders o ON o.user_id=u.id AND ($2::boolean OR EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id=o.id AND oi.owner_id=$1))
+    WHERE u.role='customer'
+    GROUP BY u.id
+    HAVING $2::boolean OR count(o.id) > 0 OR EXISTS (SELECT 1 FROM customer_blocks b WHERE b.user_id=u.id AND b.blocked_by=$1)
+    ORDER BY cancelled DESC, orders DESC, u.username`, [req.user.id, isMain(req.user)]);
+  res.json(rows);
+}));
+
+// Raven's block covers the whole shop; a seller's block covers only her own items.
+app.post('/api/customers/:id/block', auth, staff, wrap(async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) throw bad('Customer not found.', 404);
+  const reason = String((req.body || {}).reason || '').trim().slice(0, 200);
+  const { rows: [u] } = await pool.query("SELECT id, username FROM users WHERE id=$1 AND role='customer'", [id]);
+  if (!u) throw bad('Customer not found.', 404);
+  await pool.query(
+    `INSERT INTO customer_blocks (user_id, blocked_by, shop_wide, reason) VALUES ($1,$2,$3,$4)
+     ON CONFLICT (user_id, blocked_by) DO UPDATE SET reason=EXCLUDED.reason, shop_wide=EXCLUDED.shop_wide`,
+    [u.id, req.user.id, isMain(req.user), reason]);
+  if (!isMain(req.user)) notify(`${req.user.username} blocked ${u.username}${reason ? ': ' + reason : ''}`);
+  res.json({ ok: true });
+}));
+
+app.delete('/api/customers/:id/block', auth, staff, wrap(async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) throw bad('Customer not found.', 404);
+  await pool.query('DELETE FROM customer_blocks WHERE user_id=$1 AND blocked_by=$2', [id, req.user.id]);
+  res.sendStatus(204);
+}));
+
 /* ---------- Errors & boot ---------- */
 app.use((err, req, res, next) => {
   if (err.code === 'LIMIT_FILE_SIZE') err = bad('Image must be 5 MB or smaller.');
@@ -816,6 +867,15 @@ init()
       owner_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       status   VARCHAR(10) NOT NULL DEFAULT 'pending',
       PRIMARY KEY (combo_id, owner_id)
+    );
+    CREATE TABLE IF NOT EXISTS customer_blocks (
+      id         SERIAL PRIMARY KEY,
+      user_id    INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      blocked_by INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      shop_wide  BOOLEAN NOT NULL DEFAULT false,
+      reason     VARCHAR(200) NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE (user_id, blocked_by)
     );`))
   .then(() => app.listen(PORT, () => console.log(`Glass Shop running on :${PORT}`)))
   .catch((e) => { console.error('Startup failed:', e); process.exit(1); });
