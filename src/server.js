@@ -1078,14 +1078,15 @@ const localParts = () => {
 };
 
 // Completed orders only. Raven sees the whole shop; a seller sees only her own items.
-// Profit = what she sold (after her share of any promo) minus the cost prices saved on the order lines.
+// Profit = what she sold (after her share of any promo) minus the cost prices saved on the order lines
+// (a line saved without a cost uses the product's cost as it is now).
 const reportData = async (user, days) => {
   const main = isMain(user), mine = (id) => main || id === user.id;
   const { rows: ords } = await pool.query(`SELECT o.id, to_char(o.created_at AT TIME ZONE $1,'YYYY-MM-DD') AS day, o.discount, pc.owner_id AS promo_owner, COALESCE(pc.shop_wide,false) AS shop_wide
     FROM orders o LEFT JOIN promo_codes pc ON upper(pc.code)=upper(o.promo_code)
     WHERE o.status='completed' AND o.created_at >= now() - make_interval(days => $2::int)`, [TZ, days]);
-  const { rows: its } = await pool.query(`SELECT order_id,owner_id,title,quantity,unit_price::float AS price,cost_price::float AS cost
-    FROM order_items WHERE owner_id IS NOT NULL AND order_id = ANY($1)`, [ords.map((o) => o.id)]);
+  const { rows: its } = await pool.query(`SELECT oi.order_id,oi.owner_id,oi.title,oi.quantity,oi.unit_price::float AS price,COALESCE(oi.cost_price, p.cost)::float AS cost
+    FROM order_items oi LEFT JOIN products p ON p.id=oi.product_id WHERE oi.owner_id IS NOT NULL AND oi.order_id = ANY($1)`, [ords.map((o) => o.id)]);
   const byOrder = new Map();
   for (const i of its) { if (!byOrder.has(i.order_id)) byOrder.set(i.order_id, []); byOrder.get(i.order_id).push(i); }
   const dayMap = new Map(), itemMap = new Map();
@@ -1117,7 +1118,7 @@ const reportData = async (user, days) => {
 };
 
 // Per seller / admin (never a grand total). Gross = sales of completed orders. Income = gross minus the cost prices (the same profit the
-// report uses). Potential income = the same thing for pending + packed orders. Her own items only, after her share of any promo.
+// report uses). Potential income = the same thing for pending + packed orders (price minus cost, e.g. 50 sold at a cost of 30 = 20). Her own items only, after her share of any promo.
 // Raven sees one row per person; a seller sees only her own row.
 const peopleTotals = async (user) => {
   const main = isMain(user);
@@ -1126,7 +1127,11 @@ const peopleTotals = async (user) => {
   const { rows: its } = await pool.query('SELECT order_id,owner_id,SUM(unit_price*quantity)::float AS sub FROM order_items WHERE owner_id IS NOT NULL GROUP BY order_id,owner_id');
   const subs = new Map();
   for (const r of its) { if (!subs.has(r.order_id)) subs.set(r.order_id, new Map()); subs.get(r.order_id).set(r.owner_id, r.sub); }
-  const { rows: cs } = await pool.query('SELECT order_id,owner_id,SUM(COALESCE(cost_price,0)*quantity)::float AS cost,bool_or(cost_price IS NULL) AS missing FROM order_items WHERE owner_id IS NOT NULL GROUP BY order_id,owner_id');
+  const { rows: cs } = await pool.query(`SELECT oi.order_id,oi.owner_id,
+      SUM(COALESCE(oi.cost_price,p.cost,0)*oi.quantity)::float AS cost_done,
+      SUM(COALESCE(p.cost,oi.cost_price,0)*oi.quantity)::float AS cost_open,
+      bool_or(COALESCE(oi.cost_price,p.cost) IS NULL) AS missing
+    FROM order_items oi LEFT JOIN products p ON p.id=oi.product_id WHERE oi.owner_id IS NOT NULL GROUP BY oi.order_id,oi.owner_id`);
   const costs = new Map(cs.map((r) => [`${r.order_id}>${r.owner_id}`, r]));
   const { rows: team } = await pool.query("SELECT id,username,role FROM users WHERE role IN ('admin','seller') ORDER BY (role='admin') DESC, id");
   const out = new Map(team.map((u) => [u.id, { id: u.id, username: u.username, role: u.role, gross: 0, income: 0, potential: 0, done: 0, open: 0, missing_cost: false }]));
@@ -1134,9 +1139,9 @@ const peopleTotals = async (user) => {
     const sub = subs.get(o.id); if (!sub) continue;
     for (const [id, v] of shareOf(o, sub)) {
       const row = out.get(id); if (!row) continue;
-      const c = costs.get(`${o.id}>${id}`) || { cost: 0, missing: false };
-      if (o.status === 'completed') { row.gross += v; row.income += v - c.cost; row.done++; }
-      else { row.potential += v - c.cost; row.open++; }
+      const c = costs.get(`${o.id}>${id}`) || { cost_done: 0, cost_open: 0, missing: false };
+      if (o.status === 'completed') { row.gross += v; row.income += v - c.cost_done; row.done++; }
+      else { row.potential += v - c.cost_open; row.open++; } // not finished yet, so it uses the product's cost as it is now
       if (c.missing) row.missing_cost = true;
     }
   }
