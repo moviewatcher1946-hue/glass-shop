@@ -3,6 +3,9 @@ const multer = require('multer');
 const bcrypt = require('bcryptjs');
 const path = require('path');
 const crypto = require('crypto');
+const { promisify } = require('util');
+const zlib = require('zlib');
+const gzip = promisify(zlib.gzip), gunzip = promisify(zlib.gunzip);
 const { pool, init } = require('./db');
 const { sign, auth, admin, staff } = require('./auth');
 
@@ -849,9 +852,16 @@ app.post('/api/admin/import', auth, admin, express.json({ limit: '100mb' }), wra
   }
 }));
 
-app.get('/api/admin/backup-status', auth, admin, wrap(async (req, res) => {
-  const { rows: [r] } = await pool.query("SELECT value FROM settings WHERE key='last_backup'");
-  res.json({ last: r ? r.value : null });
+app.get('/api/admin/backups', auth, admin, wrap(async (req, res) => {
+  res.json((await pool.query('SELECT id,size,created_at FROM backups ORDER BY created_at DESC, id DESC')).rows);
+}));
+
+app.get('/api/admin/backups/:id/download', auth, admin, wrap(async (req, res) => {
+  const { rows: [b] } = await pool.query('SELECT data,created_at FROM backups WHERE id=$1', [parseInt(req.params.id) || 0]);
+  if (!b) throw bad('Backup not found.', 404);
+  res.set('Content-Type', 'application/json')
+    .set('Content-Disposition', `attachment; filename="shop-backup-${b.created_at.toISOString().slice(0, 10)}.json"`)
+    .send(await gunzip(b.data));
 }));
 
 /* ---------- Team names and seller alerts ---------- */
@@ -1060,14 +1070,12 @@ app.delete('/api/customers/:id/block', auth, staff, wrap(async (req, res) => {
 
 /* ---------- Sales and profit report ---------- */
 const TZ = process.env.REPORT_TZ || 'Asia/Manila';
-const peso = (n) => '\u20B1' + Number(n).toFixed(2);
 const r2 = (n) => Math.round(n * 100) / 100;
 const localParts = () => {
   const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hourCycle: 'h23', weekday: 'short' })
     .formatToParts(new Date()).map((x) => [x.type, x.value]));
   return { date: `${p.year}-${p.month}-${p.day}`, hour: Number(p.hour), dow: p.weekday };
 };
-const teamNames = async () => new Map((await pool.query("SELECT id,username FROM users WHERE role IN ('admin','seller')")).rows.map((r) => [r.id, r.username]));
 
 // Completed orders only. Raven sees the whole shop; a seller sees only her own items.
 // Profit = what she sold (after her share of any promo) minus the cost prices saved on the order lines.
@@ -1108,51 +1116,45 @@ const reportData = async (user, days) => {
   };
 };
 
+// Per seller / admin (never a grand total): gross = completed orders, potential = pending + packed orders still to come.
+// Each person's figure is her own items after her share of any promo. Raven sees one row per person; a seller sees only her own row.
+const peopleTotals = async (user) => {
+  const main = isMain(user);
+  const { rows: ords } = await pool.query(`SELECT o.id,o.status,o.discount,pc.owner_id AS promo_owner,COALESCE(pc.shop_wide,false) AS shop_wide
+    FROM orders o LEFT JOIN promo_codes pc ON upper(pc.code)=upper(o.promo_code) WHERE o.status IN ('pending','packed','completed')`);
+  const { rows: its } = await pool.query('SELECT order_id,owner_id,SUM(unit_price*quantity)::float AS sub FROM order_items WHERE owner_id IS NOT NULL GROUP BY order_id,owner_id');
+  const subs = new Map();
+  for (const r of its) { if (!subs.has(r.order_id)) subs.set(r.order_id, new Map()); subs.get(r.order_id).set(r.owner_id, r.sub); }
+  const { rows: team } = await pool.query("SELECT id,username,role FROM users WHERE role IN ('admin','seller') ORDER BY (role='admin') DESC, id");
+  const out = new Map(team.map((u) => [u.id, { id: u.id, username: u.username, role: u.role, gross: 0, potential: 0, done: 0, open: 0 }]));
+  for (const o of ords) {
+    const sub = subs.get(o.id); if (!sub) continue;
+    for (const [id, v] of shareOf(o, sub)) {
+      const row = out.get(id); if (!row) continue;
+      if (o.status === 'completed') { row.gross += v; row.done++; } else { row.potential += v; row.open++; }
+    }
+  }
+  return [...out.values()].filter((r) => main || r.id === user.id).map((r) => ({ ...r, gross: r2(r.gross), potential: r2(r.potential) }));
+};
+
 app.get('/api/admin/report', auth, staff, wrap(async (req, res) => {
   const days = Math.min(90, Math.max(1, parseInt(req.query.days) || 30));
-  res.json({ today: localParts().date, ...(await reportData(req.user, days)) });
+  res.json({ today: localParts().date, people: await peopleTotals(req.user), ...(await reportData(req.user, days)) });
 }));
 
-// Nightly message to Raven: today's sales, cash that was delivered but never marked paid, and who owes whom.
-async function sendClosing() {
-  const { rows: [a] } = await pool.query("SELECT id FROM users WHERE role='admin' ORDER BY id LIMIT 1");
-  if (!a) return;
-  const u = { id: a.id, role: 'admin' }, today = localParts().date, names = await teamNames();
-  const rep = await reportData(u, 2), cash = await cashSummary(u);
-  const d = rep.days.find((x) => x.day === today) || { orders: 0, revenue: 0, profit: 0 };
-  const miss = new Map();
-  for (const o of cash.unpaid) if (o.status === 'completed') for (const [id, v] of Object.entries(o.shares)) miss.set(Number(id), (miss.get(Number(id)) || 0) + v);
-  const L = [`Closing report ${today}`, `Completed today: ${d.orders} orders, sales ${peso(d.revenue)}, profit ${peso(d.profit)}${rep.missing_cost ? ' (some costs missing)' : ''}`];
-  L.push(miss.size ? 'Delivered but NOT marked paid: ' + [...miss].map(([id, v]) => `${names.get(id)} ${peso(v)}`).join(', ') : 'All delivered orders are marked paid.');
-  for (const b of cash.balances) L.push(`${b.from_name} owes ${b.to_name} ${peso(b.amount)}`);
-  notify(L.join('\n'));
-}
-app.post('/api/admin/report/send', auth, admin, wrap(async (req, res) => { await sendClosing(); res.json({ ok: true }); }));
-
-// Sunday message to each seller who has set a phone alert topic.
-async function sendWeekly() {
-  const { rows } = await pool.query("SELECT id FROM users WHERE role='seller' AND ntfy_topic <> ''");
-  const msgs = new Map();
-  for (const r of rows) {
-    const u = { id: r.id, role: 'seller' }, rep = await reportData(u, 7), cash = await cashSummary(u);
-    const sum = (k) => rep.days.reduce((t, d) => t + d[k], 0);
-    const unpaid = cash.unpaid.reduce((t, o) => t + (o.shares[r.id] || 0), 0);
-    const L = [`Your week: ${sum('orders')} orders, sales ${peso(sum('revenue'))}, profit ${peso(sum('profit'))}${rep.missing_cost ? ' (some costs missing)' : ''}`];
-    if (unpaid > 0) L.push(`Not yet paid on your orders: ${peso(unpaid)}`);
-    for (const b of cash.balances) L.push(b.from === r.id ? `You owe ${b.to_name} ${peso(b.amount)}` : `${b.from_name} owes you ${peso(b.amount)}`);
-    msgs.set(r.id, L.join('\n'));
-  }
-  if (msgs.size) await notifySellers(msgs);
-}
-
-/* ---------- Automatic backup and scheduled messages ---------- */
-// Sends the backup file to Telegram (best: keeps the file) or ntfy (the file is only kept a few hours, so open it soon).
+/* ---------- Automatic backup (every 3 days) ---------- */
+// Each automatic backup is kept inside the site (Admin > Backup, newest 5). If Telegram or ntfy is set up, a copy is also sent there.
+const BACKUP_EVERY = 3 * 24 * 3600e3, KEEP_BACKUPS = 5;
 async function autoBackup() {
-  const tg = process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID, nt = process.env.NTFY_TOPIC;
-  if (!tg && !nt) return;
   const name = `shop-backup-${new Date().toISOString().slice(0, 10)}.json`;
   try {
     const body = await buildBackup();
+    const zipped = await gzip(Buffer.from(body));
+    await pool.query('INSERT INTO backups (size, data) VALUES ($1,$2)', [zipped.length, zipped]);
+    await pool.query('DELETE FROM backups WHERE id NOT IN (SELECT id FROM backups ORDER BY created_at DESC, id DESC LIMIT $1)', [KEEP_BACKUPS]);
+    await putSetting('last_auto_backup', new Date().toISOString());
+    const tg = process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID, nt = process.env.NTFY_TOPIC;
+    if (!tg && !nt) return;
     let r;
     if (tg) {
       const fd = new FormData();
@@ -1163,24 +1165,20 @@ async function autoBackup() {
       r = await fetch(`https://ntfy.sh/${encodeURIComponent(nt)}`, { method: 'PUT', body, headers: { Filename: name, Title: 'Glass Shop backup' } });
     }
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    await putSetting('last_backup', new Date().toISOString());
   } catch (e) {
     console.error('Auto backup failed:', e.message);
     notify('Auto backup failed. Please download one by hand in Admin > Backup.');
   }
 }
 
-// Checked every 5 minutes. If the free server was asleep at the set hour, it catches up when it wakes the same day.
+// Checked every 5 minutes. If the free server was asleep when a backup was due, it catches up when it wakes.
 let busy = false, lastBackupTry = 0;
 async function tick() {
   if (busy) return;
   busy = true;
   try {
-    const t = localParts(), hour = Number(process.env.REPORT_HOUR ?? 21);
-    if (t.hour >= hour && (await getSetting('last_daily')) !== t.date) { await putSetting('last_daily', t.date); await sendClosing(); }
-    if (t.dow === 'Sun' && t.hour >= hour && (await getSetting('last_weekly')) !== t.date) { await putSetting('last_weekly', t.date); await sendWeekly(); }
-    const last = await getSetting('last_backup');
-    if ((!last || Date.now() - new Date(last) > 24 * 3600e3) && Date.now() - lastBackupTry > 3600e3) { lastBackupTry = Date.now(); await autoBackup(); }
+    const last = await getSetting('last_auto_backup');
+    if ((!last || Date.now() - new Date(last) > BACKUP_EVERY) && Date.now() - lastBackupTry > 3600e3) { lastBackupTry = Date.now(); await autoBackup(); }
   } catch (e) { console.error('Scheduled job failed:', e.message); } finally { busy = false; }
 }
 
@@ -1233,6 +1231,12 @@ init()
       from_id    INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       to_id      INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       amount     NUMERIC(10,2) NOT NULL CHECK (amount > 0),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS backups (
+      id         SERIAL PRIMARY KEY,
+      size       INT NOT NULL,
+      data       BYTEA NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
     CREATE TABLE IF NOT EXISTS customer_blocks (
