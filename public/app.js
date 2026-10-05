@@ -4,6 +4,9 @@ const CURRENCY = '₱';
 const money = (n) => CURRENCY + Number(n).toFixed(2);
 // Price after the product's % discount (the server works it out again when you order).
 const fin = (p) => Math.round(Number(p.price) * (100 - (Number(p.discount_percent) || 0))) / 100;
+// Bulk discount: buy bulk_min or more, get bulk_percent% off each (the lower of this and the normal discount; the server does the same maths).
+const bulkOn = (p) => Number(p.bulk_min) >= 2 && Number(p.bulk_percent) > 0;
+const unitFor = (p, q) => (bulkOn(p) && q >= Number(p.bulk_min) ? Math.min(fin(p), Math.round(Number(p.price) * (100 - Number(p.bulk_percent))) / 100) : fin(p));
 const LOW_STOCK = 5;
 const CATS = { drinks: 'Drinks', snacks: 'Snacks' };
 const STATUS = { pending: 'Pending', packed: 'Packed', completed: 'Completed', cancelled: 'Cancelled' };
@@ -18,6 +21,7 @@ let searchText = '', catFilter = 'all';
 const selected = new Set(); // products ticked in Admin for bulk changes
 let combos = [], comboAdminHtml = '';
 let ordersCache = [], shownOrders = [], ordStatus = 'active', ordRange = 'all', ordDay = '', custHtml = '';
+let installEvt = null; // Chrome's "install app" offer, kept until the person taps Install
 let promo = null, cartNote = '', settings = { banner: '', stamp_reward: 'a free snack' }, promoAdminHtml = '', myOrders = [];
 let sig = '', lastOrderId = null, mineHtml = '', adminHtml = '', statusMap = null, adminTab = 'products', pendingCount = 0;
 let ordSearch = '', costMap = {}, repData = null;
@@ -73,6 +77,7 @@ function renderMobileNav() {
       (user ? `<button class="${on('orders')}" data-act="orders">My orders</button>` : ''));
   $('#acct').innerHTML = user ? `<span class="pill">${esc(user.username)}</span>` : '<button class="primary" data-act="auth">Log in</button>';
   $('#foot').innerHTML = `<button id="foot-theme" type="button">${document.documentElement.dataset.theme === 'dark' ? 'Light mode' : 'Dark mode'}</button>` +
+    (installEvt ? '<button data-act="install">Install app</button>' : '') +
     (user ? '<button data-act="logout">Log out</button>' : '');
 }
 
@@ -96,6 +101,7 @@ const productCard = (p) => {
       <div class="img">${p.image_url ? `<img loading="lazy" src="${esc(p.image_url)}" alt="${esc(p.title)}">` : ''}
         ${p.is_sold_out ? '<span class="badge">Sold out</span>' : ''}${off ? `<span class="badge off">-${off}%</span>` : ''}</div>
       <h3>${esc(p.title)}</h3><p>${esc(p.description)}</p>
+      ${bulkOn(p) ? `<p class="muted"><b>Buy ${p.bulk_min}+ and save ${p.bulk_percent}%</b></p>` : ''}
       ${!p.is_sold_out && p.stock != null && p.stock <= LOW_STOCK ? `<p class="muted"><b>Only ${p.stock} left</b></p>` : ''}
       <footer><span>${off ? `<span class="was">${money(p.price)}</span> ` : ''}<b>${money(fin(p))}</b></span>
         <button class="primary" data-act="add" data-id="${p.id}" ${p.is_sold_out ? 'disabled' : ''}>Add to cart</button></footer>
@@ -171,7 +177,7 @@ const productTable = () => `<table>${products.map((p) => {
   return `<tr>
     <td>${mine ? `<input type="checkbox" class="pick" value="${p.id}" ${selected.has(p.id) ? 'checked' : ''}>` : ''}</td>
     <td>${p.image_url ? `<img class="thumb" src="${esc(p.image_url)}" alt="">` : ''}</td>
-    <td><b>${esc(p.title)}</b><br>${money(p.price)}${p.discount_percent ? ` (-${p.discount_percent}%)` : ''} | ${CATS[p.category] || 'Snacks'}${mine && costMap[p.id] != null ? ` | Profit ${money(fin(p) - Number(costMap[p.id]))} each` : ''}${p.stock != null ? ` | Stock: ${p.stock}${p.stock > 0 && p.stock <= LOW_STOCK ? ' (low!)' : ''}` : ''}${p.is_sold_out ? ' - sold out' : ''}${ownerName(p.owner_id) ? ` | by ${esc(ownerName(p.owner_id))}` : ''}</td>
+    <td><b>${esc(p.title)}</b><br>${money(p.price)}${p.discount_percent ? ` (-${p.discount_percent}%)` : ''}${bulkOn(p) ? ` | Bulk: ${p.bulk_min}+ = -${p.bulk_percent}%` : ''} | ${CATS[p.category] || 'Snacks'}${mine && costMap[p.id] != null ? ` | Profit ${money(fin(p) - Number(costMap[p.id]))} each` : ''}${p.stock != null ? ` | Stock: ${p.stock}${p.stock > 0 && p.stock <= LOW_STOCK ? ' (low!)' : ''}` : ''}${p.is_sold_out ? ' - sold out' : ''}${ownerName(p.owner_id) ? ` | by ${esc(ownerName(p.owner_id))}` : ''}</td>
     <td>${mine ? `<div class="actions">
       <button data-act="edit" data-id="${p.id}">Edit</button>
       <button data-act="toggle" data-id="${p.id}">${p.is_sold_out ? 'Mark available' : 'Mark sold out'}</button>
@@ -457,6 +463,7 @@ async function refreshAdminCombos() {
       <td><div class="actions">
         ${my && my.status !== 'approved' ? `<button class="primary" data-act="combo-approve" data-id="${c.id}" data-yes="1">Approve</button>` : ''}
         ${my && my.status !== 'declined' ? `<button class="danger" data-act="combo-approve" data-id="${c.id}" data-yes="0">Decline</button>` : ''}
+        ${isRaven() ? (c.approvals || []).filter((x) => x.owner_id !== user.id && x.status !== 'approved').map((x) => `<button data-act="combo-approve" data-id="${c.id}" data-yes="1" data-owner="${x.owner_id}">Approve for ${esc(x.username)}</button>`).join('') : ''}
         ${canEdit(c.owner_id) ? `<button data-act="combo-toggle" data-id="${c.id}">${c.is_active ? 'Hide' : 'Show'}</button>
         <button class="danger" data-act="combo-delete" data-id="${c.id}">Delete</button>` : ''}</div></td></tr>`;
   }).join('')}</table>` : '<p>No combos yet.</p>';
@@ -504,7 +511,7 @@ async function refreshSellers() {
   sellers = await api('/api/admin/sellers');
   const el = $('#sellerlist');
   if (el) el.innerHTML = sellers.length ? `<table>${sellers.map((x) => `<tr><td><b>${esc(x.username)}</b></td>
-    <td><div class="actions"><button data-act="seller-pw" data-id="${x.id}">New password</button>
+    <td><div class="actions"><button data-act="seller-rename" data-id="${x.id}">Rename</button><button data-act="seller-pw" data-id="${x.id}">New password</button>
     <button class="danger" data-act="seller-del" data-id="${x.id}">Remove</button></div></td></tr>`).join('')}</table>` : '<p>No sellers yet.</p>';
   const ob = $('#ownerbox');
   if (ob) {
@@ -577,6 +584,8 @@ function renderAdmin() {
         <div id="ownerbox"></div>
         <label>Category</label><select name="category"><option value="drinks">Drinks</option><option value="snacks">Snacks</option></select>
         <label>Discount % (0 for none)</label><input name="discount_percent" type="number" min="0" max="90" value="0">
+        <div class="row"><div><label>Bulk discount: buy at least (leave empty for none)</label><input name="bulk_min" type="number" min="2" max="999" step="1"></div>
+          <div><label>Bulk discount % off each</label><input name="bulk_percent" type="number" min="0" max="90" value="0"></div></div>
         <label>Cost price (what it costs you; optional, customers never see it)</label><input name="cost" type="number" step="0.01" min="0">
         <label>Stock (how many you have; leave empty to not count)</label><input name="stock" type="number" min="0" step="1">
         <label>Description</label><textarea name="description" rows="3"></textarea>
@@ -854,7 +863,10 @@ function cartLines() {
       return c && { key, title: 'Combo: ' + c.title, price: Number(c.price), q, owner: c.owner_id, parts: comboParts(c) };
     }
     const p = products.find((x) => x.id == key);
-    return p && { key, title: p.title, price: fin(p), q, owner: p.owner_id };
+    if (!p) return null;
+    const hit = bulkOn(p) && q >= Number(p.bulk_min);
+    const note = hit ? ` <small class="muted">(bulk price, ${p.bulk_percent}% off)</small>` : bulkOn(p) ? ` <small class="muted">(buy ${p.bulk_min}+ for ${p.bulk_percent}% off)</small>` : '';
+    return { key, title: p.title, price: unitFor(p, q), q, owner: p.owner_id, note };
   }).filter(Boolean);
 }
 function cartDialog() {
@@ -868,7 +880,7 @@ function cartDialog() {
     return ok ? s + l.price * l.q : s;
   }, 0);
   const off = promo ? Math.round(base * promo.percent) / 100 : 0;
-  $('#dlg').innerHTML = `<h2>Your cart</h2>${lines.map((l) => `<div class="cline"><span>${l.q} x ${esc(l.title)}</span><b>${money(l.price * l.q)}</b><button data-act="remove" data-id="${l.key}">Remove</button></div>`).join('') || '<p>Your cart is empty.</p>'}
+  $('#dlg').innerHTML = `<h2>Your cart</h2>${lines.map((l) => `<div class="cline"><span>${l.q} x ${esc(l.title)}${l.note || ''}</span><b>${money(l.price * l.q)}</b><button data-act="remove" data-id="${l.key}">Remove</button></div>`).join('') || '<p>Your cart is empty.</p>'}
     ${lines.length ? `<label>Promo code (optional)</label>
       <div class="actions"><input id="promoin" value="${esc(promo ? promo.code : '')}" placeholder="Enter code" style="flex:1;margin:0"><button data-act="applypromo">Apply</button></div>
       <label style="display:block;margin-top:12px">Note for the seller (your name, seat, anything helpful)</label>
@@ -931,6 +943,13 @@ const actions = {
     if (!added) return toast('Those items are not available right now.');
     saveCart(); cartDialog();
   },
+  'seller-rename': async (id) => {
+    const cur = (sellers.find((x) => x.id == id) || {}).username || '';
+    const name = prompt('New username for this seller (3-30 letters, numbers or _):', cur);
+    if (!name || name.trim() === cur) return;
+    await api(`/api/admin/sellers/${id}`, { method: 'PATCH', json: { username: name.trim() } });
+    await refreshSellers(); await loadProducts(); toast('Seller renamed.');
+  },
   'seller-pw': async (id) => {
     const pw = prompt('New password for this seller (8+ characters):');
     if (!pw) return;
@@ -951,11 +970,12 @@ const actions = {
     if (!selected.size) return toast('Tick the products first.');
     const pct = $('#discpct').value;
     if (pct === '') return toast('Type the discount % first (0 removes it).');
-    await api('/api/products/discount', { method: 'PATCH', json: { ids: [...selected], percent: pct } });
-    selected.clear(); await loadProducts(); toast(Number(pct) ? `${pct}% discount applied.` : 'Discount removed.');
+    const r = await api('/api/products/discount', { method: 'PATCH', json: { ids: [...selected], percent: pct } });
+    selected.clear(); await loadProducts();
+    toast((Number(pct) ? `${pct}% discount applied.` : 'Discount removed.') + (r && r.repriced_orders ? ` ${r.repriced_orders} open order${r.repriced_orders === 1 ? '' : 's'} updated.` : ''));
   },
   'combo-approve': async (id, d) => {
-    await api(`/api/combos/${id}/approval`, { method: 'PATCH', json: { approve: d.yes === '1' } });
+    await api(`/api/combos/${id}/approval`, { method: 'PATCH', json: { approve: d.yes === '1', ...(d.owner ? { owner_id: d.owner } : {}) } });
     await refreshAdminCombos(); await loadProductsQuiet(); toast(d.yes === '1' ? 'Approved.' : 'Declined.');
   },
   'combo-toggle': async (id) => { await api(`/api/combos/${id}/active`, { method: 'PATCH' }); await refreshAdminCombos(); await loadProductsQuiet(); },
@@ -1048,6 +1068,7 @@ const actions = {
   close: () => $('#dlg').close(),
   auth: authDialog,
   cart: cartDialog,
+  install: () => installApp(),
   logout: () => { forcePw = false; $('#dlg').close(); clearSession(); view = 'shop'; render(); toast('Logged out.'); },
   'cust-reset': (id, d) => {
     $('#dlg').innerHTML = `<h2>Reset password for ${esc(d.name)}</h2><p class="muted">Type your own admin password to confirm. This is logged and sent to your phone.</p><form data-form="reset" data-id="${id}">
@@ -1071,7 +1092,7 @@ const actions = {
   delete: async (id) => { if (confirm('Delete this product?')) { await api(`/api/products/${id}`, { method: 'DELETE' }); await loadProducts(); toast('Deleted.'); } },
   edit: (id) => {
     const p = products.find((x) => x.id == id), f = $('#pform');
-    f.dataset.id = id; f.title.value = p.title; f.price.value = p.price; f.description.value = p.description; f.category.value = p.category || 'snacks'; f.discount_percent.value = p.discount_percent || 0; f.stock.value = p.stock ?? ''; f.cost.value = costMap[id] ?? ''; if (f.owner_id) f.owner_id.value = p.owner_id || user.id;
+    f.dataset.id = id; f.title.value = p.title; f.price.value = p.price; f.description.value = p.description; f.category.value = p.category || 'snacks'; f.discount_percent.value = p.discount_percent || 0; f.bulk_min.value = p.bulk_min ?? ''; f.bulk_percent.value = p.bulk_percent || 0; f.stock.value = p.stock ?? ''; f.cost.value = costMap[id] ?? ''; if (f.owner_id) f.owner_id.value = p.owner_id || user.id;
     $('#form-title').textContent = 'Edit product'; $('#save').textContent = 'Save changes';
     f.scrollIntoView({ behavior: 'smooth' });
   },
@@ -1137,8 +1158,9 @@ document.addEventListener('submit', async (e) => {
       const id = e.target.dataset.id;
       const fd = new FormData(e.target);
       if (!fd.get('image').size) fd.delete('image');
-      await api(id ? `/api/products/${id}` : '/api/products', { method: id ? 'PUT' : 'POST', body: fd });
-      await loadProducts(); refreshCosts().catch(() => {}); toast(id ? 'Changes saved.' : 'Product added.');
+      const saved = await api(id ? `/api/products/${id}` : '/api/products', { method: id ? 'PUT' : 'POST', body: fd });
+      await loadProducts(); refreshCosts().catch(() => {});
+      toast(id ? (saved && saved.repriced_orders ? `Changes saved. ${saved.repriced_orders} open order${saved.repriced_orders === 1 ? '' : 's'} updated to the new price.` : 'Changes saved.') : 'Product added.');
     }
   } catch (err) { toast(err.message); }
 });
@@ -1222,5 +1244,32 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) poll
     $('#a2hs-ok').addEventListener('click', () => { localStorage.a2hsDone = '1'; $('#a2hs').remove(); });
   } catch (e) { /* private browsing */ }
 })();
+
+/* Android (Chrome): the browser offers to install the shop as an app. We keep that offer and show our own card
+   (the same one the iPhone tip uses) plus an "Install app" button in the footer. */
+async function installApp() {
+  if (!installEvt) return;
+  const ev = installEvt; installEvt = null;
+  const card = $('#a2hs'); if (card) card.remove();
+  try { ev.prompt(); await ev.userChoice; } catch (e) { /* closed without choosing */ }
+  renderMobileNav();
+}
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault(); installEvt = e;
+  let snoozed = false;
+  try { snoozed = Date.now() - Number(localStorage.installSnooze || 0) < 7 * 864e5; } catch (err) { /* private browsing */ }
+  if (!snoozed && !$('#a2hs')) document.body.insertAdjacentHTML('beforeend', `<div id="a2hs" class="glass">
+    <b>Install the shop as an app</b>
+    <p>Put it on your home screen. It opens full screen, like a real app.</p>
+    <button class="primary" id="a2hs-install" type="button">Install</button> <button id="a2hs-later" type="button">Not now</button></div>`);
+  renderMobileNav();
+});
+window.addEventListener('appinstalled', () => { installEvt = null; const c = $('#a2hs'); if (c) c.remove(); renderMobileNav(); toast('Installed. Open it from your home screen.'); });
+document.addEventListener('click', (e) => {
+  if (e.target.id === 'a2hs-install') installApp();
+  else if (e.target.id === 'a2hs-later') { try { localStorage.installSnooze = Date.now(); } catch (err) { /* ignore */ } const c = $('#a2hs'); if (c) c.remove(); }
+});
+// The service worker is what lets Chrome treat the shop as an installable app, and keeps the shell opening if the signal drops.
+if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
 
 loadProducts().catch((e) => toast(e.message));
