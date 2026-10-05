@@ -64,7 +64,8 @@ function animateApp() {
   const a = $('#app'); if (!a) return;
   a.classList.remove('fx'); void a.offsetWidth; a.classList.add('fx');
 }
-const saveCart = () => { localStorage.cart = JSON.stringify(cart); renderNav(); };
+const bumpCart = () => document.querySelectorAll('[data-act="cart"]').forEach((b) => { b.classList.remove('bump'); void b.offsetWidth; b.classList.add('bump'); });
+const saveCart = () => { localStorage.cart = JSON.stringify(cart); renderNav(); bumpCart(); };
 const setSession = (t, u) => { token = t; user = u; statusMap = null; crMap = null; localStorage.token = t; localStorage.user = JSON.stringify(u); };
 const clearSession = () => { token = ''; user = null; statusMap = null; crMap = null; localStorage.removeItem('token'); localStorage.removeItem('user'); };
 // isAdmin = any staff account (raven or a seller); isRaven = the main admin, who controls everything.
@@ -109,7 +110,7 @@ const productCard = (p) => {
   return `
     <article class="card glass">
       <div class="img">${p.image_url ? `<img loading="lazy" src="${esc(p.image_url)}" alt="${esc(p.title)}">` : ''}
-        ${p.is_sold_out ? '<span class="badge">Sold out</span>' : ''}${off ? `<span class="badge off">-${off}%</span>` : ''}</div>
+        ${p.is_sold_out ? '<span class="badge">Sold out</span>' : ''}${off ? `<span class="badge off">-${off}% OFF</span>` : ''}</div>
       <h3>${esc(p.title)}</h3><p>${esc(p.description)}</p>
       ${bulkOn(p) ? `<p class="muted"><b>Buy ${p.bulk_min}+ and save ${p.bulk_percent}%</b></p>` : ''}
       ${!p.is_sold_out && p.stock != null && p.stock <= LOW_STOCK ? `<p class="muted"><b>Only ${p.stock} left</b></p>` : ''}
@@ -535,6 +536,26 @@ async function refreshSellers() {
   fillProducts();
 }
 
+// "Needs attention": one quiet row of buttons under the Admin tabs. Shows only what needs doing and disappears when everything is done.
+let attnAt = 0, attnCash = null;
+async function refreshAttention(force) {
+  if (force || !attnCash || Date.now() - attnAt > 60000) { attnAt = Date.now(); attnCash = await api('/api/admin/cash'); }
+  drawAttention();
+}
+function drawAttention() {
+  const el = $('#attn'); if (!el) return;
+  const low = myProducts().filter((p) => p.stock != null && p.stock <= LOW_STOCK).length;
+  const owed = attnCash ? attnCash.unpaid.filter((o) => o.status === 'completed').reduce((t, o) => t + Object.values(o.shares).reduce((a, b) => a + b, 0), 0) : 0;
+  const chip = (tab, text, st = '') => `<button data-act="attn-go" data-tab="${tab}" ${st ? `data-st="${st}"` : ''}>${text}</button>`;
+  const chips = [
+    pendingCount ? chip('orders', `${pendingCount} order${pendingCount === 1 ? '' : 's'} to pack`, 'pending') : '',
+    pendingCustom ? chip('custom', `${pendingCustom} custom request${pendingCustom === 1 ? '' : 's'} to answer`) : '',
+    owed > 0.004 ? chip('cash', `${money(owed)} delivered, not marked paid`) : '',
+    low ? chip('products', `${low} item${low === 1 ? '' : 's'} low or sold out`) : '',
+  ].join('');
+  const html = chips ? `<div class="attn">${chips}</div>` : '';
+  if (el.dataset.h !== html) { el.dataset.h = html; el.innerHTML = html; } // only redraw on a change, so the pop-in doesn't replay every refresh
+}
 async function refreshCosts() { costMap = await api('/api/admin/costs'); fillProducts(); }
 async function refreshReport() { repData = await api('/api/admin/report?days=30'); drawReport(); }
 function drawReport() {
@@ -725,7 +746,7 @@ function renderAdmin() {
   const customersView = `<h2>Customers</h2>
     <p class="muted">Block people who abuse the shop (fake orders, not showing up). ${isRaven() ? 'Your block covers the whole shop.' : 'Your block stops them ordering your items only.'} The list shows the most cancelled orders first.</p>
     <div id="custlist"><p>Loading...</p></div>`;
-  $('#app').innerHTML = tabs + '<div id="adminnotes"></div>' + (adminTab === 'report' ? reportView : adminTab === 'cash' ? cashView : adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'alerts' && !isRaven() ? alertsView : adminTab === 'combos' ? combosView : adminTab === 'promos' ? promosView : adminTab === 'customers' ? customersView : productsView);
+  $('#app').innerHTML = tabs + '<div id="attn"></div><div id="adminnotes"></div>' + (adminTab === 'report' ? reportView : adminTab === 'cash' ? cashView : adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'alerts' && !isRaven() ? alertsView : adminTab === 'combos' ? combosView : adminTab === 'promos' ? promosView : adminTab === 'customers' ? customersView : productsView);
   fillProducts();
   comboAdminHtml = ''; refreshAdminCombos().catch(() => {});
   promoAdminHtml = ''; refreshAdminPromos().catch(() => {});
@@ -737,6 +758,7 @@ function renderAdmin() {
   if (adminTab === 'cash') refreshCash().catch(() => {});
   if (adminTab === 'report') refreshReport().catch(() => {});
   refreshCosts().catch(() => {});
+  refreshAttention().catch(() => {});
   if (isRaven() && adminTab === 'backup') refreshBackup().catch(() => {});
   if (isRaven()) loadBackupInfo();
   if (isRaven()) refreshSellers().catch(() => {}); else loadAlerts().catch(() => {});
@@ -852,6 +874,21 @@ async function loadProducts() {
 }
 
 /* ---------- Dialogs ---------- */
+// Asks how many before adding to the cart. A counted item can't go above what is left in stock.
+function askQty(key, title, stock, hint) {
+  const room = Math.min(99, stock != null ? stock - (cart[key] || 0) : 99 - (cart[key] || 0));
+  if (room < 1) return toast(stock != null ? `You already have all ${stock} in your cart.` : 'Cart limit reached for this item.');
+  $('#dlg').innerHTML = `<h2>${esc(title)}</h2><p class="muted">${stock != null && stock <= LOW_STOCK ? `Only ${stock} left. ` : ''}${esc(hint)}</p>
+    <form data-form="qty" data-key="${esc(String(key))}">
+      <div style="display:flex;justify-content:center;align-items:center;gap:12px;margin:10px 0">
+        <button type="button" data-act="qty-step" data-d="-1">-</button>
+        <input name="qty" id="qtyin" type="number" min="1" max="${room}" value="1" inputmode="numeric" style="width:90px;text-align:center;font-size:1.3rem">
+        <button type="button" data-act="qty-step" data-d="1">+</button>
+      </div>
+      <button class="primary">Add to cart</button><button type="button" data-act="close">Cancel</button></form>`;
+  $('#dlg').showModal();
+  setTimeout(() => { const i = $('#qtyin'); if (i) i.select(); }, 50);
+}
 let forcePw = false;
 function changePwDialog() {
   forcePw = true;
@@ -912,7 +949,7 @@ function cartDialog() {
     return ok ? s + l.price * l.q : s;
   }, 0);
   const off = promo ? Math.round(base * promo.percent) / 100 : 0;
-  $('#dlg').innerHTML = `<h2>Your cart</h2>${lines.map((l) => `<div class="cline"><span>${l.q} x ${esc(l.title)}${l.note || ''}</span><b>${money(l.price * l.q)}</b><button data-act="remove" data-id="${l.key}">Remove</button></div>`).join('') || '<p>Your cart is empty.</p>'}
+  $('#dlg').innerHTML = `<h2>Your cart</h2>${lines.map((l) => `<div class="cline"><span>${esc(l.title)}${l.note || ''}</span><div class="qty"><button data-act="cart-step" data-id="${l.key}" data-d="-1">-</button><b>${l.q}</b><button data-act="cart-step" data-id="${l.key}" data-d="1">+</button></div><b>${money(l.price * l.q)}</b><button data-act="remove" data-id="${l.key}">Remove</button></div>`).join('') || '<p>Your cart is empty.</p>'}
     ${lines.length ? `<label>Promo code (optional)</label>
       <div class="actions"><input id="promoin" value="${esc(promo ? promo.code : '')}" placeholder="Enter code" style="flex:1;margin:0"><button data-act="applypromo">Apply</button></div>
       <label style="display:block;margin-top:12px">Note for the seller (your name, seat, anything helpful)</label>
@@ -997,7 +1034,7 @@ const actions = {
     if (!confirm('Delete this promo code?')) return;
     await api(`/api/promos/${id}`, { method: 'DELETE' }); await refreshAdminPromos(); toast('Deleted.');
   },
-  addcombo: (id) => { const k = 'c' + id; cart[k] = (cart[k] || 0) + 1; saveCart(); toast('Added to cart.'); },
+  addcombo: (id) => { const c = combos.find((x) => x.id == id); askQty('c' + id, c ? c.title : 'Combo', null, ''); },
   reprice: async () => {
     const r = await api('/api/orders/reprice', { method: 'POST' });
     await refreshOrders().catch(() => {});
@@ -1085,6 +1122,7 @@ const actions = {
   },
   paid: async (id, d) => {
     await api(`/api/orders/${id}/paid`, { method: 'PATCH', json: { paid: d.paid === '1' } });
+    refreshAttention(true).catch(() => {});
     await refreshOrders(); if (adminTab === 'cash') await refreshCash(); toast(d.paid === '1' ? 'Marked paid.' : 'Paid tick removed.');
   },
   settle: async (id, d) => {
@@ -1119,8 +1157,21 @@ const actions = {
     const i = $('#temppw'); i.select();
     try { await navigator.clipboard.writeText(i.value); toast('Copied.'); } catch (e) { document.execCommand('copy'); toast('Copied.'); }
   },
-  add: (id) => { cart[id] = (cart[id] || 0) + 1; saveCart(); toast('Added to cart.'); },
+  add: (id) => { const p = products.find((x) => x.id == id); if (p) askQty(id, p.title, p.stock, bulkOn(p) ? `Buy ${p.bulk_min} or more for ${p.bulk_percent}% off each.` : ''); },
+  'qty-step': (_, d) => { const i = $('#qtyin'); i.value = Math.max(1, Math.min(Number(i.max) || 99, (parseInt(i.value) || 1) + Number(d.d))); },
   remove: (id) => { delete cart[id]; saveCart(); cartDialog(); },
+  'cart-step': (id, d) => {
+    const n = (cart[id] || 0) + Number(d.d), p = String(id).startsWith('c') ? null : products.find((x) => x.id == id);
+    const max = Math.min(99, p && p.stock != null ? p.stock : 99);
+    if (n < 1) return; // use Remove to take an item out
+    if (n > max) return toast(max < 99 ? `Only ${max} in stock.` : 'Max 99 per item.');
+    cart[id] = n; saveCart(); cartDialog();
+  },
+  'attn-go': (_, d) => {
+    adminTab = d.tab;
+    if (d.st) { ordStatus = d.st; ordRange = 'all'; ordDay = ''; ordSearch = ''; }
+    renderAdmin(); window.scrollTo(0, 0);
+  },
   checkout: async () => {
     if (!user) { authDialog(); return toast('Log in to place your order.'); }
     const items = cartLines().map((l) => (l.key[0] === 'c' ? { combo_id: l.key.slice(1), quantity: l.q } : { product_id: l.key, quantity: l.q }));
@@ -1153,6 +1204,10 @@ document.addEventListener('submit', async (e) => {
       setSession(d.token, d.user);
       if (d.must_change) { changePwDialog(); render(); return; }
       $('#dlg').close(); render(); toast(`Welcome, ${d.user.username}.`);
+    } else if (e.target.dataset.form === 'qty') {
+      const key = e.target.dataset.key, max = Number($('#qtyin').max) || 99;
+      const q = Math.max(1, Math.min(max, parseInt(new FormData(e.target).get('qty')) || 1));
+      cart[key] = Math.min(99, (cart[key] || 0) + q); saveCart(); $('#dlg').close(); toast(`Added ${q} to cart.`);
     } else if (e.target.dataset.form === 'changepw') {
       const d = await api('/api/auth/change-password', { method: 'POST', json: Object.fromEntries(new FormData(e.target)) });
       setSession(d.token, d.user); forcePw = false; $('#dlg').close(); render(); toast('Password changed.');
@@ -1244,7 +1299,7 @@ async function poll() {
     const now = JSON.stringify([fresh, freshCombos, freshSettings]);
     if (now !== sig) {
       sig = now; products = fresh; combos = freshCombos; settings = freshSettings;
-      if (view === 'shop') { fillBanner(); fillGrid(); } else if (view === 'admin') fillProducts();
+      if (view === 'shop') { fillBanner(); fillGrid(); } else if (view === 'admin') { fillProducts(); refreshAttention().catch(() => {}); }
     }
     if (isAdmin()) { await refreshOrders(); await refreshCustom(); }
     if (user && !isAdmin()) {
