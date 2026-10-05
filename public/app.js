@@ -865,7 +865,10 @@ function render() {
   else { view = 'shop'; renderShop(); }
 }
 async function loadProductsQuiet() {
-  [products, combos, settings] = await Promise.all([api('/api/products'), api('/api/combos'), api('/api/settings')]);
+  // The first load uses what index.html already fetched while the startup animation played; later refreshes ask the server.
+  const pre = window.__pre; window.__pre = null;
+  const got = pre ? await pre.catch(() => null) : null;
+  [products, combos, settings] = got || await Promise.all([api('/api/products'), api('/api/combos'), api('/api/settings')]);
   sig = JSON.stringify([products, combos, settings]);
 }
 async function loadProducts() {
@@ -1365,6 +1368,11 @@ document.addEventListener('click', (e) => {
   else if (e.target.id === 'a2hs-later') { try { localStorage.installSnooze = Date.now(); } catch (err) { /* ignore */ } const c = $('#a2hs'); if (c) c.remove(); }
 });
 // The service worker is what lets Chrome treat the shop as an installable app, and keeps the shell opening if the signal drops.
-if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+// app.js now loads after the startup animation, so the page's load event may already have fired.
+if ('serviceWorker' in navigator) {
+  const reg = () => navigator.serviceWorker.register('/sw.js').catch(() => {});
+  if (document.readyState === 'complete') reg(); else window.addEventListener('load', reg);
+}
+window.addEventListener('bootdone', animateApp); // replay the page entrance once the startup animation lifts
 
 loadProducts().catch((e) => toast(e.message));
