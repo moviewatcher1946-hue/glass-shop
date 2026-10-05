@@ -22,6 +22,21 @@
   <meta name="theme-color" content="#7c3aed">
 </head>
 <body>
+  <div id="boot" aria-hidden="true">
+    <div class="boot-logo"><img src="icon-192.png" alt="" width="96" height="96"></div>
+    <div class="boot-title"><span style="--i:0">S</span><span style="--i:1">n</span><span style="--i:2">a</span><span style="--i:3">c</span><span style="--i:4">k</span><span style="--i:5">&nbsp;</span><span style="--i:6">S</span><span style="--i:7">h</span><span style="--i:8">o</span><span style="--i:9">p</span></div>
+    <div class="boot-bar"><i></i></div>
+  </div>
+  <script>
+    // Startup animation: plays once each time the app is opened (not on every page change). Tap to skip. Skipped for reduced-motion.
+    (function () {
+      var b = document.getElementById('boot'), seen = false;
+      try { seen = sessionStorage.boot === '1'; sessionStorage.boot = '1'; } catch (e) {}
+      if (seen || matchMedia('(prefers-reduced-motion: reduce)').matches) { b.remove(); return; }
+      b.onclick = function () { b.classList.add('skip'); };
+      setTimeout(function () { b.remove(); }, 2200);
+    })();
+  </script>
   <div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div>
   <header class="glass nav">
     <h1><img class="logo" src="icon-192.png" alt="" width="36" height="36">Shop</h1>
