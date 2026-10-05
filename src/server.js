@@ -107,10 +107,10 @@ const notifySellers = async (texts) => { // texts: Map(userId -> message)
       { method: 'POST', body: texts.get(r.id), headers: { Title: 'Glass Shop' } })));
   } catch { /* ignore */ }
 };
-const notifyAll = async (text) => { // custom requests are a shared inbox: raven and every seller hear about them
-  notify(text);
+const notifyAll = async (text, by = null) => { // custom requests are a shared inbox: raven and every seller hear about them (except whoever just acted)
+  if (!by || by.role !== 'admin') notify(text);
   try {
-    const { rows } = await pool.query("SELECT id FROM users WHERE role='seller' AND ntfy_topic <> ''");
+    const { rows } = await pool.query("SELECT id FROM users WHERE role='seller' AND ntfy_topic <> '' AND id <> $1", [by ? by.id : 0]);
     await notifySellers(new Map(rows.map((r) => [r.id, text])));
   } catch { /* ignore */ }
 };
@@ -873,10 +873,16 @@ app.get('/api/custom-requests/mine', auth, wrap(async (req, res) => {
 }));
 
 app.get('/api/custom-requests', auth, staff, wrap(async (req, res) => {
-  res.json((await pool.query(`${CR_SQL} ORDER BY r.created_at DESC`)).rows);
+  res.json((await pool.query(
+    `SELECT r.id,r.description,r.status,r.quoted_price,r.admin_note,r.created_at,r.updated_at,u.username,
+       r.handled_by,h.username AS handled_by_name
+     FROM custom_requests r JOIN users u ON u.id=r.user_id LEFT JOIN users h ON h.id=r.handled_by
+     ORDER BY r.created_at DESC`)).rows);
 }));
 
-// Admin sets a price (quoted) or says it can't be provided (unavailable).
+// Staff sets a price (quoted) or says it can't be provided (unavailable).
+// First come, first served: whoever answers first handles the request and the other seller is locked out.
+// The main admin can still step in on a request a seller is handling.
 app.patch('/api/custom-requests/:id/quote', auth, staff, wrap(async (req, res) => {
   const { price, note = '', unavailable = false } = req.body || {};
   let status = 'unavailable', amount = null;
@@ -887,10 +893,17 @@ app.patch('/api/custom-requests/:id/quote', auth, staff, wrap(async (req, res) =
     status = 'quoted';
   }
   const { rows: [r] } = await pool.query(
-    `UPDATE custom_requests SET status=$1, quoted_price=$2, admin_note=$3, updated_at=now()
-     WHERE id=$4 AND status IN ('pending','quoted') RETURNING id,status,quoted_price,admin_note`,
-    [status, amount, String(note).slice(0, 1000), req.params.id]);
-  if (!r) throw bad('Request not found or already answered.', 404);
+    `UPDATE custom_requests SET status=$1, quoted_price=$2, admin_note=$3, updated_at=now(), handled_by=COALESCE(handled_by,$5::int)
+     WHERE id=$4 AND status IN ('pending','quoted') AND (handled_by IS NULL OR handled_by=$5::int OR $6::boolean)
+     RETURNING id,status,quoted_price,admin_note,handled_by`,
+    [status, amount, String(note).slice(0, 1000), req.params.id, req.user.id, req.user.role === 'admin']);
+  if (!r) {
+    const { rows: [x] } = await pool.query(
+      'SELECT r.status, h.username AS by FROM custom_requests r LEFT JOIN users h ON h.id=r.handled_by WHERE r.id=$1', [req.params.id]);
+    if (x && x.by && ['pending', 'quoted'].includes(x.status)) throw bad(`${x.by} is already handling this request.`, 409);
+    throw bad('Request not found or already answered.', 404);
+  }
+  notifyAll(`Custom request #${r.id} was ${unavailable ? 'marked not available' : 'priced'} by ${req.user.username}.`, req.user);
   res.json(r);
 }));
 
@@ -924,9 +937,17 @@ const putSetting = (k, v) => pool.query('INSERT INTO settings (key, value) VALUE
 const getSetting = async (k) => ((await pool.query('SELECT value FROM settings WHERE key=$1', [k])).rows[0] || {}).value || '';
 
 app.get('/api/admin/export', auth, admin, wrap(async (req, res) => {
+  await putSetting('last_backup', new Date().toISOString()); // first, so the file itself carries it and a restore keeps the reminder accurate
   const body = await buildBackup();
-  await putSetting('last_backup', new Date().toISOString());
   res.set('Content-Type', 'application/json').send(body);
+}));
+
+// For the Admin reminder: the last copy that would survive the database being deleted (a download you did, or one sent to Telegram/ntfy).
+app.get('/api/admin/backup-status', auth, admin, wrap(async (req, res) => {
+  const [manual, offsite] = await Promise.all([getSetting('last_backup'), getSetting('last_offsite_backup')]);
+  const times = [manual, offsite].filter(Boolean).map((x) => new Date(x).getTime()).filter(Number.isFinite);
+  res.json({ last_safe_backup: times.length ? new Date(Math.max(...times)).toISOString() : null,
+    offsite_configured: !!((process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) || process.env.NTFY_TOPIC) });
 }));
 
 // Replaces ALL data with the contents of a backup file, in one transaction (all or nothing).
@@ -1300,6 +1321,7 @@ async function autoBackup() {
       r = await fetch(`https://ntfy.sh/${encodeURIComponent(nt)}`, { method: 'PUT', body, headers: { Filename: name, Title: 'Glass Shop backup' } });
     }
     if (!r.ok) throw new Error('HTTP ' + r.status);
+    await putSetting('last_offsite_backup', new Date().toISOString()); // a copy that survives the database being deleted
   } catch (e) {
     console.error('Auto backup failed:', e.message);
     notify('Auto backup failed. Please download one by hand in Admin > Backup.');
@@ -1340,6 +1362,7 @@ init()
       status   VARCHAR(10) NOT NULL DEFAULT 'pending',
       PRIMARY KEY (combo_id, owner_id)
     );
+    ALTER TABLE custom_requests ADD COLUMN IF NOT EXISTS handled_by INT REFERENCES users(id) ON DELETE SET NULL;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS signup_ip VARCHAR(64);
     ALTER TABLE users ADD COLUMN IF NOT EXISTS device_id VARCHAR(64);
     ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change BOOLEAN NOT NULL DEFAULT false;
