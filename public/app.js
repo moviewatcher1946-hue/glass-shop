@@ -50,6 +50,16 @@ function toast(msg) {
   setTimeout(() => t.classList.remove('show'), 2600);
 }
 // Replays the soft entrance animation on whatever is below the tab bar (see .fx in style.css).
+// Says exactly what the re-pricing found and did, so you can see what happened to pending and packed orders.
+const repriceMsg = (r) => {
+  if (!r) return '';
+  if (r.reprice_error) return `The open orders could not be updated: ${r.reprice_error}`;
+  const i = r.reprice_info || { checked: 0, pending: 0, packed: 0, changed_list: [] };
+  if (!i.checked) return 'No pending or packed order has this item, so no order needed changing.';
+  const n = i.changed_list.length;
+  if (n) return `Updated ${n} order${n === 1 ? '' : 's'}: ${i.changed_list.map((x) => `#${x.id} (${x.status})`).join(', ')}.`;
+  return `Checked ${i.checked} open order${i.checked === 1 ? '' : 's'} (${i.pending} pending, ${i.packed} packed): already at the current price.`;
+};
 function animateApp() {
   const a = $('#app'); if (!a) return;
   a.classList.remove('fx'); void a.offsetWidth; a.classList.add('fx');
@@ -970,7 +980,7 @@ const actions = {
   reprice: async () => {
     const r = await api('/api/orders/reprice', { method: 'POST' });
     await refreshOrders().catch(() => {});
-    toast(r.repriced_orders ? `${r.repriced_orders} open order${r.repriced_orders === 1 ? '' : 's'} updated to the current prices.` : 'All open orders already match the current prices.');
+    toast(repriceMsg(r));
   },
   bulkdisc: async () => {
     if (!selected.size) return toast('Tick the products first.');
@@ -979,7 +989,7 @@ const actions = {
     const r = await api('/api/products/discount', { method: 'PATCH', json: { ids: [...selected], percent: pct } });
     selected.clear(); await loadProducts();
     if (r && r.repriced_orders) await refreshOrders().catch(() => {});
-    toast((Number(pct) ? `${pct}% discount applied.` : 'Discount removed.') + (r && r.reprice_error ? ' The open orders could not be updated: ' + r.reprice_error : r && r.repriced_orders ? ` ${r.repriced_orders} open order${r.repriced_orders === 1 ? '' : 's'} updated.` : ''));
+    toast((Number(pct) ? `${pct}% discount applied. ` : 'Discount removed. ') + repriceMsg(r));
   },
   'combo-approve': async (id, d) => {
     await api(`/api/combos/${id}/approval`, { method: 'PATCH', json: { approve: d.yes === '1', ...(d.owner ? { owner_id: d.owner } : {}) } });
@@ -1167,9 +1177,8 @@ document.addEventListener('submit', async (e) => {
       if (!fd.get('image').size) fd.delete('image');
       const saved = await api(id ? `/api/products/${id}` : '/api/products', { method: id ? 'PUT' : 'POST', body: fd });
       await loadProducts(); refreshCosts().catch(() => {});
-      if (id && saved && saved.reprice_error) toast('Saved, but the open orders could not be updated: ' + saved.reprice_error);
-      else if (id && saved && saved.repriced_orders) { await refreshOrders().catch(() => {}); toast(`Changes saved. ${saved.repriced_orders} open order${saved.repriced_orders === 1 ? '' : 's'} updated to the new price.`); }
-      else toast(id ? 'Changes saved. No open orders needed updating.' : 'Product added.');
+      if (id) { if (saved && saved.repriced_orders) await refreshOrders().catch(() => {}); toast('Changes saved. ' + repriceMsg(saved)); }
+      else toast('Product added.');
     }
   } catch (err) { toast(err.message); }
 });
