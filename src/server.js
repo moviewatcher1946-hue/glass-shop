@@ -324,18 +324,20 @@ app.get('/api/products/:id/image', wrap(async (req, res) => {
 /* ---------- Products (admin write) ---------- */
 // When a product's price, sale % or bulk deal changes, the orders that are still open (pending or packed) follow the new price:
 // the lines, the promo discount and the total are worked out again, so order lists and receipts match the shop.
-// Finished and cancelled orders keep what was actually charged. Returns how many orders changed.
+// Finished and cancelled orders keep what was actually charged.
+// Returns { checked, pending, packed, changed_list } so the screen can say exactly what it found and did.
 async function repriceOpenOrders(productIds) {
   const ids = [...new Set((productIds || []).map(Number).filter(Number.isInteger))];
-  if (!ids.length) return 0;
+  const info = { checked: 0, pending: 0, packed: 0, changed_list: [] };
+  if (!ids.length) return info;
   const c = await pool.connect();
-  let changed = 0;
   try {
     await c.query('BEGIN');
-    const { rows: ords } = await c.query(`SELECT o.id,o.promo_code,o.total,o.discount FROM orders o WHERE o.status IN ('pending','packed')
+    const { rows: ords } = await c.query(`SELECT o.id,o.status,o.promo_code,o.total,o.discount FROM orders o WHERE o.status IN ('pending','packed')
       AND EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id=o.id AND oi.product_id = ANY($1)) ORDER BY o.id FOR UPDATE OF o`, [ids]);
     const prods = new Map((await c.query('SELECT id,price,discount_percent,bulk_min,bulk_percent FROM products WHERE id = ANY($1)', [ids])).rows.map((p) => [p.id, p]));
     for (const o of ords) {
+      info.checked++; info[o.status]++;
       const { rows: its } = await c.query('SELECT id,product_id,quantity,unit_price::float AS price,owner_id FROM order_items WHERE order_id=$1', [o.id]);
       const qty = new Map();
       for (const i of its) if (i.product_id != null) qty.set(i.product_id, (qty.get(i.product_id) || 0) + i.quantity);
@@ -358,7 +360,7 @@ async function repriceOpenOrders(productIds) {
       const total = (its.reduce((s, i) => s + i.price * i.quantity, 0) - discount).toFixed(2);
       if (touched || total !== Number(o.total).toFixed(2)) {
         await c.query('UPDATE orders SET total=$1, discount=$2 WHERE id=$3', [total, discount.toFixed(2), o.id]);
-        changed++;
+        info.changed_list.push({ id: o.id, status: o.status });
       }
     }
     await c.query('COMMIT');
@@ -369,12 +371,12 @@ async function repriceOpenOrders(productIds) {
   } finally {
     c.release();
   }
-  return changed;
+  return info;
 }
 // Runs the re-pricing for the routes below without ever losing the product change itself; a failure is reported to the screen.
 const repriceSafe = async (ids) => {
-  try { return { repriced_orders: await repriceOpenOrders(ids), reprice_error: null }; }
-  catch (e) { return { repriced_orders: 0, reprice_error: e.message }; }
+  try { const info = await repriceOpenOrders(ids); return { repriced_orders: info.changed_list.length, reprice_info: info, reprice_error: null }; }
+  catch (e) { return { repriced_orders: 0, reprice_info: null, reprice_error: e.message }; }
 };
 
 app.post('/api/products', auth, staff, upload.single('image'), wrap(async (req, res) => {
@@ -469,7 +471,7 @@ app.patch('/api/products/discount', auth, staff, wrap(async (req, res) => {
 // Brings every open (pending or packed) order up to the shop's current prices: all products for the owner, a seller's own for a seller.
 app.post('/api/orders/reprice', auth, staff, wrap(async (req, res) => {
   const { rows } = await pool.query('SELECT id FROM products WHERE ($1 OR owner_id=$2)', [isMain(req.user), req.user.id]);
-  res.json({ repriced_orders: await repriceOpenOrders(rows.map((r) => r.id)) });
+  res.json(await repriceSafe(rows.map((r) => r.id)));
 }));
 
 /* ---------- Combos ---------- */
