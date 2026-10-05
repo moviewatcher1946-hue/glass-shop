@@ -204,7 +204,7 @@ input[type="checkbox"] { width: 20px; height: 20px; margin: 0; padding: 0; accen
 
 /* Discounts and combos */
 .was { color: var(--muted); text-decoration: line-through; font-size: .9rem; margin-right: 4px; }
-.badge.off { left: auto; right: 10px; top: 10px; padding: 8px 14px; border: 2px solid #fff; border-radius: 12px; background: var(--sale); font-size: clamp(1.1rem, 4.5vw, 1.45rem); font-weight: 800; line-height: 1; letter-spacing: .5px; transform: rotate(4deg); box-shadow: 0 4px 14px rgba(0, 0, 0, .45); }
+.badge.off { left: auto; right: 8px; top: 8px; padding: 5px 10px; border: 2px solid #fff; border-radius: 10px; background: var(--sale); font-size: clamp(.85rem, 3.4vw, 1.1rem); font-weight: 800; line-height: 1.1; letter-spacing: .2px; white-space: nowrap; box-shadow: 0 3px 10px rgba(0, 0, 0, .35); }
 .qty { display: flex; align-items: center; gap: 6px; }
 .qty button { min-width: 32px; padding: 2px 10px; }
 .attn { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
@@ -373,7 +373,7 @@ input[type="date"] { display: block; }
 @keyframes popIn { from { opacity: 0; transform: scale(.7); } to { opacity: 1; transform: none; } }
 @keyframes imgFade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes bump { 0% { transform: scale(1); } 40% { transform: scale(1.18); } 100% { transform: scale(1); } }
-@keyframes badgePulse { 0%, 100% { transform: rotate(4deg) scale(1); } 50% { transform: rotate(4deg) scale(1.09); } }
+@keyframes badgePulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.06); } }
 @keyframes shine { 0% { transform: translateX(-130%) skewX(-20deg); } 55%, 100% { transform: translateX(300%) skewX(-20deg); } }
 @keyframes softPulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, .5); } 50% { box-shadow: 0 0 0 7px rgba(245, 158, 11, 0); } }
 
@@ -417,19 +417,36 @@ button:active:not(:disabled) { transform: scale(.95); }
 #theme, #tour-btn { transition: transform .25s cubic-bezier(.34, 1.56, .64, 1), box-shadow .15s, background .15s, border-color .15s; }
 #theme:hover:not(:disabled) { transform: rotate(18deg) scale(1.1); }
 
-/* ---- Startup animation ---- */
+/* ---- Startup animation ----
+   Built for slow phones: only transform and opacity animate (so they run off the main thread), the clock starts after
+   the first painted frame (the .go class), the page underneath is hidden while it plays, and the app's own scripts load after it starts. */
 @keyframes bootLogo { from { opacity: 0; transform: scale(.3) rotate(-14deg); } to { opacity: 1; transform: none; } }
 @keyframes bootRing { from { opacity: .7; transform: scale(.8); } to { opacity: 0; transform: scale(2.2); } }
 @keyframes bootLetter { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
 @keyframes bootBar { from { transform: scaleX(0); } to { transform: scaleX(1); } }
-@keyframes bootOut { to { opacity: 0; transform: scale(1.06); visibility: hidden; pointer-events: none; } }
+@keyframes bootOut { to { opacity: 0; transform: scale(1.06); } }
+@keyframes bootGone { to { visibility: hidden; pointer-events: none; } }
+body.booting .blob, body.booting header, body.booting main { visibility: hidden; }
 #boot { position: fixed; inset: 0; z-index: 100; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px;
-  background: radial-gradient(circle at 50% 40%, var(--bg2), var(--bg1) 70%); animation: bootOut .5s cubic-bezier(.22, 1, .36, 1) 1.4s forwards; }
-#boot.skip { animation: bootOut .3s ease forwards; }
+  background: radial-gradient(circle at 50% 40%, var(--bg2), var(--bg1) 70%);
+  animation: bootGone 0s linear 8s forwards; /* safety net: hides itself even if the script never lifts it */
+  will-change: opacity, transform; }
+#boot.out { animation: bootOut .5s cubic-bezier(.22, 1, .36, 1) forwards, bootGone 0s linear 8s forwards; }
+#boot.skip { animation: bootOut .3s ease forwards, bootGone 0s linear 8s forwards; }
+#boot .boot-logo img, #boot .boot-logo::before, #boot .boot-title span, #boot .boot-bar i { animation-play-state: paused; will-change: transform, opacity; }
+#boot.go .boot-logo img, #boot.go .boot-logo::before, #boot.go .boot-title span, #boot.go .boot-bar i { animation-play-state: running; }
 .boot-logo { position: relative; display: grid; place-items: center; }
-.boot-logo img { width: 96px; height: 96px; border-radius: 24px; box-shadow: 0 10px 40px rgba(124, 58, 237, .45); animation: bootLogo .9s cubic-bezier(.34, 1.56, .64, 1) backwards; }
-.boot-logo::before { content: ''; position: absolute; width: 96px; height: 96px; border-radius: 28px; border: 3px solid var(--acc); animation: bootRing 1.2s ease-out .5s backwards; }
+.boot-logo img { width: 96px; height: 96px; border-radius: 24px; box-shadow: 0 8px 28px rgba(124, 58, 237, .4); animation: bootLogo .9s cubic-bezier(.34, 1.56, .64, 1) backwards; }
+.boot-logo::before { content: ''; position: absolute; width: 96px; height: 96px; border-radius: 28px; border: 3px solid var(--acc); animation: bootRing 1.2s ease-out .5s both; }
 .boot-title { display: flex; font-size: 1.9rem; font-weight: 800; letter-spacing: -.02em; color: var(--acc); }
 .boot-title span { display: inline-block; animation: bootLetter .5s cubic-bezier(.22, 1, .36, 1) backwards; animation-delay: calc(.45s + var(--i) * .05s); }
 .boot-bar { width: 140px; height: 4px; border-radius: 4px; background: var(--border); overflow: hidden; }
 .boot-bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--acc), var(--acc2)); transform-origin: left; animation: bootBar 1.1s cubic-bezier(.4, 0, .2, 1) .25s backwards; }
+
+/* Cart lines: the product name gets a full line when it can't fit next to the buttons (always on phones) */
+.cline { flex-wrap: wrap; row-gap: 6px; }
+.cline > span { flex: 1 1 160px; min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+  .cline > span { flex-basis: 100%; }
+  .cline > b { margin-left: auto; }
+}
