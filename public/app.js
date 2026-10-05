@@ -603,6 +603,7 @@ function renderAdmin() {
         <button data-act="bulk" data-cat="snacks">Move to Snacks</button>
         <input id="discpct" type="number" min="0" max="90" placeholder="% off" style="width:90px;margin:0">
         <button data-act="bulkdisc">Apply discount</button>
+        <button data-act="reprice">Update open orders to current prices</button>
       </div>
       <div id="plist"></div></section>`;
   const ordersView = `<h2>Orders</h2>
@@ -966,13 +967,19 @@ const actions = {
     await api(`/api/promos/${id}`, { method: 'DELETE' }); await refreshAdminPromos(); toast('Deleted.');
   },
   addcombo: (id) => { const k = 'c' + id; cart[k] = (cart[k] || 0) + 1; saveCart(); toast('Added to cart.'); },
+  reprice: async () => {
+    const r = await api('/api/orders/reprice', { method: 'POST' });
+    await refreshOrders().catch(() => {});
+    toast(r.repriced_orders ? `${r.repriced_orders} open order${r.repriced_orders === 1 ? '' : 's'} updated to the current prices.` : 'All open orders already match the current prices.');
+  },
   bulkdisc: async () => {
     if (!selected.size) return toast('Tick the products first.');
     const pct = $('#discpct').value;
     if (pct === '') return toast('Type the discount % first (0 removes it).');
     const r = await api('/api/products/discount', { method: 'PATCH', json: { ids: [...selected], percent: pct } });
     selected.clear(); await loadProducts();
-    toast((Number(pct) ? `${pct}% discount applied.` : 'Discount removed.') + (r && r.repriced_orders ? ` ${r.repriced_orders} open order${r.repriced_orders === 1 ? '' : 's'} updated.` : ''));
+    if (r && r.repriced_orders) await refreshOrders().catch(() => {});
+    toast((Number(pct) ? `${pct}% discount applied.` : 'Discount removed.') + (r && r.reprice_error ? ' The open orders could not be updated: ' + r.reprice_error : r && r.repriced_orders ? ` ${r.repriced_orders} open order${r.repriced_orders === 1 ? '' : 's'} updated.` : ''));
   },
   'combo-approve': async (id, d) => {
     await api(`/api/combos/${id}/approval`, { method: 'PATCH', json: { approve: d.yes === '1', ...(d.owner ? { owner_id: d.owner } : {}) } });
@@ -1160,7 +1167,9 @@ document.addEventListener('submit', async (e) => {
       if (!fd.get('image').size) fd.delete('image');
       const saved = await api(id ? `/api/products/${id}` : '/api/products', { method: id ? 'PUT' : 'POST', body: fd });
       await loadProducts(); refreshCosts().catch(() => {});
-      toast(id ? (saved && saved.repriced_orders ? `Changes saved. ${saved.repriced_orders} open order${saved.repriced_orders === 1 ? '' : 's'} updated to the new price.` : 'Changes saved.') : 'Product added.');
+      if (id && saved && saved.reprice_error) toast('Saved, but the open orders could not be updated: ' + saved.reprice_error);
+      else if (id && saved && saved.repriced_orders) { await refreshOrders().catch(() => {}); toast(`Changes saved. ${saved.repriced_orders} open order${saved.repriced_orders === 1 ? '' : 's'} updated to the new price.`); }
+      else toast(id ? 'Changes saved. No open orders needed updating.' : 'Product added.');
     }
   } catch (err) { toast(err.message); }
 });
