@@ -14,6 +14,8 @@ app.set('trust proxy', 1); // Render sits behind a proxy; this makes req.ip the 
 const json = express.json();
 // The restore route accepts big files, so it brings its own larger body parser.
 app.use((req, res, next) => (req.path === '/api/admin/import' ? next() : json(req, res, next)));
+// The service worker must never be cached hard, or a new version of the app would not reach phones.
+app.get('/sw.js', (req, res, next) => { res.set('Cache-Control', 'no-cache'); next(); });
 app.use(express.static(path.join(__dirname, '../public')));
 
 const upload = multer({
@@ -22,11 +24,27 @@ const upload = multer({
   fileFilter: (req, f, cb) => cb(null, /^image\/(png|jpe?g|webp|gif)$/.test(f.mimetype)),
 });
 const wrap = (fn) => (req, res, next) => fn(req, res, next).catch(next);
-const COLS = 'id,title,description,price,is_sold_out,category,discount_percent,image_url,created_at,owner_id,stock';
+const COLS = 'id,title,description,price,is_sold_out,category,discount_percent,bulk_min,bulk_percent,image_url,created_at,owner_id,stock';
 const LOW_STOCK = 5; // warn at this many left or fewer
 const CATEGORIES = ['drinks', 'snacks'];
 // Price after the product's % discount. The server always works the price out itself.
 const finalPrice = (p) => Math.round(Number(p.price) * (100 - (Number(p.discount_percent) || 0))) / 100;
+// Bulk discount ("buy N or more, get X% off each"): a seller sets it per product. It does not stack with the regular % discount:
+// the customer simply gets whichever price is lower once they buy enough.
+const unitFor = (p, qty) => {
+  const min = Number(p.bulk_min), pct = Number(p.bulk_percent);
+  if (!(min >= 2 && pct > 0 && qty >= min)) return finalPrice(p);
+  return Math.min(finalPrice(p), Math.round(Number(p.price) * (100 - pct)) / 100);
+};
+// Both numbers or neither. A % without a quantity is refused; a quantity without a % just means no bulk deal.
+const parseBulk = (body) => {
+  const pct = body.bulk_percent === undefined || body.bulk_percent === '' ? 0 : parseInt(body.bulk_percent);
+  const min = body.bulk_min === undefined || body.bulk_min === '' ? null : parseInt(body.bulk_min);
+  if (!(pct >= 0 && pct <= 90)) throw bad('Bulk discount must be between 0 and 90%.');
+  if (!pct) return { min: null, pct: 0 };
+  if (!(min >= 2 && min <= 999)) throw bad('For a bulk discount, enter how many must be bought (2 or more).');
+  return { min, pct };
+};
 const COMBO_SQL = `SELECT c.id,c.title,c.description,c.price,c.is_active,c.created_at,c.owner_id,
   COALESCE((SELECT json_agg(json_build_object('product_id',p.id,'title',p.title,'quantity',ci.quantity,'price',p.price,
       'discount_percent',p.discount_percent,'is_sold_out',p.is_sold_out,'image_url',p.image_url,'owner_id',p.owner_id) ORDER BY p.title)
@@ -124,6 +142,8 @@ const ensureCategory = () => pool.query("ALTER TABLE products ADD COLUMN IF NOT 
 // Discounts and combos (safe to run every start; never touches existing data).
 const ensureCombos = () => pool.query(`
   ALTER TABLE products ADD COLUMN IF NOT EXISTS discount_percent INT NOT NULL DEFAULT 0 CHECK (discount_percent BETWEEN 0 AND 90);
+  ALTER TABLE products ADD COLUMN IF NOT EXISTS bulk_min INT CHECK (bulk_min IS NULL OR bulk_min BETWEEN 2 AND 999);
+  ALTER TABLE products ADD COLUMN IF NOT EXISTS bulk_percent INT NOT NULL DEFAULT 0 CHECK (bulk_percent BETWEEN 0 AND 90);
   CREATE TABLE IF NOT EXISTS combos (
     id          SERIAL PRIMARY KEY,
     title       VARCHAR(120) NOT NULL,
@@ -302,6 +322,56 @@ app.get('/api/products/:id/image', wrap(async (req, res) => {
 }));
 
 /* ---------- Products (admin write) ---------- */
+// When a product's price, sale % or bulk deal changes, the orders that are still open (pending or packed) follow the new price:
+// the lines, the promo discount and the total are worked out again, so order lists and receipts match the shop.
+// Finished and cancelled orders keep what was actually charged. Returns how many orders changed.
+async function repriceOpenOrders(productIds) {
+  const ids = [...new Set((productIds || []).map(Number).filter(Number.isInteger))];
+  if (!ids.length) return 0;
+  const c = await pool.connect();
+  let changed = 0;
+  try {
+    await c.query('BEGIN');
+    const { rows: ords } = await c.query(`SELECT o.id,o.promo_code,o.total,o.discount FROM orders o WHERE o.status IN ('pending','packed')
+      AND EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id=o.id AND oi.product_id = ANY($1)) ORDER BY o.id FOR UPDATE OF o`, [ids]);
+    for (const o of ords) {
+      const { rows: its } = await c.query('SELECT id,product_id,quantity,unit_price::float AS price,owner_id FROM order_items WHERE order_id=$1', [o.id]);
+      const prods = new Map((await c.query('SELECT id,price,discount_percent,bulk_min,bulk_percent FROM products WHERE id = ANY($1)', [ids])).rows.map((p) => [p.id, p]));
+      const qty = new Map();
+      for (const i of its) if (i.product_id != null) qty.set(i.product_id, (qty.get(i.product_id) || 0) + i.quantity);
+      let touched = false;
+      for (const i of its) {
+        const p = i.product_id != null ? prods.get(i.product_id) : null; // only the products that were just changed
+        if (!p) continue;
+        const np = unitFor(p, qty.get(i.product_id));
+        if (Math.abs(np - i.price) > 0.001) { await c.query('UPDATE order_items SET unit_price=$1 WHERE id=$2', [np.toFixed(2), i.id]); i.price = np; touched = true; }
+      }
+      let discount = Number(o.discount) || 0;
+      if (o.promo_code) {
+        const { rows: [pr] } = await c.query('SELECT percent,owner_id,shop_wide,product_ids FROM promo_codes WHERE upper(code)=upper($1)', [o.promo_code]);
+        if (pr) {
+          const eligible = (i) => (pr.shop_wide || pr.owner_id == null || i.owner_id === pr.owner_id)
+            && (!pr.product_ids || !pr.product_ids.length || (i.product_id != null && pr.product_ids.includes(i.product_id)));
+          discount = Math.round(its.filter(eligible).reduce((s, i) => s + i.price * i.quantity, 0) * pr.percent) / 100;
+        }
+      }
+      const total = (its.reduce((s, i) => s + i.price * i.quantity, 0) - discount).toFixed(2);
+      if (touched || total !== Number(o.total).toFixed(2)) {
+        await c.query('UPDATE orders SET total=$1, discount=$2 WHERE id=$3', [total, discount.toFixed(2), o.id]);
+        changed++;
+      }
+    }
+    await c.query('COMMIT');
+  } catch (e) {
+    await c.query('ROLLBACK');
+    console.error('Re-pricing open orders failed:', e.message);
+    return 0;
+  } finally {
+    c.release();
+  }
+  return changed;
+}
+
 app.post('/api/products', auth, staff, upload.single('image'), wrap(async (req, res) => {
   const { title, description = '', price, category = 'snacks', discount_percent = 0 } = req.body;
   const stock = req.body.stock === undefined || req.body.stock === '' ? null : parseInt(req.body.stock);
@@ -313,10 +383,11 @@ app.post('/api/products', auth, staff, upload.single('image'), wrap(async (req, 
   const disc = parseInt(discount_percent) || 0;
   if (disc < 0 || disc > 90) throw bad('Discount must be between 0 and 90%.');
   const f = req.file;
+  const bulk = parseBulk(req.body);
   const owner = await pickOwner(req.user, req.body.owner_id);
   const { rows: [p] } = await pool.query(
-    'INSERT INTO products (title, description, price, image_data, image_mime, category, discount_percent, owner_id, stock, is_sold_out, cost) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id',
-    [title, description, price, f ? f.buffer : null, f ? f.mimetype : null, category, disc, owner, stock, stock === 0, cost]
+    'INSERT INTO products (title, description, price, image_data, image_mime, category, discount_percent, owner_id, stock, is_sold_out, cost, bulk_min, bulk_percent) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id',
+    [title, description, price, f ? f.buffer : null, f ? f.mimetype : null, category, disc, owner, stock, stock === 0, cost, bulk.min, bulk.pct]
   );
   res.status(201).json(await withImage(p.id));
 }));
@@ -336,15 +407,20 @@ app.put('/api/products/:id', auth, staff, upload.single('image'), wrap(async (re
   const setCost = req.body.cost !== undefined; // empty = clear the cost
   const cost = !setCost || req.body.cost === '' ? null : Number(req.body.cost);
   if (cost !== null && !(cost >= 0)) throw bad('Cost must be 0 or more.');
+  const setBulk = req.body.bulk_percent !== undefined || req.body.bulk_min !== undefined; // 0 / empty = remove the bulk deal
+  const bulk = setBulk ? parseBulk(req.body) : { min: null, pct: 0 };
   const { rowCount } = await pool.query(
-    `UPDATE products SET cost=CASE WHEN $12::boolean THEN $13::numeric ELSE cost END,
+    `UPDATE products SET bulk_min=CASE WHEN $14::boolean THEN $15::int ELSE bulk_min END,
+       bulk_percent=CASE WHEN $14::boolean THEN $16::int ELSE bulk_percent END,
+       cost=CASE WHEN $12::boolean THEN $13::numeric ELSE cost END,
        stock=CASE WHEN $10::boolean THEN $11::int ELSE stock END,
        is_sold_out=CASE WHEN $10::boolean AND $11::int IS NOT NULL THEN $11::int = 0 ELSE is_sold_out END, title=COALESCE($1,title), description=COALESCE($2,description), price=COALESCE($3,price),
        image_data=COALESCE($4,image_data), image_mime=COALESCE($5,image_mime), category=COALESCE($6,category), discount_percent=COALESCE($7,discount_percent), owner_id=COALESCE($9,owner_id) WHERE id=$8`,
-    [title ?? null, description ?? null, price ?? null, f ? f.buffer : null, f ? f.mimetype : null, category ?? null, disc, req.params.id, newOwner, setStock, stock, setCost, cost]
+    [title ?? null, description ?? null, price ?? null, f ? f.buffer : null, f ? f.mimetype : null, category ?? null, disc, req.params.id, newOwner, setStock, stock, setCost, cost, setBulk, bulk.min, bulk.pct]
   );
   if (!rowCount) throw bad('Product not found.', 404);
-  res.json(await withImage(req.params.id));
+  const repriced_orders = await repriceOpenOrders([req.params.id]);
+  res.json({ ...(await withImage(req.params.id)), repriced_orders });
 }));
 
 // Cost prices are private: only the owner (and Raven) can read them, and they never go out in the public product list.
@@ -383,7 +459,7 @@ app.patch('/api/products/discount', auth, staff, wrap(async (req, res) => {
   const { rowCount } = isMain(req.user)
     ? await pool.query('UPDATE products SET discount_percent=$1 WHERE id = ANY($2)', [pct, list])
     : await pool.query('UPDATE products SET discount_percent=$1 WHERE id = ANY($2) AND owner_id=$3', [pct, list, req.user.id]);
-  res.json({ updated: rowCount });
+  res.json({ updated: rowCount, repriced_orders: await repriceOpenOrders(list) });
 }));
 
 /* ---------- Combos ---------- */
@@ -437,14 +513,17 @@ app.post('/api/combos', auth, staff, wrap(async (req, res) => {
 }));
 
 // A seller approves or declines the pairing of her products in someone else's combo.
+// The owner (main admin) may also answer for a seller by passing her owner_id.
 app.patch('/api/combos/:id/approval', auth, staff, wrap(async (req, res) => {
   const approve = !!(req.body || {}).approve;
+  const forId = isMain(req.user) && Number.isInteger(parseInt((req.body || {}).owner_id)) ? parseInt(req.body.owner_id) : req.user.id;
   const { rows: [a] } = await pool.query(
     'UPDATE combo_approvals SET status=$1 WHERE combo_id=$2 AND owner_id=$3 RETURNING combo_id',
-    [approve ? 'approved' : 'declined', req.params.id, req.user.id]);
-  if (!a) throw bad('This combo does not need your approval.', 404);
+    [approve ? 'approved' : 'declined', req.params.id, forId]);
+  if (!a) throw bad('This combo does not need that approval.', 404);
   const { rows: [cb] } = await pool.query('SELECT title, owner_id FROM combos WHERE id=$1', [a.combo_id]);
-  const msg = `${req.user.username} ${approve ? 'approved' : 'declined'} the combo "${cb.title}".`;
+  const who = forId === req.user.id ? req.user.username : `${req.user.username} (for a seller)`;
+  const msg = `${who} ${approve ? 'approved' : 'declined'} the combo "${cb.title}".`;
   notify(msg);
   notifySellers(new Map([[cb.owner_id, msg]]));
   res.json({ ok: true });
@@ -478,12 +557,15 @@ app.post('/api/orders', auth, wrap(async (req, res) => {
   const c = await pool.connect();
   try {
     await c.query('BEGIN');
-    const { rows: prods } = await c.query('SELECT id,title,price,discount_percent,is_sold_out,owner_id FROM products WHERE id = ANY($1)', [prodIds]);
+    const { rows: prods } = await c.query('SELECT id,title,price,discount_percent,bulk_min,bulk_percent,is_sold_out,owner_id FROM products WHERE id = ANY($1)', [prodIds]);
     const byId = new Map(prods.map((r) => [r.id, r]));
     const { rows: combos } = await c.query(`${COMBO_SQL} WHERE c.id = ANY($1) AND ${COMBO_LIVE}`, [comboIds]);
     const comboById = new Map(combos.map((r) => [r.id, r]));
     const allIds = [...new Set([...prodIds, ...combos.flatMap((cb) => cb.items.map((x) => x.product_id))])];
     const costOf = new Map((await c.query('SELECT id,cost FROM products WHERE id = ANY($1)', [allIds])).rows.map((r) => [r.id, r.cost == null ? null : Number(r.cost)]));
+    // How many of each product are in the order in total (a bulk discount depends on it).
+    const qtyOf = new Map();
+    for (const i of items) if (!i.combo_id) { const id = parseInt(i.product_id); qtyOf.set(id, (qtyOf.get(id) || 0) + Math.min(99, parseInt(i.quantity))); }
     let total = 0;
     const lines = items.flatMap((i) => {
       const q = Math.min(99, parseInt(i.quantity));
@@ -512,7 +594,7 @@ app.post('/api/orders', auth, wrap(async (req, res) => {
       } else {
         const p = byId.get(parseInt(i.product_id));
         if (!p || p.is_sold_out) throw bad('An item in your cart is no longer available.');
-        parts = [{ pid: p.id, title: p.title, price: finalPrice(p), q, owner: p.owner_id, cost: costOf.get(p.id) ?? null }];
+        parts = [{ pid: p.id, title: p.title, price: unitFor(p, qtyOf.get(p.id)), q, owner: p.owner_id, cost: costOf.get(p.id) ?? null }];
       }
       parts.forEach((l) => { total += l.price * l.q; });
       return parts;
@@ -909,6 +991,20 @@ app.post('/api/admin/sellers', auth, admin, wrap(async (req, res) => {
       "INSERT INTO users (username, password_hash, role) VALUES ($1,$2,'seller') RETURNING id,username,created_at",
       [username, await bcrypt.hash(password, 12)]);
     res.status(201).json(u);
+  } catch (e) {
+    if (e.code === '23505') throw bad('That username is taken.', 409);
+    throw e;
+  }
+}));
+
+// The owner can rename a seller. Her current login keeps working; the new name shows after she logs in again.
+app.patch('/api/admin/sellers/:id', auth, admin, wrap(async (req, res) => {
+  const username = String((req.body || {}).username || '').trim();
+  if (!/^[a-zA-Z0-9_]{3,30}$/.test(username)) throw bad('Username: 3-30 letters, numbers or _.');
+  try {
+    const { rows: [u] } = await pool.query("UPDATE users SET username=$1 WHERE id=$2 AND role='seller' RETURNING id,username", [username, req.params.id]);
+    if (!u) throw bad('Seller not found.', 404);
+    res.json(u);
   } catch (e) {
     if (e.code === '23505') throw bad('That username is taken.', 409);
     throw e;
