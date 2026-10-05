@@ -4,6 +4,10 @@ const CURRENCY = '₱';
 const money = (n) => CURRENCY + Number(n).toFixed(2);
 // Price after the product's % discount (the server works it out again when you order).
 const fin = (p) => Math.round(Number(p.price) * (100 - (Number(p.discount_percent) || 0))) / 100;
+// Bulk discount: buy bulk_min or more, get bulk_percent% off each (the lower of this and the normal discount; the server does the same maths).
+const bulkOn = (p) => Number(p.bulk_min) >= 2 && Number(p.bulk_percent) > 0;
+const unitFor = (p, q) => (bulkOn(p) && q >= Number(p.bulk_min) ? Math.min(fin(p), Math.round(Number(p.price) * (100 - Number(p.bulk_percent))) / 100) : fin(p));
+const LOW_STOCK = 5;
 const CATS = { drinks: 'Drinks', snacks: 'Snacks' };
 const STATUS = { pending: 'Pending', packed: 'Packed', completed: 'Completed', cancelled: 'Cancelled' };
 const CR_STATUS = { pending: 'Waiting for a price', quoted: 'Price offered', accepted: 'Accepted', declined: 'Declined', unavailable: "Can't provide" };
@@ -17,18 +21,26 @@ let searchText = '', catFilter = 'all';
 const selected = new Set(); // products ticked in Admin for bulk changes
 let combos = [], comboAdminHtml = '';
 let ordersCache = [], shownOrders = [], ordStatus = 'active', ordRange = 'all', ordDay = '', custHtml = '';
+let installEvt = null; // Chrome's "install app" offer, kept until the person taps Install
 let promo = null, cartNote = '', settings = { banner: '', stamp_reward: 'a free snack' }, promoAdminHtml = '', myOrders = [];
 let sig = '', lastOrderId = null, mineHtml = '', adminHtml = '', statusMap = null, adminTab = 'products', pendingCount = 0;
+let ordSearch = '', costMap = {}, repData = null;
 let customHtml = '', customAdminHtml = '', crMap = null, crList = [], lastCrId = null, pendingCustom = 0;
-let cashHtml = '', backupInfo = null;
-const paidTicks = new Set(); // orders where the "cash received" box is ticked, kept across the 5-second refresh
 
+// A random ID this browser keeps, so the server can limit how many accounts one device makes.
+const deviceId = () => {
+  try {
+    if (!localStorage.deviceId) localStorage.deviceId = (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2));
+    return localStorage.deviceId;
+  } catch (e) { return 'nostorage-' + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2); }
+};
 async function api(url, { json, ...opt } = {}) {
   const headers = { ...(opt.headers || {}) };
   if (token) headers.Authorization = 'Bearer ' + token;
   if (json) { headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(json); }
   const r = await fetch(url, { ...opt, headers });
   const d = r.status === 204 ? {} : await r.json().catch(() => ({}));
+  if (r.status === 403 && /new password first/i.test(d.error || '')) changePwDialog();
   if (!r.ok) throw new Error(d.error || 'Request failed.');
   return d;
 }
@@ -36,6 +48,21 @@ function toast(msg) {
   const t = $('#toast');
   t.textContent = msg; t.classList.add('show');
   setTimeout(() => t.classList.remove('show'), 2600);
+}
+// Replays the soft entrance animation on whatever is below the tab bar (see .fx in style.css).
+// Says exactly what the re-pricing found and did, so you can see what happened to pending and packed orders.
+const repriceMsg = (r) => {
+  if (!r) return '';
+  if (r.reprice_error) return `The open orders could not be updated: ${r.reprice_error}`;
+  const i = r.reprice_info || { checked: 0, pending: 0, packed: 0, changed_list: [] };
+  if (!i.checked) return 'No pending or packed order has this item, so no order needed changing.';
+  const n = i.changed_list.length;
+  if (n) return `Updated ${n} order${n === 1 ? '' : 's'}: ${i.changed_list.map((x) => `#${x.id} (${x.status})`).join(', ')}.`;
+  return `Checked ${i.checked} open order${i.checked === 1 ? '' : 's'} (${i.pending} pending, ${i.packed} packed): already at the current price.`;
+};
+function animateApp() {
+  const a = $('#app'); if (!a) return;
+  a.classList.remove('fx'); void a.offsetWidth; a.classList.add('fx');
 }
 const saveCart = () => { localStorage.cart = JSON.stringify(cart); renderNav(); };
 const setSession = (t, u) => { token = t; user = u; statusMap = null; crMap = null; localStorage.token = t; localStorage.user = JSON.stringify(u); };
@@ -60,6 +87,7 @@ function renderMobileNav() {
       (user ? `<button class="${on('orders')}" data-act="orders">My orders</button>` : ''));
   $('#acct').innerHTML = user ? `<span class="pill">${esc(user.username)}</span>` : '<button class="primary" data-act="auth">Log in</button>';
   $('#foot').innerHTML = `<button id="foot-theme" type="button">${document.documentElement.dataset.theme === 'dark' ? 'Light mode' : 'Dark mode'}</button>` +
+    (installEvt ? '<button data-act="install">Install app</button>' : '') +
     (user ? '<button data-act="logout">Log out</button>' : '');
 }
 
@@ -83,7 +111,8 @@ const productCard = (p) => {
       <div class="img">${p.image_url ? `<img loading="lazy" src="${esc(p.image_url)}" alt="${esc(p.title)}">` : ''}
         ${p.is_sold_out ? '<span class="badge">Sold out</span>' : ''}${off ? `<span class="badge off">-${off}%</span>` : ''}</div>
       <h3>${esc(p.title)}</h3><p>${esc(p.description)}</p>
-      ${p.stock != null && p.stock > 0 && p.stock <= p.low_stock ? `<p class="lowstock">Only ${p.stock} left</p>` : ''}
+      ${bulkOn(p) ? `<p class="muted"><b>Buy ${p.bulk_min}+ and save ${p.bulk_percent}%</b></p>` : ''}
+      ${!p.is_sold_out && p.stock != null && p.stock <= LOW_STOCK ? `<p class="muted"><b>Only ${p.stock} left</b></p>` : ''}
       <footer><span>${off ? `<span class="was">${money(p.price)}</span> ` : ''}<b>${money(fin(p))}</b></span>
         <button class="primary" data-act="add" data-id="${p.id}" ${p.is_sold_out ? 'disabled' : ''}>Add to cart</button></footer>
     </article>`;
@@ -106,6 +135,21 @@ const comboCard = (c) => {
 };
 
 // Redraws only the product list, so the search box keeps focus while typing.
+// Random order in the shop so no seller's items always sit on top. Picked once per page load,
+// so the grid doesn't reshuffle while you search, filter or the page refreshes in the background.
+const shuffleRank = new Map();
+const rank = (key) => { if (!shuffleRank.has(key)) shuffleRank.set(key, Math.random()); return shuffleRank.get(key); };
+const shuffled = (list, keyOf) => [...list].sort((a, b) => rank(keyOf(a)) - rank(keyOf(b)));
+// Raven (the main admin) always gets up to 3 of his own products at the top of each section (in-stock ones first);
+// everything else follows in random order.
+const PINNED = 3;
+const shuffledPinned = (list) => {
+  const mix = shuffled(list, (p) => 'p' + p.id);
+  const mine = mix.filter((p) => settings.main_owner_id != null && p.owner_id === settings.main_owner_id)
+    .sort((a, b) => Number(!!a.is_sold_out) - Number(!!b.is_sold_out)); // stable: keeps the random order among equals
+  const top = mine.slice(0, PINNED);
+  return [...top, ...mix.filter((p) => !top.includes(p))];
+};
 function fillGrid() {
   const el = $('#grid');
   if (!el) return;
@@ -113,10 +157,10 @@ function fillGrid() {
   const match = (p) => !text || `${p.title} ${p.description}`.toLowerCase().includes(text);
   const catOf = (p) => (CATS[p.category] ? p.category : 'snacks');
   const comboList = catFilter === 'all' || catFilter === 'combos'
-    ? combos.filter((c) => match({ title: c.title, description: `${c.description} ${c.items.map((x) => x.title).join(' ')}` })) : [];
+    ? shuffled(combos.filter((c) => match({ title: c.title, description: `${c.description} ${c.items.map((x) => x.title).join(' ')}` })), (c) => 'c' + c.id) : [];
   const groups = Object.keys(CATS)
     .filter((c) => catFilter === 'all' || catFilter === c)
-    .map((c) => ({ c, list: products.filter((p) => catOf(p) === c && match(p)) }))
+    .map((c) => ({ c, list: shuffledPinned(products.filter((p) => catOf(p) === c && match(p))) }))
     .filter((g) => g.list.length);
   el.innerHTML = (comboList.length ? `<h2 class="cat-title">Combos</h2><section class="grid">${comboList.map(comboCard).join('')}</section>` : '')
     + groups.map((g) => `<h2 class="cat-title">${CATS[g.c]}</h2><section class="grid">${g.list.map(productCard).join('')}</section>`).join('')
@@ -143,7 +187,7 @@ const productTable = () => `<table>${products.map((p) => {
   return `<tr>
     <td>${mine ? `<input type="checkbox" class="pick" value="${p.id}" ${selected.has(p.id) ? 'checked' : ''}>` : ''}</td>
     <td>${p.image_url ? `<img class="thumb" src="${esc(p.image_url)}" alt="">` : ''}</td>
-    <td><b>${esc(p.title)}</b><br>${money(p.price)}${p.discount_percent ? ` (-${p.discount_percent}%)` : ''} | ${CATS[p.category] || 'Snacks'}${p.is_sold_out ? ' - sold out' : ''}${p.stock != null ? ` | Stock: ${p.stock}${p.stock > 0 && p.stock <= p.low_stock ? ' (LOW)' : ''}` : ''}${ownerName(p.owner_id) ? ` | by ${esc(ownerName(p.owner_id))}` : ''}</td>
+    <td><b>${esc(p.title)}</b><br>${money(p.price)}${p.discount_percent ? ` (-${p.discount_percent}%)` : ''}${bulkOn(p) ? ` | Bulk: ${p.bulk_min}+ = -${p.bulk_percent}%` : ''} | ${CATS[p.category] || 'Snacks'}${mine && costMap[p.id] != null ? ` | Profit ${money(fin(p) - Number(costMap[p.id]))} each` : ''}${p.stock != null ? ` | Stock: ${p.stock}${p.stock > 0 && p.stock <= LOW_STOCK ? ' (low!)' : ''}` : ''}${p.is_sold_out ? ' - sold out' : ''}${ownerName(p.owner_id) ? ` | by ${esc(ownerName(p.owner_id))}` : ''}</td>
     <td>${mine ? `<div class="actions">
       <button data-act="edit" data-id="${p.id}">Edit</button>
       <button data-act="toggle" data-id="${p.id}">${p.is_sold_out ? 'Mark available' : 'Mark sold out'}</button>
@@ -154,35 +198,16 @@ function updatePicks() {
   const n = $('#pickcount'); if (n) n.textContent = `${selected.size} selected`;
   const all = $('#pickall'); if (all) all.checked = myProducts().length > 0 && selected.size === myProducts().length;
 }
-function drawAdminNotes() {
-  const el = $('#adminnotes');
-  if (!el) return;
-  const counted = myProducts().filter((x) => x.stock != null);
-  const out = counted.filter((x) => x.stock === 0), low = counted.filter((x) => x.stock > 0 && x.stock <= x.low_stock);
-  let h = '';
-  if (isRaven() && backupInfo) {
-    const t = backupInfo.last_backup_at ? new Date(backupInfo.last_backup_at).getTime() : null;
-    const days = t ? Math.floor((Date.now() - t) / 86400000) : null;
-    if (days === null) h += '<div class="note-banner bad"><span><b>No backup yet.</b> Render can delete the database, so download one now.</span><button class="primary" data-act="backup">Download backup</button></div>';
-    else if (days >= 3) h += `<div class="note-banner ${days >= 7 ? 'bad' : 'warn'}"><span><b>Last backup was ${days} days ago.</b> Download a fresh one so you never lose orders.</span><button class="primary" data-act="backup">Download backup</button></div>`;
-    const lb = $('#lastbk');
-    if (lb) lb.textContent = t ? `Last backup: ${new Date(t).toLocaleString()} (${days === 0 ? 'today' : days + ' day' + (days === 1 ? '' : 's') + ' ago'}).` : 'No backup has been downloaded yet.';
-  }
-  if (out.length || low.length)
-    h += `<div class="note-banner warn"><span><b>Stock:</b> ${[...out.map((x) => `${esc(x.title)} is sold out`), ...low.map((x) => `${esc(x.title)} has ${x.stock} left`)].join(' | ')}</span></div>`;
-  el.innerHTML = h;
-}
-async function loadBackupInfo() {
-  try { backupInfo = await api('/api/admin/backup-status'); } catch (e) { backupInfo = null; }
-  drawAdminNotes();
-}
-
 function fillProducts() {
   for (const id of [...selected]) if (!myProducts().some((p) => p.id === id)) selected.delete(id);
   const el = $('#plist');
   if (el) el.innerHTML = productTable();
+  const lb = $('#lowbox');
+  if (lb) {
+    const m = myProducts().filter((p) => p.stock != null), out = m.filter((p) => p.stock === 0), low = m.filter((p) => p.stock > 0 && p.stock <= LOW_STOCK);
+    lb.innerHTML = out.length || low.length ? `<section class="panel glass">${low.length ? `<p style="margin:0"><b>Running low:</b> ${low.map((p) => `${esc(p.title)} (${p.stock})`).join(', ')}</p>` : ''}${out.length ? `<p style="margin:0"><b>Sold out:</b> ${out.map((p) => esc(p.title)).join(', ')}</p>` : ''}</section>` : '';
+  }
   updatePicks();
-  drawAdminNotes();
 }
 
 const adminBtns = (o) => {
@@ -193,10 +218,7 @@ const adminBtns = (o) => {
   if (me && o.status === 'cancelled') return '';
   const st = me ? me.status : o.status;
   if (st === 'pending') return btn('packed', me ? 'Approve: packed' : 'Mark packed', 'primary') + btn('cancelled', me ? 'Cancel my part' : 'Cancel', 'danger');
-  if (st === 'packed') {
-    const tick = o.paid_at ? '' : `<label class="pickrow tickpaid"><input type="checkbox" class="paidtick" data-order="${o.id}" ${paidTicks.has(o.id) ? 'checked' : ''}> ${me ? 'I collected the cash' : 'Cash received'}</label>`;
-    return tick + btn('completed', me ? 'Approve: complete' : 'Complete', 'primary') + btn('cancelled', me ? 'Cancel my part' : 'Cancel', 'danger');
-  }
+  if (st === 'packed') return btn('completed', me ? 'Approve: complete' : 'Complete', 'primary') + btn('cancelled', me ? 'Cancel my part' : 'Cancel', 'danger');
   return '';
 };
 const partsLine = (o) => ((o.parts || []).length > 1
@@ -215,17 +237,19 @@ const statusOf = (o) => {
   return me ? me.status : o.status;
 };
 
-const paidPill = (o) => (o.status === 'cancelled' ? '' : o.paid_at
-  ? `<span class="pill st-packed">Paid${o.paid_by_name ? ` - cash with ${esc(o.paid_by_name)}` : ''}</span>`
-  : `<span class="pill ${o.status === 'completed' ? 'st-cancelled' : 'st-pending'}">${o.status === 'completed' ? 'NOT PAID' : 'Not paid yet'}</span>`);
+const paidTag = (o) => (o.paid_by ? `<span class="pill st-packed">Paid - ${esc(o.paid_name || '')}</span>`
+  : ['packed', 'completed'].includes(o.status) ? `<span class="pill st-cancelled">Not paid yet</span>` : '');
+const paidBtn = (o) => (!['packed', 'completed'].includes(o.status) ? ''
+  : !o.paid_by ? `<button class="primary" data-act="paid" data-id="${o.id}" data-paid="1">Mark paid (cash in hand)</button>`
+  : o.paid_by === user.id || isRaven() ? `<button data-act="paid" data-id="${o.id}" data-paid="0">Undo paid</button>` : '');
 const orderCard = (o) => `
     <section class="panel glass">
-      <div class="between"><b>#${o.id} - ${esc(o.username)}</b><span class="pillrow">${paidPill(o)}<span class="pill st-${statusOf(o)}">${STATUS[statusOf(o)] || esc(statusOf(o))}</span></span></div>
+      <div class="between"><b>#${o.id} - ${esc(o.username)}</b><span>${paidTag(o)} <span class="pill st-${statusOf(o)}">${STATUS[statusOf(o)] || esc(statusOf(o))}</span></span></div>
       <p class="muted" style="margin:2px 0 10px">${new Date(o.created_at).toLocaleString()}</p>
       ${orderLines(o)}
       ${partsLine(o)}
       ${o.note ? `<p class="muted" style="margin:8px 0 0">Note: ${esc(o.note)}</p>` : ''}
-      <div class="actions" style="margin-top:12px">${adminBtns(o)}${o.status !== 'cancelled' ? `<button data-act="paid" data-id="${o.id}" data-paid="${o.paid_at ? '0' : '1'}">${o.paid_at ? 'Undo paid' : 'Mark paid'}</button>` : ''}<button data-act="print-order" data-id="${o.id}">Print receipt</button>${o.user_id ? `<button class="danger" data-act="cust-block" data-id="${o.user_id}" data-name="${esc(o.username)}">Block customer</button>` : ''}</div>
+      <div class="actions" style="margin-top:12px">${adminBtns(o)}${paidBtn(o)}<button data-act="print-order" data-id="${o.id}">Print receipt</button>${o.user_id ? `<button class="danger" data-act="cust-block" data-id="${o.user_id}" data-name="${esc(o.username)}">Block customer</button>` : ''}</div>
     </section>`;
 
 const dayLabel = (d) => {
@@ -246,6 +270,7 @@ function paintOrderFilters() {
   if ($('#orange')) $('#orange').value = ordRange;
   if ($('#oday')) $('#oday').value = ordDay;
   if ($('#onlymine')) $('#onlymine').checked = mineOnly();
+  if ($('#osearch')) $('#osearch').value = ordSearch;
 }
 
 function drawOrders() {
@@ -260,7 +285,8 @@ function drawOrders() {
     if (ordRange === 'week') return d >= new Date(now.getTime() - 7 * 86400000);
     return true;
   };
-  shownOrders = ordersCache.filter((o) => inRange(o) && (ordStatus === 'all' || (ordStatus === 'active' ? ['pending', 'packed'].includes(statusOf(o)) : statusOf(o) === ordStatus)));
+  const q = ordSearch.trim().toLowerCase().replace(/^#/, ''); // searching looks through every order, whatever the filters say
+  shownOrders = q ? ordersCache.filter((o) => String(o.id) === q || String(o.username).toLowerCase().includes(q)) : ordersCache.filter((o) => inRange(o) && (ordStatus === 'all' || (ordStatus === 'active' ? ['pending', 'packed'].includes(statusOf(o)) : statusOf(o) === ordStatus)));
   const c = $('#ocount');
   if (c) c.textContent = `${shownOrders.length} order${shownOrders.length === 1 ? '' : 's'} shown`;
 
@@ -323,15 +349,24 @@ function printOrders(list, mode) {
   const summary = [...tally].sort((x, y) => x[0].localeCompare(y[0]))
     .map(([t, q]) => `<li>${esc(t)} <b>x${q}</b></li>`).join('');
   if (!single && !live.length) return toast('Nothing left to pack for this filter.');
+  // Profit of an order = its total minus what its items cost you (only the items shown: just yours, or all sellers' for Raven's full view).
+  const profitOf = (o) => {
+    const own = mine || !isRaven();
+    const cs = (o.costs || []).filter((c) => !own || c.owner_id === user.id);
+    return { p: Number(o.total) - cs.reduce((s, c) => s + c.cost, 0), missing: cs.some((c) => c.missing) };
+  };
+  const prof = new Map(live.map((o) => [o.id, profitOf(o)]));
+  const sumProfit = [...prof.values()].reduce((s, x) => s + x.p, 0), anyMissing = [...prof.values()].some((x) => x.missing);
   // Packing list: one short row per order (who has what), not a big box each.
   const when = (o) => { const d = new Date(o.created_at); return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`; };
   const rows = live.map((o) => `<tr><td>#${o.id}</td><td><b>${esc(o.username)}</b><br><span class="s">${when(o)}</span></td>
       <td>${(o.items || []).map((i) => `${i.quantity} ${esc(i.title)}`).join(', ')}${o.note ? `<br><span class="s">Note: ${esc(o.note)}</span>` : ''}</td>
-      <td class="r"><b>${money(o.total)}</b></td><td>[&nbsp;&nbsp;&nbsp;]</td></tr>`).join('');
+      <td class="r"><b>${money(o.total)}</b></td><td class="r">${money(prof.get(o.id).p)}${prof.get(o.id).missing ? '*' : ''}</td><td>[&nbsp;&nbsp;&nbsp;]</td></tr>`).join('');
   const sumTotal = live.reduce((s, o) => s + Number(o.total), 0);
   const listHtml = `<h2>${wantDone ? 'Items' : 'To pack'}</h2><ul class="sum">${summary}</ul>
-    <h2>Who has what</h2><table><tr><th>Order</th><th>Customer</th><th>Items</th><th class="r">Total</th><th>Packed</th></tr>${rows}</table>
-    <div class="foot">${live.length} order${live.length === 1 ? '' : 's'} | Total ${money(sumTotal)} | Cash on delivery</div>`;
+    <h2>Who has what</h2><table><tr><th>Order</th><th>Customer</th><th>Items</th><th class="r">Total</th><th class="r">Profit</th><th>Packed</th></tr>${rows}</table>
+    <div class="foot">${live.length} order${live.length === 1 ? '' : 's'} | Total ${money(sumTotal)} | Profit ${money(sumProfit)} | Cash on delivery</div>
+    ${anyMissing ? '<div class="s">* Some items have no cost set, so that profit is too high.</div>' : ''}`;
   const block = (o) => `<div class="order">
       <div class="head"><span>Order #${o.id} - ${esc(o.username)}</span><span>${esc(STATUS[statusOf(o)] || statusOf(o))}</span></div>
       <div>${new Date(o.created_at).toLocaleString()}</div>
@@ -375,9 +410,10 @@ async function refreshCustomers() {
   if (!el) return;
   const html = list.map((c) => `<div class="req">
       <div class="between"><b>${esc(c.username)}</b>${c.blocked_shop ? '<span class="pill st-cancelled">Blocked everywhere</span>' : c.blocked_by_me ? '<span class="pill st-cancelled">Blocked by you</span>' : ''}</div>
-      <p class="muted" style="margin:2px 0 8px">${c.orders} order${c.orders === 1 ? '' : 's'} | ${c.completed} completed | ${c.cancelled} cancelled${c.my_reason ? ` | Reason: ${esc(c.my_reason)}` : ''}</p>
+      <p class="muted" style="margin:2px 0 8px">${c.orders} order${c.orders === 1 ? '' : 's'} | ${c.completed} completed | ${c.cancelled} cancelled${c.my_reason ? ` | Reason: ${esc(c.my_reason)}` : ''}${isRaven() && c.last_reset ? ` | Password reset ${new Date(c.last_reset).toLocaleDateString()}` : ''}</p>
       ${c.blocked_by_me ? `<button data-act="cust-unblock" data-id="${c.id}">Unblock</button>`
         : `<button class="danger" data-act="cust-block" data-id="${c.id}" data-name="${esc(c.username)}">Block</button>`}
+      ${isRaven() ? `<button data-act="cust-reset" data-id="${c.id}" data-name="${esc(c.username)}">Reset password</button>` : ''}
     </div>`).join('') || '<p>No customers yet.</p>';
   if (html !== custHtml) { custHtml = html; el.innerHTML = html; }
 }
@@ -392,36 +428,6 @@ async function refreshOrders() {
   if (tb) tb.textContent = 'Orders' + (pendingCount ? ` (${pendingCount})` : '');
   ordersCache = orders;
   drawOrders();
-}
-
-async function refreshCash() {
-  const el = $('#cashbox');
-  if (!el) return;
-  const [c, l] = await Promise.all([api(`/api/staff/cash?tz=${new Date().getTimezoneOffset()}`), api('/api/staff/ledger')]);
-  const row = (a, b, cls = '') => `<div class="between ${cls}"><span>${a}</span><b>${b}</b></div>`;
-  const person = (p) => `<div class="req">
-      <div class="between"><b>${esc(p.username)}${p.id === user.id ? ' (you)' : ''}</b>
-        <span class="pill ${p.to_collect_today > 0 ? 'st-pending' : 'st-packed'}">${p.to_collect_today > 0 ? money(p.to_collect_today) + ' to collect today' : 'Nothing left to collect today'}</span></div>
-      ${row("Today's orders (not cancelled)", money(p.expected_today), 'muted')}${row('Collected so far', money(p.collected_today))}${row('Still to collect today', money(p.to_collect_today))}
-      ${p.older_open > 0 ? row('Older orders still open and unpaid', money(p.older_open), 'muted') : ''}
-      ${p.missing_total > 0 ? `<div class="note-banner bad"><span><b>Missing money: ${money(p.missing_total)}.</b> Completed but never marked paid: ${p.missing.map((m) => `#${m.id} ${esc(m.customer)} (${money(m.amount)})`).join(', ')}</span></div>` : ''}
-    </div>`;
-  const owes = (x) => `<div class="req"><div class="between"><span><b>${esc(x.from_name)}</b> owes <b>${esc(x.to_name)}</b></span><b>${money(x.amount)}</b></div>
-      <div class="actions" style="margin-top:8px">${x.from === user.id ? `<button class="primary" data-act="settle" data-id="${x.to}" data-dir="paid" data-name="${esc(x.to_name)}" data-max="${x.amount}">I paid ${esc(x.to_name)}</button>` : ''}${x.to === user.id ? `<button class="primary" data-act="settle" data-id="${x.from}" data-dir="received" data-name="${esc(x.from_name)}" data-max="${x.amount}">${esc(x.from_name)} paid me</button>` : ''}</div></div>`;
-  const html = `<section class="panel glass"><h2>Cash to collect today</h2>
-      <p class="muted">Orders are cash on delivery. Tick "Cash received" when you complete an order. Anything completed but not paid shows up here as missing money.</p>
-      ${c.people.map(person).join('') || '<p>No data yet.</p>'}</section>
-    <section class="panel glass"><h2>Who owes who</h2>
-      <p class="muted">Whoever ticks an order as paid is holding that cash. If it includes another seller's items, they owe her share until it is handed over.</p>
-      ${l.pairs.length ? l.pairs.map(owes).join('') : '<p>All settled. Nobody owes anybody.</p>'}
-      <h3 style="margin:18px 0 6px">Totals</h3>
-      <table>${l.people.map((p) => `<tr><td><b>${esc(p.username)}</b></td><td class="muted">collected ${money(p.collected)} | own sales ${money(p.earned)}</td>
-        <td>${Math.abs(p.net) < 0.005 ? 'even' : p.net > 0 ? `holds ${money(p.net)} for others` : `is owed ${money(-p.net)}`}</td></tr>`).join('')}</table>
-      <h3 style="margin:18px 0 6px">Settle-up history</h3>
-      ${l.settlements.length ? l.settlements.map((x) => `<div class="between req"><span>${new Date(x.created_at).toLocaleDateString()} - <b>${esc(x.from_name)}</b> paid <b>${esc(x.to_name)}</b> ${money(x.amount)}${x.note ? ` <span class="muted">(${esc(x.note)})</span>` : ''}</span>
-        ${isRaven() || x.created_by === user.id ? `<button class="danger" data-act="settle-undo" data-id="${x.id}">Undo</button>` : ''}</div>`).join('') : '<p class="muted">Nothing recorded yet.</p>'}
-    </section>`;
-  if (html !== cashHtml) { cashHtml = html; el.innerHTML = html; }
 }
 
 async function refreshCustom() {
@@ -470,6 +476,7 @@ async function refreshAdminCombos() {
       <td><div class="actions">
         ${my && my.status !== 'approved' ? `<button class="primary" data-act="combo-approve" data-id="${c.id}" data-yes="1">Approve</button>` : ''}
         ${my && my.status !== 'declined' ? `<button class="danger" data-act="combo-approve" data-id="${c.id}" data-yes="0">Decline</button>` : ''}
+        ${isRaven() ? (c.approvals || []).filter((x) => x.owner_id !== user.id && x.status !== 'approved').map((x) => `<button data-act="combo-approve" data-id="${c.id}" data-yes="1" data-owner="${x.owner_id}">Approve for ${esc(x.username)}</button>`).join('') : ''}
         ${canEdit(c.owner_id) ? `<button data-act="combo-toggle" data-id="${c.id}">${c.is_active ? 'Hide' : 'Show'}</button>
         <button class="danger" data-act="combo-delete" data-id="${c.id}">Delete</button>` : ''}</div></td></tr>`;
   }).join('')}</table>` : '<p>No combos yet.</p>';
@@ -517,7 +524,7 @@ async function refreshSellers() {
   sellers = await api('/api/admin/sellers');
   const el = $('#sellerlist');
   if (el) el.innerHTML = sellers.length ? `<table>${sellers.map((x) => `<tr><td><b>${esc(x.username)}</b></td>
-    <td><div class="actions"><button data-act="seller-pw" data-id="${x.id}">New password</button>
+    <td><div class="actions"><button data-act="seller-rename" data-id="${x.id}">Rename</button><button data-act="seller-pw" data-id="${x.id}">New password</button>
     <button class="danger" data-act="seller-del" data-id="${x.id}">Remove</button></div></td></tr>`).join('')}</table>` : '<p>No sellers yet.</p>';
   const ob = $('#ownerbox');
   if (ob) {
@@ -528,11 +535,76 @@ async function refreshSellers() {
   fillProducts();
 }
 
+async function refreshCosts() { costMap = await api('/api/admin/costs'); fillProducts(); }
+async function refreshReport() { repData = await api('/api/admin/report?days=30'); drawReport(); }
+function drawReport() {
+  const el = $('#reportbox'); if (!el || !repData) return;
+  const t = repData.days.find((d) => d.day === repData.today) || { orders: 0, revenue: 0, profit: 0 };
+  const who = (repData.people || []).map((x) => `<tr><td><b>${esc(x.username)}</b>${x.role === 'admin' ? ' <span class="muted">(admin)</span>' : ''}</td><td>Gross <b>${money(x.gross)}</b> <span class="muted">(${x.done} completed)</span></td><td>Income <b>${money(x.income)}</b>${x.missing_cost ? ' <span class="muted">(some costs missing)</span>' : ''}</td><td>Potential income <b>${money(x.potential)}</b> <span class="muted">(${x.open} open)</span></td></tr>`).join('');
+  el.innerHTML = `<h3>${isRaven() ? 'Income per seller' : 'Your income'}</h3><p class="muted">Gross = sales of completed orders. Income = gross minus the cost prices (same as Profit below). Potential income = the profit on pending and packed orders still to come (price minus cost, so 50 sold with a cost of 30 = 20). Each person's own items only, all time.</p>${who ? `<table>${who}</table>` : ''}
+    <h3>Today</h3><p><b>${t.orders}</b> completed orders | Sales <b>${money(t.revenue)}</b> | Profit <b>${money(t.profit)}</b></p>
+    ${repData.missing_cost ? `<p class="muted">${repData.missing_cost} order lines have no cost price, so profit is too high. Set a cost on each product (Products tab, Edit).</p>` : ''}
+    <h3>Last 30 days</h3>${repData.days.length ? `<table>${repData.days.map((d) => `<tr><td><b>${esc(d.day)}</b></td><td>${d.orders} order${d.orders === 1 ? '' : 's'}</td><td>Sales ${money(d.revenue)}</td><td>Profit <b>${money(d.profit)}</b></td></tr>`).join('')}</table>` : '<p>No completed orders yet.</p>'}
+    <h3>By item (best profit first)</h3>${repData.items.length ? `<table>${repData.items.map((i) => `<tr><td>${esc(i.title)}</td><td>${i.qty} sold</td><td>Sales ${money(i.revenue)}</td><td>${i.known ? `Profit <b>${money(i.profit)}</b>` : '<span class="muted">Set a cost to see profit</span>'}</td></tr>`).join('')}</table>` : '<p>Nothing yet.</p>'}`;
+}
+// Reminder for the main admin: how long since the last copy that would survive the database being deleted.
+let backupInfo = null;
+function drawBackupReminder() {
+  const el = $('#adminnotes');
+  if (!el) return;
+  if (!isRaven() || !backupInfo) { el.innerHTML = ''; return; }
+  const t = backupInfo.last_safe_backup ? new Date(backupInfo.last_safe_backup).getTime() : null;
+  const days = t ? Math.max(0, Math.floor((Date.now() - t) / 86400000)) : null;
+  if (days !== null && days < 3) { el.innerHTML = ''; return; }
+  el.innerHTML = `<div class="note-banner ${days === null || days >= 7 ? 'bad' : 'warn'}"><span>${days === null
+    ? '<b>No backup saved yet.</b> Render can delete the database, so download one now.'
+    : `<b>Last backup was ${days} days ago.</b> Download a fresh one so you never lose orders.`}</span><button class="primary" data-act="backup">Download backup</button></div>`;
+}
+async function loadBackupInfo() {
+  try { backupInfo = await api('/api/admin/backup-status'); } catch (e) { backupInfo = null; }
+  drawBackupReminder();
+}
+async function refreshBackup() {
+  const el = $('#autobk'); if (!el) return;
+  const list = await api('/api/admin/backups');
+  const when = (d) => new Date(d).toLocaleString();
+  el.innerHTML = list.length
+    ? `<table>${list.map((b) => `<tr><td>${esc(when(b.created_at))}</td><td>${(b.size / 1048576).toFixed(2)} MB</td><td><button data-act="dlbackup" data-id="${b.id}">Download</button></td></tr>`).join('')}</table>`
+    : '<p class="muted">No automatic backup yet. The first one is made shortly after the site starts.</p>';
+}
+
+// Cash page: cash still to collect per seller, what each collected, and who owes whom.
+let cashData = null;
+async function refreshCash() { cashData = await api('/api/admin/cash'); drawCash(); }
+const tname = (id) => (team.find((x) => x.id === id) || {}).username || '?';
+function drawCash() {
+  const el = $('#cashbox'); if (!el || !cashData) return;
+  const today = new Date().toDateString(), by = {};
+  for (const o of cashData.unpaid) for (const [id, amt] of Object.entries(o.shares)) {
+    const r = by[id] ||= { t: 0, tn: 0, e: 0, en: 0, m: 0, mn: 0 };
+    if (new Date(o.created_at).toDateString() === today) { r.t += amt; r.tn++; } else { r.e += amt; r.en++; }
+    if (o.status === 'completed') { r.m += amt; r.mn++; }
+  }
+  const rows = Object.entries(by).map(([id, r]) => `<tr><td><b>${esc(tname(Number(id)))}</b></td>
+    <td>Today: <b>${money(r.t)}</b> <span class="muted">(${r.tn})</span></td>
+    <td>Earlier: <b>${money(r.e)}</b> <span class="muted">(${r.en})</span></td>
+    <td>${r.mn ? `<b style="color:#dc2670">Delivered, not marked paid: ${money(r.m)} (${r.mn})</b>` : '<span class="muted">Nothing missing</span>'}</td></tr>`).join('');
+  const bal = cashData.balances.map((b) => `<tr><td><b>${esc(b.from_name)}</b> owes <b>${esc(b.to_name)}</b></td><td><b>${money(b.amount)}</b></td>
+    <td>${isRaven() || b.to === user.id ? `<button data-act="settle" data-from="${b.from}" data-to="${b.to}" data-amt="${b.amount}" data-names="${esc(b.from_name)} to ${esc(b.to_name)}">Mark paid</button>` : ''}</td></tr>`).join('');
+  el.innerHTML = `<h3>Cash still to collect</h3><p class="muted">Unpaid orders by seller. Tick Paid on the order when the money is in your hand.</p>
+    ${rows ? `<table>${rows}</table>` : '<p>Nothing to collect.</p>'}
+    <h3>What each seller collected</h3>
+    ${cashData.collected.length ? `<table>${cashData.collected.map((c) => `<tr><td><b>${esc(c.username)}</b></td><td>${money(c.amount)}</td><td class="muted">${c.orders} order${c.orders === 1 ? '' : 's'}</td></tr>`).join('')}</table>` : '<p>No cash marked paid yet.</p>'}
+    <h3>Who owes who</h3>
+    ${bal ? `<table>${bal}</table>` : '<p>Everyone is settled up.</p>'}
+    ${cashData.settlements.length ? `<h3>Settled so far</h3><p class="muted">${cashData.settlements.map((x) => `${new Date(x.created_at).toLocaleDateString()}: ${esc(x.from_name)} paid ${esc(x.to_name)} ${money(x.amount)}`).join('<br>')}</p>` : ''}`;
+}
+
 function renderAdmin() {
   adminHtml = ''; customAdminHtml = '';
   const tab = (id, label, extra = '') =>
     `<button id="tab-${id}" class="${adminTab === id ? 'primary' : ''}" data-act="admintab" data-tab="${id}">${label}${extra}</button>`;
-  const tabs = `<div class="tabs">${tab('products', 'Products')}${tab('orders', 'Orders', pendingCount ? ` (${pendingCount})` : '')}${tab('cash', 'Cash')}${tab('custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : '')}${tab('combos', 'Combos')}${tab('promos', 'Promos')}${tab('customers', 'Customers')}${isRaven() ? tab('sellers', 'Sellers') + tab('backup', 'Backup') : tab('alerts', 'Alerts')}</div>`;
+  const tabs = `<div class="tabs">${tab('products', 'Products')}${tab('orders', 'Orders', pendingCount ? ` (${pendingCount})` : '')}${tab('custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : '')}${tab('cash', 'Cash')}${tab('report', 'Report')}${tab('combos', 'Combos')}${tab('promos', 'Promos')}${tab('customers', 'Customers')}${isRaven() ? tab('sellers', 'Sellers') + tab('backup', 'Backup') : tab('alerts', 'Alerts')}</div>`;
   const productsView = `
     <section class="panel glass">
       <h2 id="form-title">Add a product</h2>
@@ -542,14 +614,17 @@ function renderAdmin() {
         <div id="ownerbox"></div>
         <label>Category</label><select name="category"><option value="drinks">Drinks</option><option value="snacks">Snacks</option></select>
         <label>Discount % (0 for none)</label><input name="discount_percent" type="number" min="0" max="90" value="0">
-        <div class="row"><div><label>Stock (empty = don't count)</label><input name="stock" type="number" min="0" max="99999" placeholder="e.g. 24"></div>
-          <div><label>Warn me at or below</label><input name="low_stock" type="number" min="0" max="9999" value="5"></div></div>
+        <div class="row"><div><label>Bulk discount: buy at least (leave empty for none)</label><input name="bulk_min" type="number" min="2" max="999" step="1"></div>
+          <div><label>Bulk discount % off each</label><input name="bulk_percent" type="number" min="0" max="90" value="0"></div></div>
+        <label>Cost price (what it costs you; optional, customers never see it)</label><input name="cost" type="number" step="0.01" min="0">
+        <label>Stock (how many you have; leave empty to not count)</label><input name="stock" type="number" min="0" step="1">
         <label>Description</label><textarea name="description" rows="3"></textarea>
         <label>Image (max 5 MB; leave empty to keep the current one)</label><input name="image" type="file" accept="image/*">
         <button class="primary" type="submit" id="save">Add product</button>
         <button type="button" data-act="reset-form">Clear</button>
       </form>
     </section>
+    <div id="lowbox"></div>
     <section class="panel glass table-wrap"><h2>Products</h2>
       <div class="bulk">
         <label><input type="checkbox" id="pickall"> Select all</label>
@@ -558,10 +633,12 @@ function renderAdmin() {
         <button data-act="bulk" data-cat="snacks">Move to Snacks</button>
         <input id="discpct" type="number" min="0" max="90" placeholder="% off" style="width:90px;margin:0">
         <button data-act="bulkdisc">Apply discount</button>
+        <button data-act="reprice">Update open orders to current prices</button>
       </div>
       <div id="plist"></div></section>`;
   const ordersView = `<h2>Orders</h2>
     <div class="toolbar" id="ofilters">
+      <input type="search" id="osearch" placeholder="Search customer or order #" autocomplete="off" style="max-width:240px">
       <div class="chips">
         <button data-act="ofilter" data-st="active">Active</button><button data-act="ofilter" data-st="pending">To pack</button><button data-act="ofilter" data-st="packed">Packed</button>
         <button data-act="ofilter" data-st="completed">Completed</button><button data-act="ofilter" data-st="all">All</button>
@@ -574,7 +651,8 @@ function renderAdmin() {
     </div>
     <p class="muted" id="ocount" style="margin:0 0 4px"></p>
     <div id="olist"><p>Loading...</p></div>`;
-  const cashView = '<div id="cashbox"><p>Loading...</p></div>';
+  const cashView = '<section class="panel glass"><h2>Cash</h2><div id="cashbox"><p>Loading...</p></div></section>';
+  const reportView = '<section class="panel glass table-wrap"><h2>Sales and profit</h2><div id="reportbox"><p>Loading...</p></div></section>';
   const customView = '<section class="panel glass table-wrap"><h2>Custom orders</h2><div id="clist"><p>Loading...</p></div></section>';
   const combosView = `<section class="panel glass">
       <h2>Create a combo</h2>
@@ -634,9 +712,11 @@ function renderAdmin() {
     </section>`;
   const backupView = `<section class="panel glass">
       <h2>Backup and restore</h2>
-      <p class="muted" id="lastbk"></p>
-      <p>Download everything (products with photos, accounts, orders, cash records and custom requests) as one file. Keep it private, because it contains customer accounts.</p>
+      <p>Download everything (products with photos, accounts, orders and custom requests) as one file. Keep it private, because it contains customer accounts.</p>
       <button class="primary" data-act="backup">Download backup</button>
+      <hr style="border:0;border-top:1px solid var(--border);margin:22px 0">
+      <p><b>Automatic backups</b> are saved here every 3 days (the newest 5 are kept). They live in the same database as the shop, so still download one by hand now and then and keep it somewhere safe.</p>
+      <div id="autobk"><p>Loading...</p></div>
       <hr style="border:0;border-top:1px solid var(--border);margin:22px 0">
       <p><b>Restore</b> replaces everything on the site with the contents of a backup file. Use it on a new, empty database.</p>
       <input id="bfile" type="file" accept=".json,application/json">
@@ -645,17 +725,20 @@ function renderAdmin() {
   const customersView = `<h2>Customers</h2>
     <p class="muted">Block people who abuse the shop (fake orders, not showing up). ${isRaven() ? 'Your block covers the whole shop.' : 'Your block stops them ordering your items only.'} The list shows the most cancelled orders first.</p>
     <div id="custlist"><p>Loading...</p></div>`;
-  $('#app').innerHTML = tabs + '<div id="adminnotes"></div>' + (adminTab === 'orders' ? ordersView : adminTab === 'cash' ? cashView : adminTab === 'custom' ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'alerts' && !isRaven() ? alertsView : adminTab === 'combos' ? combosView : adminTab === 'promos' ? promosView : adminTab === 'customers' ? customersView : productsView);
+  $('#app').innerHTML = tabs + '<div id="adminnotes"></div>' + (adminTab === 'report' ? reportView : adminTab === 'cash' ? cashView : adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'alerts' && !isRaven() ? alertsView : adminTab === 'combos' ? combosView : adminTab === 'promos' ? promosView : adminTab === 'customers' ? customersView : productsView);
   fillProducts();
   comboAdminHtml = ''; refreshAdminCombos().catch(() => {});
   promoAdminHtml = ''; refreshAdminPromos().catch(() => {});
   paintOrderFilters();
   custHtml = ''; refreshCustomers().catch(() => {});
   refreshOrders().catch(() => {});
-  cashHtml = ''; if (adminTab === 'cash') refreshCash().catch((e) => toast(e.message));
-  if (isRaven()) loadBackupInfo(); else drawAdminNotes();
   refreshCustom().catch(() => {});
   refreshTeam().catch(() => {});
+  if (adminTab === 'cash') refreshCash().catch(() => {});
+  if (adminTab === 'report') refreshReport().catch(() => {});
+  refreshCosts().catch(() => {});
+  if (isRaven() && adminTab === 'backup') refreshBackup().catch(() => {});
+  if (isRaven()) loadBackupInfo();
   if (isRaven()) refreshSellers().catch(() => {}); else loadAlerts().catch(() => {});
 }
 
@@ -769,6 +852,15 @@ async function loadProducts() {
 }
 
 /* ---------- Dialogs ---------- */
+let forcePw = false;
+function changePwDialog() {
+  forcePw = true;
+  $('#dlg').innerHTML = `<h2>Choose a new password</h2><p class="muted">You logged in with a temporary password. Pick your own to continue.</p><form data-form="changepw">
+    <label>Temporary password</label><input name="current_password" type="password" required autocomplete="current-password">
+    <label>New password (8+ characters)</label><input name="new_password" type="password" required minlength="8" autocomplete="new-password">
+    <button class="primary">Save new password</button><button type="button" data-act="logout">Log out</button></form>`;
+  if (!$('#dlg').open) $('#dlg').showModal();
+}
 function authDialog() {
   $('#dlg').innerHTML = `<h2>Welcome</h2><form data-form="auth">
     <label>Username</label><input name="username" required autocomplete="username">
@@ -803,7 +895,10 @@ function cartLines() {
       return c && { key, title: 'Combo: ' + c.title, price: Number(c.price), q, owner: c.owner_id, parts: comboParts(c) };
     }
     const p = products.find((x) => x.id == key);
-    return p && { key, title: p.title, price: fin(p), q, owner: p.owner_id };
+    if (!p) return null;
+    const hit = bulkOn(p) && q >= Number(p.bulk_min);
+    const note = hit ? ` <small class="muted">(bulk price, ${p.bulk_percent}% off)</small>` : bulkOn(p) ? ` <small class="muted">(buy ${p.bulk_min}+ for ${p.bulk_percent}% off)</small>` : '';
+    return { key, title: p.title, price: unitFor(p, q), q, owner: p.owner_id, note };
   }).filter(Boolean);
 }
 function cartDialog() {
@@ -817,7 +912,7 @@ function cartDialog() {
     return ok ? s + l.price * l.q : s;
   }, 0);
   const off = promo ? Math.round(base * promo.percent) / 100 : 0;
-  $('#dlg').innerHTML = `<h2>Your cart</h2>${lines.map((l) => `<div class="cline"><span>${l.q} x ${esc(l.title)}</span><b>${money(l.price * l.q)}</b><button data-act="remove" data-id="${l.key}">Remove</button></div>`).join('') || '<p>Your cart is empty.</p>'}
+  $('#dlg').innerHTML = `<h2>Your cart</h2>${lines.map((l) => `<div class="cline"><span>${l.q} x ${esc(l.title)}${l.note || ''}</span><b>${money(l.price * l.q)}</b><button data-act="remove" data-id="${l.key}">Remove</button></div>`).join('') || '<p>Your cart is empty.</p>'}
     ${lines.length ? `<label>Promo code (optional)</label>
       <div class="actions"><input id="promoin" value="${esc(promo ? promo.code : '')}" placeholder="Enter code" style="flex:1;margin:0"><button data-act="applypromo">Apply</button></div>
       <label style="display:block;margin-top:12px">Note for the seller (your name, seat, anything helpful)</label>
@@ -848,7 +943,7 @@ function quoteDialog(id) {
 
 /* ---------- Actions ---------- */
 const actions = {
-  shop: () => { view = 'shop'; render(); },
+  shop: () => { view = 'shop'; render(); animateApp(); },
   cat: (id, d) => { catFilter = d.cat; renderShop(); },
   'cust-block': async (id, d) => {
     const reason = prompt(`Block ${d.name || 'this customer'}? They will not be able to order ${isRaven() ? 'from anyone' : 'your items'}.\nWhy? (optional)`);
@@ -880,6 +975,13 @@ const actions = {
     if (!added) return toast('Those items are not available right now.');
     saveCart(); cartDialog();
   },
+  'seller-rename': async (id) => {
+    const cur = (sellers.find((x) => x.id == id) || {}).username || '';
+    const name = prompt('New username for this seller (3-30 letters, numbers or _):', cur);
+    if (!name || name.trim() === cur) return;
+    await api(`/api/admin/sellers/${id}`, { method: 'PATCH', json: { username: name.trim() } });
+    await refreshSellers(); await loadProducts(); toast('Seller renamed.');
+  },
   'seller-pw': async (id) => {
     const pw = prompt('New password for this seller (8+ characters):');
     if (!pw) return;
@@ -896,15 +998,22 @@ const actions = {
     await api(`/api/promos/${id}`, { method: 'DELETE' }); await refreshAdminPromos(); toast('Deleted.');
   },
   addcombo: (id) => { const k = 'c' + id; cart[k] = (cart[k] || 0) + 1; saveCart(); toast('Added to cart.'); },
+  reprice: async () => {
+    const r = await api('/api/orders/reprice', { method: 'POST' });
+    await refreshOrders().catch(() => {});
+    toast(repriceMsg(r));
+  },
   bulkdisc: async () => {
     if (!selected.size) return toast('Tick the products first.');
     const pct = $('#discpct').value;
     if (pct === '') return toast('Type the discount % first (0 removes it).');
-    await api('/api/products/discount', { method: 'PATCH', json: { ids: [...selected], percent: pct } });
-    selected.clear(); await loadProducts(); toast(Number(pct) ? `${pct}% discount applied.` : 'Discount removed.');
+    const r = await api('/api/products/discount', { method: 'PATCH', json: { ids: [...selected], percent: pct } });
+    selected.clear(); await loadProducts();
+    if (r && r.repriced_orders) await refreshOrders().catch(() => {});
+    toast((Number(pct) ? `${pct}% discount applied. ` : 'Discount removed. ') + repriceMsg(r));
   },
   'combo-approve': async (id, d) => {
-    await api(`/api/combos/${id}/approval`, { method: 'PATCH', json: { approve: d.yes === '1' } });
+    await api(`/api/combos/${id}/approval`, { method: 'PATCH', json: { approve: d.yes === '1', ...(d.owner ? { owner_id: d.owner } : {}) } });
     await refreshAdminCombos(); await loadProductsQuiet(); toast(d.yes === '1' ? 'Approved.' : 'Declined.');
   },
   'combo-toggle': async (id) => { await api(`/api/combos/${id}/active`, { method: 'PATCH' }); await refreshAdminCombos(); await loadProductsQuiet(); },
@@ -917,10 +1026,20 @@ const actions = {
     await api('/api/products/category', { method: 'PATCH', json: { ids: [...selected], category: d.cat } });
     selected.clear(); await loadProducts(); toast(`Moved to ${CATS[d.cat]}.`);
   },
-  admin: () => { view = 'admin'; render(); },
-  orders: () => { view = 'orders'; render(); },
-  custom: () => { view = 'custom'; render(); },
-  admintab: (id, d) => { adminTab = d.tab; renderAdmin(); },
+  admin: () => { view = 'admin'; render(); animateApp(); },
+  orders: () => { view = 'orders'; render(); animateApp(); },
+  custom: () => { view = 'custom'; render(); animateApp(); },
+  admintab: (id, d) => {
+    // Keep the page where it was: remember the scroll position and how far the tab bar was scrolled sideways,
+    // and hold the page height while the new tab loads so the browser doesn't jump up.
+    const app = $('#app'), y = window.scrollY, tx = ($('.tabs') || {}).scrollLeft || 0;
+    app.style.minHeight = app.offsetHeight + 'px';
+    adminTab = d.tab; renderAdmin();
+    const bar = $('.tabs'); if (bar) bar.scrollLeft = tx;
+    window.scrollTo(0, y);
+    animateApp();
+    setTimeout(() => { app.style.minHeight = ''; }, 900);
+  },
   quote: (id) => quoteDialog(id),
   backup: async () => {
     const r = await fetch('/api/admin/export', { headers: { Authorization: 'Bearer ' + token } });
@@ -930,8 +1049,17 @@ const actions = {
     link.download = `shop-backup-${new Date().toISOString().slice(0, 10)}.json`;
     document.body.appendChild(link); link.click(); link.remove();
     setTimeout(() => URL.revokeObjectURL(link.href), 10000);
-    backupInfo = { last_backup_at: new Date().toISOString() }; drawAdminNotes();
+    backupInfo = { ...(backupInfo || {}), last_safe_backup: new Date().toISOString() }; drawBackupReminder();
     toast('Backup downloaded. Keep the file somewhere safe.');
+  },
+  dlbackup: async (id) => {
+    const r = await fetch(`/api/admin/backups/${encodeURIComponent(id)}/download`, { headers: { Authorization: 'Bearer ' + token } });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Download failed.');
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(await r.blob());
+    link.download = (r.headers.get('Content-Disposition') || '').match(/filename="([^"]+)"/)?.[1] || 'shop-backup.json';
+    document.body.appendChild(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(link.href), 10000);
   },
   restore: async () => {
     const f = $('#bfile').files[0];
@@ -957,26 +1085,21 @@ const actions = {
   },
   paid: async (id, d) => {
     await api(`/api/orders/${id}/paid`, { method: 'PATCH', json: { paid: d.paid === '1' } });
-    paidTicks.delete(Number(id)); await refreshOrders(); if (adminTab === 'cash') await refreshCash();
-    toast(d.paid === '1' ? 'Marked paid. You are now holding that cash.' : 'Paid mark removed.');
+    await refreshOrders(); if (adminTab === 'cash') await refreshCash(); toast(d.paid === '1' ? 'Marked paid.' : 'Paid tick removed.');
   },
   settle: async (id, d) => {
-    const raw = prompt(`How much ${d.dir === 'paid' ? 'did you pay ' + d.name : 'did ' + d.name + ' pay you'}? (they owe ${money(d.max)})`, d.max);
-    if (raw === null) return;
-    const amount = Number(raw);
-    if (!(amount > 0)) return toast('Enter an amount above 0.');
-    await api('/api/staff/settlements', { method: 'POST', json: { with_user: Number(id), direction: d.dir, amount } });
-    await refreshCash(); toast('Recorded. The other person is alerted.');
-  },
-  'settle-undo': async (id) => {
-    if (!confirm('Remove this settle-up entry?')) return;
-    await api(`/api/staff/settlements/${id}`, { method: 'DELETE' }); await refreshCash(); toast('Removed.');
+    const v = prompt(`How much did ${d.names} hand over?`, d.amt);
+    if (v === null) return;
+    await api('/api/admin/settlements', { method: 'POST', json: { from_id: d.from, to_id: d.to, amount: v } });
+    await refreshCash(); toast('Recorded.');
   },
   setstatus: async (id, d) => {
     if (d.status === 'cancelled' && !confirm('Cancel this order?')) return;
-    const tick = d.status === 'completed' && paidTicks.has(Number(id)) && !(ordersCache.find((x) => x.id == id) || {}).paid_at;
     const r = await api(`/api/orders/${id}/status`, { method: 'PATCH', json: { status: d.status } });
-    if (tick) { await api(`/api/orders/${id}/paid`, { method: 'PATCH', json: { paid: true } }); paidTicks.delete(Number(id)); }
+    const o0 = ordersCache.find((x) => x.id == id);
+    if (d.status === 'completed' && o0 && !o0.paid_by && confirm('Did you collect the cash?\nOK = tick Paid. Cancel = not yet.')) {
+      try { await api(`/api/orders/${id}/paid`, { method: 'PATCH', json: { paid: true } }); } catch (e) { toast(e.message); }
+    }
     await refreshOrders();
     toast(r.waiting && r.waiting.length ? `Saved. Waiting for ${r.waiting.join(', ')} to approve too.`
       : d.status === 'packed' ? 'Marked packed. The customer is notified.' : 'Order updated.');
@@ -984,12 +1107,19 @@ const actions = {
   close: () => $('#dlg').close(),
   auth: authDialog,
   cart: cartDialog,
-  logout: () => { clearSession(); view = 'shop'; render(); toast('Logged out.'); },
-  add: (id) => {
-    const p = products.find((x) => x.id == id);
-    if (p && p.stock != null && (cart[id] || 0) + 1 > p.stock) return toast(`Only ${p.stock} left.`);
-    cart[id] = (cart[id] || 0) + 1; saveCart(); toast('Added to cart.');
+  install: () => installApp(),
+  logout: () => { forcePw = false; $('#dlg').close(); clearSession(); view = 'shop'; render(); toast('Logged out.'); },
+  'cust-reset': (id, d) => {
+    $('#dlg').innerHTML = `<h2>Reset password for ${esc(d.name)}</h2><p class="muted">Type your own admin password to confirm. This is logged and sent to your phone.</p><form data-form="reset" data-id="${id}">
+      <label>Your admin password</label><input name="admin_password" type="password" required autocomplete="current-password">
+      <button class="primary">Reset and show temporary password</button><button type="button" data-act="close">Cancel</button></form>`;
+    $('#dlg').showModal();
   },
+  copytemp: async () => {
+    const i = $('#temppw'); i.select();
+    try { await navigator.clipboard.writeText(i.value); toast('Copied.'); } catch (e) { document.execCommand('copy'); toast('Copied.'); }
+  },
+  add: (id) => { cart[id] = (cart[id] || 0) + 1; saveCart(); toast('Added to cart.'); },
   remove: (id) => { delete cart[id]; saveCart(); cartDialog(); },
   checkout: async () => {
     if (!user) { authDialog(); return toast('Log in to place your order.'); }
@@ -1001,7 +1131,7 @@ const actions = {
   delete: async (id) => { if (confirm('Delete this product?')) { await api(`/api/products/${id}`, { method: 'DELETE' }); await loadProducts(); toast('Deleted.'); } },
   edit: (id) => {
     const p = products.find((x) => x.id == id), f = $('#pform');
-    f.dataset.id = id; f.title.value = p.title; f.price.value = p.price; f.description.value = p.description; f.category.value = p.category || 'snacks'; f.discount_percent.value = p.discount_percent || 0; f.stock.value = p.stock ?? ''; f.dataset.stock0 = String(p.stock ?? ''); f.low_stock.value = p.low_stock ?? 5; if (f.owner_id) f.owner_id.value = p.owner_id || user.id;
+    f.dataset.id = id; f.title.value = p.title; f.price.value = p.price; f.description.value = p.description; f.category.value = p.category || 'snacks'; f.discount_percent.value = p.discount_percent || 0; f.bulk_min.value = p.bulk_min ?? ''; f.bulk_percent.value = p.bulk_percent || 0; f.stock.value = p.stock ?? ''; f.cost.value = costMap[id] ?? ''; if (f.owner_id) f.owner_id.value = p.owner_id || user.id;
     $('#form-title').textContent = 'Edit product'; $('#save').textContent = 'Save changes';
     f.scrollIntoView({ behavior: 'smooth' });
   },
@@ -1019,8 +1149,19 @@ document.addEventListener('submit', async (e) => {
   try {
     if (e.target.dataset.form === 'auth') {
       const mode = e.submitter.dataset.mode;
-      const d = await api(`/api/auth/${mode}`, { method: 'POST', json: Object.fromEntries(new FormData(e.target)) });
-      setSession(d.token, d.user); $('#dlg').close(); render(); toast(`Welcome, ${d.user.username}.`);
+      const d = await api(`/api/auth/${mode}`, { method: 'POST', json: { ...Object.fromEntries(new FormData(e.target)), device_id: deviceId() } });
+      setSession(d.token, d.user);
+      if (d.must_change) { changePwDialog(); render(); return; }
+      $('#dlg').close(); render(); toast(`Welcome, ${d.user.username}.`);
+    } else if (e.target.dataset.form === 'changepw') {
+      const d = await api('/api/auth/change-password', { method: 'POST', json: Object.fromEntries(new FormData(e.target)) });
+      setSession(d.token, d.user); forcePw = false; $('#dlg').close(); render(); toast('Password changed.');
+    } else if (e.target.dataset.form === 'reset') {
+      const d = await api(`/api/admin/customers/${e.target.dataset.id}/reset-password`, { method: 'POST', json: Object.fromEntries(new FormData(e.target)) });
+      $('#dlg').innerHTML = `<h2>Temporary password</h2><p>For <b>${esc(d.username)}</b>. It is shown <b>once</b>, works for 24 hours, and they must choose their own password when they log in.</p>
+        <input id="temppw" readonly value="${esc(d.password)}" style="font-size:1.2rem;letter-spacing:1px">
+        <button class="primary" type="button" data-act="copytemp">Copy</button><button type="button" data-act="close">Done</button>`;
+      custHtml = ''; refreshCustomers().catch(() => {});
     } else if (e.target.dataset.form === 'quote') {
       const fd = Object.fromEntries(new FormData(e.target));
       const unavailable = e.submitter.dataset.mode === 'unavailable';
@@ -1056,23 +1197,21 @@ document.addEventListener('submit', async (e) => {
       const id = e.target.dataset.id;
       const fd = new FormData(e.target);
       if (!fd.get('image').size) fd.delete('image');
-      // Only send the stock count if it was changed in this form, so an old copy can't overwrite a live count.
-      if (id && String(fd.get('stock')) === (e.target.dataset.stock0 ?? '')) fd.delete('stock');
-      await api(id ? `/api/products/${id}` : '/api/products', { method: id ? 'PUT' : 'POST', body: fd });
-      await loadProducts(); toast(id ? 'Changes saved.' : 'Product added.');
+      const saved = await api(id ? `/api/products/${id}` : '/api/products', { method: id ? 'PUT' : 'POST', body: fd });
+      await loadProducts(); refreshCosts().catch(() => {});
+      if (id) { if (saved && saved.repriced_orders) await refreshOrders().catch(() => {}); toast('Changes saved. ' + repriceMsg(saved)); }
+      else toast('Product added.');
     }
   } catch (err) { toast(err.message); }
 });
 
 // Close the dialog when clicking the dimmed backdrop
-$('#dlg').addEventListener('click', (e) => { if (e.target === $('#dlg')) $('#dlg').close(); });
+$('#dlg').addEventListener('click', (e) => { if (e.target === $('#dlg') && !forcePw) $('#dlg').close(); });
+$('#dlg').addEventListener('cancel', (e) => { if (forcePw) e.preventDefault(); }); // Esc cannot skip the forced password change
+
+document.addEventListener('input', (e) => { if (e.target.id === 'osearch') { ordSearch = e.target.value; drawOrders(); } });
 
 document.addEventListener('change', (e) => {
-  if (e.target.classList.contains('paidtick')) {
-    const id = Number(e.target.dataset.order);
-    if (e.target.checked) paidTicks.add(id); else paidTicks.delete(id);
-    return;
-  }
   if (e.target.id === 'onlymine') {
     try { localStorage.onlyMine = e.target.checked ? '1' : ''; } catch (err) { /* ignore */ }
     toast(e.target.checked ? 'Receipts and packing lists will show only your items.' : 'Receipts and packing lists will show every seller\'s items.');
@@ -1107,7 +1246,7 @@ async function poll() {
       sig = now; products = fresh; combos = freshCombos; settings = freshSettings;
       if (view === 'shop') { fillBanner(); fillGrid(); } else if (view === 'admin') fillProducts();
     }
-    if (isAdmin()) { await refreshOrders(); await refreshCustom(); if (view === 'admin' && adminTab === 'cash') await refreshCash(); }
+    if (isAdmin()) { await refreshOrders(); await refreshCustom(); }
     if (user && !isAdmin()) {
       if (view === 'orders') await fillMine(); else await loadMine();
       if (view === 'custom') await fillCustomMine(); else await loadCustomMine();
@@ -1145,5 +1284,32 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) poll
     $('#a2hs-ok').addEventListener('click', () => { localStorage.a2hsDone = '1'; $('#a2hs').remove(); });
   } catch (e) { /* private browsing */ }
 })();
+
+/* Android (Chrome): the browser offers to install the shop as an app. We keep that offer and show our own card
+   (the same one the iPhone tip uses) plus an "Install app" button in the footer. */
+async function installApp() {
+  if (!installEvt) return;
+  const ev = installEvt; installEvt = null;
+  const card = $('#a2hs'); if (card) card.remove();
+  try { ev.prompt(); await ev.userChoice; } catch (e) { /* closed without choosing */ }
+  renderMobileNav();
+}
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault(); installEvt = e;
+  let snoozed = false;
+  try { snoozed = Date.now() - Number(localStorage.installSnooze || 0) < 7 * 864e5; } catch (err) { /* private browsing */ }
+  if (!snoozed && !$('#a2hs')) document.body.insertAdjacentHTML('beforeend', `<div id="a2hs" class="glass">
+    <b>Install the shop as an app</b>
+    <p>Put it on your home screen. It opens full screen, like a real app.</p>
+    <button class="primary" id="a2hs-install" type="button">Install</button> <button id="a2hs-later" type="button">Not now</button></div>`);
+  renderMobileNav();
+});
+window.addEventListener('appinstalled', () => { installEvt = null; const c = $('#a2hs'); if (c) c.remove(); renderMobileNav(); toast('Installed. Open it from your home screen.'); });
+document.addEventListener('click', (e) => {
+  if (e.target.id === 'a2hs-install') installApp();
+  else if (e.target.id === 'a2hs-later') { try { localStorage.installSnooze = Date.now(); } catch (err) { /* ignore */ } const c = $('#a2hs'); if (c) c.remove(); }
+});
+// The service worker is what lets Chrome treat the shop as an installable app, and keeps the shell opening if the signal drops.
+if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
 
 loadProducts().catch((e) => toast(e.message));
