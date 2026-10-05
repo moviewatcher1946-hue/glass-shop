@@ -334,9 +334,9 @@ async function repriceOpenOrders(productIds) {
     await c.query('BEGIN');
     const { rows: ords } = await c.query(`SELECT o.id,o.promo_code,o.total,o.discount FROM orders o WHERE o.status IN ('pending','packed')
       AND EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id=o.id AND oi.product_id = ANY($1)) ORDER BY o.id FOR UPDATE OF o`, [ids]);
+    const prods = new Map((await c.query('SELECT id,price,discount_percent,bulk_min,bulk_percent FROM products WHERE id = ANY($1)', [ids])).rows.map((p) => [p.id, p]));
     for (const o of ords) {
       const { rows: its } = await c.query('SELECT id,product_id,quantity,unit_price::float AS price,owner_id FROM order_items WHERE order_id=$1', [o.id]);
-      const prods = new Map((await c.query('SELECT id,price,discount_percent,bulk_min,bulk_percent FROM products WHERE id = ANY($1)', [ids])).rows.map((p) => [p.id, p]));
       const qty = new Map();
       for (const i of its) if (i.product_id != null) qty.set(i.product_id, (qty.get(i.product_id) || 0) + i.quantity);
       let touched = false;
@@ -365,12 +365,17 @@ async function repriceOpenOrders(productIds) {
   } catch (e) {
     await c.query('ROLLBACK');
     console.error('Re-pricing open orders failed:', e.message);
-    return 0;
+    throw e;
   } finally {
     c.release();
   }
   return changed;
 }
+// Runs the re-pricing for the routes below without ever losing the product change itself; a failure is reported to the screen.
+const repriceSafe = async (ids) => {
+  try { return { repriced_orders: await repriceOpenOrders(ids), reprice_error: null }; }
+  catch (e) { return { repriced_orders: 0, reprice_error: e.message }; }
+};
 
 app.post('/api/products', auth, staff, upload.single('image'), wrap(async (req, res) => {
   const { title, description = '', price, category = 'snacks', discount_percent = 0 } = req.body;
@@ -419,8 +424,7 @@ app.put('/api/products/:id', auth, staff, upload.single('image'), wrap(async (re
     [title ?? null, description ?? null, price ?? null, f ? f.buffer : null, f ? f.mimetype : null, category ?? null, disc, req.params.id, newOwner, setStock, stock, setCost, cost, setBulk, bulk.min, bulk.pct]
   );
   if (!rowCount) throw bad('Product not found.', 404);
-  const repriced_orders = await repriceOpenOrders([req.params.id]);
-  res.json({ ...(await withImage(req.params.id)), repriced_orders });
+  res.json({ ...(await withImage(req.params.id)), ...(await repriceSafe([req.params.id])) });
 }));
 
 // Cost prices are private: only the owner (and Raven) can read them, and they never go out in the public product list.
@@ -459,7 +463,13 @@ app.patch('/api/products/discount', auth, staff, wrap(async (req, res) => {
   const { rowCount } = isMain(req.user)
     ? await pool.query('UPDATE products SET discount_percent=$1 WHERE id = ANY($2)', [pct, list])
     : await pool.query('UPDATE products SET discount_percent=$1 WHERE id = ANY($2) AND owner_id=$3', [pct, list, req.user.id]);
-  res.json({ updated: rowCount, repriced_orders: await repriceOpenOrders(list) });
+  res.json({ updated: rowCount, ...(await repriceSafe(list)) });
+}));
+
+// Brings every open (pending or packed) order up to the shop's current prices: all products for the owner, a seller's own for a seller.
+app.post('/api/orders/reprice', auth, staff, wrap(async (req, res) => {
+  const { rows } = await pool.query('SELECT id FROM products WHERE ($1 OR owner_id=$2)', [isMain(req.user), req.user.id]);
+  res.json({ repriced_orders: await repriceOpenOrders(rows.map((r) => r.id)) });
 }));
 
 /* ---------- Combos ---------- */
