@@ -174,7 +174,7 @@ function orderNote() {
   const w = settings.order_window; if (!w || !w.cutoff) return '';
   const t = fmtTime(w.cutoff);
   return w.closed ? `Orders are closed for today (they stopped at ${t}). Come back tomorrow!`
-    : w.label === 'tomorrow' ? `It's past ${t}, so new orders will be delivered tomorrow.`
+    : w.label === 'tomorrow' ? `It's past ${t}, so new orders will be packed tomorrow.`
     : `Order before ${t} to get it delivered today. Orders after that go out tomorrow.`;
 }
 function fillBanner() {
@@ -714,7 +714,7 @@ function renderAdmin() {
         <label>Text shown at the top of the shop (leave empty to hide)</label><input name="banner" maxlength="200" value="${esc(settings.banner)}">
         <label>Stamp card reward (earned after every 10 completed orders)</label><input name="stamp_reward" maxlength="80" value="${esc(settings.stamp_reward)}">
         <label>Order cutoff time (orders after this are for tomorrow; leave empty for no cutoff)</label><input name="order_cutoff" type="time" value="${esc(settings.order_cutoff || '')}">
-        <label>After the cutoff</label><select name="after_cutoff"><option value="tomorrow" ${settings.after_cutoff !== 'closed' ? 'selected' : ''}>Accept orders for tomorrow</option><option value="closed" ${settings.after_cutoff === 'closed' ? 'selected' : ''}>Stop taking orders</option></select>
+        <label>After the cutoff</label><select name="after_cutoff"><option value="tomorrow" ${settings.after_cutoff !== 'closed' ? 'selected' : ''}>receive orders for tomorrow packing</option><option value="closed" ${settings.after_cutoff === 'closed' ? 'selected' : ''}>Stop taking orders</option></select>
         <button class="primary" type="submit">Save</button>
       </form>
     </section>` : ''}
