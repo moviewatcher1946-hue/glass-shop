@@ -147,10 +147,9 @@ const shuffled = (list, keyOf) => [...list].sort((a, b) => rank(keyOf(a)) - rank
 const PINNED = 3;
 const shuffledPinned = (list) => {
   const mix = shuffled(list, (p) => 'p' + p.id);
-  const mine = mix.filter((p) => settings.main_owner_id != null && p.owner_id === settings.main_owner_id)
-    .sort((a, b) => Number(!!a.is_sold_out) - Number(!!b.is_sold_out)); // stable: keeps the random order among equals
-  const top = mine.slice(0, PINNED);
-  return [...top, ...mix.filter((p) => !top.includes(p))];
+  // Products Raven pinned always lead; the rest follow in random order.
+  const top = mix.filter((p) => p.pinned).sort((x, y) => x.pin_pos - y.pin_pos);
+  return [...top, ...mix.filter((p) => !p.pinned)];
 };
 function fillGrid() {
   const el = $('#grid');
@@ -193,14 +192,15 @@ function renderShop() {
   fillGrid();
 }
 
-const productTable = () => `<table>${products.map((p) => {
+const productTable = () => `<table>${(isRaven() ? [...products].sort((x, y) => (y.pinned - x.pinned) || (x.pinned ? x.pin_pos - y.pin_pos : 0)) : products).map((p) => {
   const mine = canEdit(p.owner_id);
-  return `<tr>
+  return `<tr data-pid="${p.id}"${isRaven() ? ' data-drag="1" style="cursor:grab;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none"' : ''}>
     <td>${mine ? `<input type="checkbox" class="pick" value="${p.id}" ${selected.has(p.id) ? 'checked' : ''}>` : ''}</td>
     <td>${p.image_url ? `<img class="thumb" src="${esc(p.image_url)}" alt="">` : ''}</td>
     <td><b>${esc(p.title)}</b><br>${money(p.price)}${p.discount_percent ? ` (-${p.discount_percent}%)` : ''}${bulkOn(p) ? ` | Bulk: ${p.bulk_min}+ = -${p.bulk_percent}%` : ''} | ${CATS[p.category] || 'Snacks'}${mine && costMap[p.id] != null ? ` | Profit ${money(fin(p) - Number(costMap[p.id]))} each` : ''}${p.stock != null ? ` | Stock: ${p.stock}${p.stock > 0 && p.stock <= LOW_STOCK ? ' (low!)' : ''}` : ''}${p.is_sold_out ? ' - sold out' : ''}${ownerName(p.owner_id) ? ` | by ${esc(ownerName(p.owner_id))}` : ''}</td>
     <td>${mine ? `<div class="actions">
       <button data-act="edit" data-id="${p.id}">Edit</button>
+      ${isRaven() ? `<button data-act="pin" data-id="${p.id}">${p.pinned ? 'Unpin' : 'Pin'}</button>${p.pinned ? `<button data-act="moveup" data-id="${p.id}">&uarr;</button><button data-act="movedown" data-id="${p.id}">&darr;</button>` : ''}` : ''}
       <button data-act="toggle" data-id="${p.id}">${p.is_sold_out ? 'Mark available' : 'Mark sold out'}</button>
       <button class="danger" data-act="delete" data-id="${p.id}">Delete</button></div>` : '<span class="muted">View only</span>'}</td></tr>`;
 }).join('')}</table>`;
@@ -575,6 +575,26 @@ function drawAttention() {
   if (el.dataset.h !== html) { el.dataset.h = html; el.innerHTML = html; } // only redraw on a change, so the pop-in doesn't replay every refresh
 }
 async function refreshCosts() { costMap = await api('/api/admin/costs'); fillProducts(); }
+function donut(list) {
+  const cols = { pending: '#f5a524', packed: '#4da3ff', completed: '#2ecc71', cancelled: '#e5484d' };
+  const tot = list.reduce((s, x) => s + x.n, 0);
+  if (!tot) return '<p class="muted">No orders yet.</p>';
+  let off = 0; const R = 15.9155;
+  const arcs = list.map((x) => { const len = x.n / tot * 100, c = `<circle r="${R}" cx="21" cy="21" fill="none" stroke="${cols[x.status] || '#999'}" stroke-width="6" stroke-dasharray="${len} ${100 - len}" stroke-dashoffset="${25 - off}"/>`; off += len; return c; }).join('');
+  return `<h3>Orders by status</h3><div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:14px">
+    <svg viewBox="0 0 42 42" width="150" height="150">${arcs}<text x="21" y="22.5" text-anchor="middle" font-size="7" font-weight="700" fill="currentColor">${tot}</text></svg>
+    <div>${list.map((x) => `<div><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${cols[x.status] || '#999'};margin-right:6px"></span>${esc(x.status)}: <b>${x.n}</b></div>`).join('')}</div></div>`;
+}
+async function refreshDash() {
+  const d = await api('/api/admin/dashboard'), b = $('#dashbox'); if (!b) return;
+  const card = (k, v) => `<div class="glass" style="padding:12px;min-width:130px"><div class="muted">${k}</div><b style="font-size:1.4em">${v}</b></div>`;
+  b.innerHTML = `<div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:14px">
+    ${card('Revenue (done)', money(d.orders.revenue))}${card('Today', money(d.orders.today))}${card('Open orders', d.orders.open)}${card('Completed', d.orders.done)}
+    ${card('Products', d.products.total)}${card('Pinned', d.products.pinned)}${card('Sold out', d.products.sold_out)}${card('Customers', d.users.customers)}${card('Sellers', d.users.sellers)}</div>
+    ${donut(d.statuses)}<h3>Per seller</h3><table>${d.people.map((r) => `<tr><td><b>${esc(r.username)}</b></td><td>Gross ${money(r.gross)}</td><td>Income ${money(r.income)}</td><td>${r.open} open</td></tr>`).join('')}</table>
+    <h3>Top items</h3><table>${d.top.map((t) => `<tr><td>${esc(t.title)}</td><td>${t.qty} sold</td></tr>`).join('') || '<tr><td>No sales yet</td></tr>'}</table>
+    <h3>Recent orders</h3><table>${d.recent.map((r) => `<tr><td>#${r.id}</td><td>${esc(r.username)}</td><td>${money(r.total)}</td><td>${esc(r.status)}</td></tr>`).join('')}</table>`;
+}
 async function refreshReport() { repData = await api('/api/admin/report?days=30'); drawReport(); }
 function drawReport() {
   const el = $('#reportbox'); if (!el || !repData) return;
@@ -643,7 +663,7 @@ function renderAdmin() {
   adminHtml = ''; customAdminHtml = '';
   const tab = (id, label, extra = '') =>
     `<button id="tab-${id}" class="${adminTab === id ? 'primary' : ''}" data-act="admintab" data-tab="${id}">${label}${extra}</button>`;
-  const tabs = `<div class="tabs">${tab('products', 'Products')}${tab('orders', 'Orders', pendingCount ? ` (${pendingCount})` : '')}${tab('custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : '')}${tab('cash', 'Cash')}${tab('report', 'Report')}${tab('combos', 'Combos')}${tab('promos', 'Promos')}${tab('customers', 'Customers')}${isRaven() ? tab('sellers', 'Sellers') + tab('backup', 'Backup') : tab('alerts', 'Alerts')}</div>`;
+  const tabs = `<div class="tabs">${isRaven() ? tab('dashboard', 'Dashboard') : ''}${tab('products', 'Products')}${tab('orders', 'Orders', pendingCount ? ` (${pendingCount})` : '')}${tab('custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : '')}${tab('cash', 'Cash')}${tab('report', 'Report')}${tab('combos', 'Combos')}${tab('promos', 'Promos')}${tab('customers', 'Customers')}${isRaven() ? tab('sellers', 'Sellers') + tab('backup', 'Backup') : tab('alerts', 'Alerts')}</div>`;
   const productsView = `
     <section class="panel glass">
       <h2 id="form-title">Add a product</h2>
@@ -766,7 +786,7 @@ function renderAdmin() {
   const customersView = `<h2>Customers</h2>
     <p class="muted">Block people who abuse the shop (fake orders, not showing up). ${isRaven() ? 'Your block covers the whole shop.' : 'Your block stops them ordering your items only.'} The list shows the most cancelled orders first.</p>
     <div id="custlist"><p>Loading...</p></div>`;
-  $('#app').innerHTML = tabs + '<div id="attn"></div><div id="adminnotes"></div>' + (adminTab === 'report' ? reportView : adminTab === 'cash' ? cashView : adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'alerts' && !isRaven() ? alertsView : adminTab === 'combos' ? combosView : adminTab === 'promos' ? promosView : adminTab === 'customers' ? customersView : productsView);
+  $('#app').innerHTML = tabs + '<div id="attn"></div><div id="adminnotes"></div>' + (adminTab === 'dashboard' && isRaven() ? '<section class="panel glass table-wrap"><h2>Dashboard</h2><div id="dashbox"><p>Loading...</p></div></section>' : adminTab === 'report' ? reportView : adminTab === 'cash' ? cashView : adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'alerts' && !isRaven() ? alertsView : adminTab === 'combos' ? combosView : adminTab === 'promos' ? promosView : adminTab === 'customers' ? customersView : productsView);
   fillProducts();
   comboAdminHtml = ''; refreshAdminCombos().catch(() => {});
   promoAdminHtml = ''; refreshAdminPromos().catch(() => {});
@@ -777,6 +797,7 @@ function renderAdmin() {
   refreshTeam().catch(() => {});
   if (adminTab === 'cash') refreshCash().catch(() => {});
   if (adminTab === 'report') refreshReport().catch(() => {});
+  if (adminTab === 'dashboard' && isRaven()) refreshDash().catch(() => {});
   refreshCosts().catch(() => {});
   refreshAttention().catch(() => {});
   if (isRaven() && adminTab === 'backup') refreshBackup().catch(() => {});
@@ -890,6 +911,48 @@ async function loadProductsQuiet() {
   const got = pre ? await pre.catch(() => null) : null;
   [products, combos, settings] = got || await Promise.all([api('/api/products'), api('/api/combos'), api('/api/settings')]);
   sig = JSON.stringify([products, combos, settings]);
+}
+// Slides rows smoothly to their new place (FLIP): remember positions, reload, then animate from old to new.
+async function flip(change, movedId) {
+  const tops = () => new Map([...document.querySelectorAll('tr[data-pid]')].map((r) => [r.dataset.pid, r.getBoundingClientRect().top]));
+  const before = tops();
+  await change();
+  await loadProducts();
+  document.querySelectorAll('tr[data-pid]').forEach((r) => {
+    const was = before.get(r.dataset.pid); if (was == null) return;
+    const dy = was - r.getBoundingClientRect().top; if (!dy) return;
+    r.style.transition = 'none'; r.style.transform = `translateY(${dy}px)`; r.style.position = 'relative'; r.style.zIndex = r.dataset.pid === String(movedId) ? 2 : 1;
+    requestAnimationFrame(() => requestAnimationFrame(() => { r.style.transition = 'transform .35s ease'; r.style.transform = ''; }));
+  });
+}
+const moveAnimated = (id, dir) => flip(() => api(`/api/admin/products/${id}/move`, { method: 'PATCH', json: { dir } }), id);
+// Press and hold any product row (mouse or finger), drag it, let go where you want it (Raven only).
+let drag = null;
+document.addEventListener('touchmove', (e) => { if (drag) e.preventDefault(); }, { passive: false });
+document.addEventListener('pointerdown', (e) => {
+  const r = e.target.closest && e.target.closest('tr[data-drag]');
+  if (!r || e.target.closest('button,input,a,select,textarea')) return;
+  const sx = e.clientX, sy = e.clientY;
+  const cancel = () => { clearTimeout(t); document.removeEventListener('pointermove', early); document.removeEventListener('pointerup', cancel); document.removeEventListener('pointercancel', cancel); };
+  const early = (ev) => { if (Math.abs(ev.clientX - sx) + Math.abs(ev.clientY - sy) > 10) cancel(); };
+  const t = setTimeout(() => { cancel(); startDrag(r, sy); }, 350);
+  document.addEventListener('pointermove', early); document.addEventListener('pointerup', cancel); document.addEventListener('pointercancel', cancel);
+});
+function startDrag(r, sy) {
+  drag = r; r.style.transition = 'none'; r.style.position = 'relative'; r.style.zIndex = 5; r.style.opacity = '.8'; r.style.boxShadow = '0 8px 24px rgba(0,0,0,.35)';
+  if (navigator.vibrate) navigator.vibrate(20);
+  const move = (e) => { r.style.transform = `translateY(${e.clientY - sy}px)`; };
+  const end = async (e) => {
+    document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', end); document.removeEventListener('pointercancel', end);
+    const id = r.dataset.pid, others = [...document.querySelectorAll('tr[data-drag]')].filter((x) => x !== r);
+    const at = others.filter((x) => { const b = x.getBoundingClientRect(); return b.top + b.height / 2 < e.clientY; }).length;
+    const ids = others.map((x) => x.dataset.pid); ids.splice(at, 0, id);
+    const same = ids.join() === [...document.querySelectorAll('tr[data-drag]')].map((x) => x.dataset.pid).join();
+    r.style.transform = ''; r.style.opacity = ''; r.style.boxShadow = ''; drag = null;
+    if (same) return;
+    await flip(() => api('/api/admin/products/reorder', { method: 'PUT', json: { ids } }), id).catch((err) => toast(err.message));
+  };
+  document.addEventListener('pointermove', move); document.addEventListener('pointerup', end); document.addEventListener('pointercancel', end);
 }
 async function loadProducts() {
   await loadProductsQuiet();
@@ -1205,6 +1268,9 @@ const actions = {
     const o = await api('/api/orders', { method: 'POST', json: { items, promo: promo ? promo.code : '', note: cartNote } });
     cart = {}; promo = null; cartNote = ''; saveCart(); $('#dlg').close(); toast(`Order #${o.id} placed.`); view = 'orders'; render();
   },
+  moveup: (id) => moveAnimated(id, 'up'),
+  movedown: (id) => moveAnimated(id, 'down'),
+  pin: async (id) => { await api(`/api/admin/products/${id}/pin`, { method: 'PATCH' }); await loadProducts(); },
   toggle: async (id) => { await api(`/api/products/${id}/sold-out`, { method: 'PATCH' }); await loadProducts(); },
   delete: async (id) => { if (confirm('Delete this product?')) { await api(`/api/products/${id}`, { method: 'DELETE' }); await loadProducts(); toast('Deleted.'); } },
   edit: (id) => {
