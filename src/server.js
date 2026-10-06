@@ -566,6 +566,8 @@ app.post('/api/orders', auth, wrap(async (req, res) => {
   if (!items.length) throw bad('Your cart is empty.');
   const prodIds = items.filter((i) => i.product_id).map((i) => parseInt(i.product_id)).filter(Number.isInteger);
   const comboIds = items.filter((i) => i.combo_id).map((i) => parseInt(i.combo_id)).filter(Number.isInteger);
+  const win = await orderWindow(pool);
+  if (win.closed) throw bad(`Orders closed for today at ${t12(win.cutoff)}. Please order again tomorrow.`);
   const c = await pool.connect();
   try {
     await c.query('BEGIN');
@@ -641,8 +643,8 @@ app.post('/api/orders', auth, wrap(async (req, res) => {
     const discount = promo ? Math.round(base * promo.percent) / 100 : 0;
     const note = String(req.body.note || '').trim().slice(0, 300);
     const { rows: [o] } = await c.query(
-      'INSERT INTO orders (user_id, total, note, promo_code, discount) VALUES ($1,$2,$3,$4,$5) RETURNING id,total,status,created_at',
-      [req.user.id, (total - discount).toFixed(2), note, promo ? promo.code : null, discount.toFixed(2)]
+      'INSERT INTO orders (user_id, total, note, promo_code, discount, deliver_for) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id,total,status,created_at',
+      [req.user.id, (total - discount).toFixed(2), note, promo ? promo.code : null, discount.toFixed(2), win.date]
     );
     if (promo) await c.query('UPDATE promo_codes SET used_count = used_count + 1 WHERE id=$1', [promo.id]);
     for (const l of lines)
@@ -668,7 +670,7 @@ app.post('/api/orders', auth, wrap(async (req, res) => {
   }
 }));
 
-const ORDER_SQL = `SELECT o.id,o.user_id,o.total,o.status,o.note,o.promo_code,o.discount,o.created_at,o.paid_by,o.paid_at,(SELECT username FROM users WHERE id=o.paid_by) AS paid_name,u.username,
+const ORDER_SQL = `SELECT o.id,o.user_id,o.total,o.status,o.note,o.promo_code,o.discount,o.created_at,o.paid_by,o.paid_at,to_char(o.deliver_for,'YYYY-MM-DD') AS deliver_for,(SELECT username FROM users WHERE id=o.paid_by) AS paid_name,u.username,
   (SELECT json_agg(json_build_object('product_id',product_id,'title',title,'unit_price',unit_price,'quantity',quantity,'owner_id',owner_id))
    FROM order_items WHERE order_id=o.id) AS items,
   (SELECT json_agg(json_build_object('owner_id',x.owner_id,'username',pu.username,'status',COALESCE(a.status,'pending')) ORDER BY x.owner_id)
@@ -702,7 +704,7 @@ const withCosts = async (rows, user) => {
 app.get('/api/orders', auth, staff, wrap(async (req, res) => {
   if (isMain(req.user)) return res.json(await withCosts((await pool.query(`${ORDER_SQL} ORDER BY o.created_at DESC`)).rows, req.user));
   const { rows } = await pool.query(
-    `SELECT o.id,o.user_id,o.status,o.note,o.promo_code,o.discount,o.created_at,o.paid_by,o.paid_at,(SELECT username FROM users WHERE id=o.paid_by) AS paid_name,u.username,
+    `SELECT o.id,o.user_id,o.status,o.note,o.promo_code,o.discount,o.created_at,o.paid_by,o.paid_at,to_char(o.deliver_for,'YYYY-MM-DD') AS deliver_for,(SELECT username FROM users WHERE id=o.paid_by) AS paid_name,u.username,
        (SELECT json_agg(json_build_object('product_id',oi.product_id,'title',oi.title,'unit_price',oi.unit_price,'quantity',oi.quantity) ORDER BY oi.id)
           FROM order_items oi WHERE oi.order_id=o.id AND oi.owner_id=$1) AS items,
        EXISTS (SELECT 1 FROM promo_codes pc WHERE upper(pc.code)=upper(o.promo_code) AND pc.owner_id=$1) AS promo_mine,
@@ -1139,13 +1141,17 @@ app.get('/api/settings', wrap(async (req, res) => {
   const { rows } = await pool.query('SELECT key,value FROM settings');
   const o = Object.fromEntries(rows.map((r) => [r.key, r.value]));
   const { rows: [m] } = await pool.query("SELECT id FROM users WHERE role='admin' ORDER BY id LIMIT 1"); // raven: his products are pinned to the top of the shop
-  res.json({ banner: o.banner || '', stamp_reward: o.stamp_reward || 'a free snack', main_owner_id: m ? m.id : null });
+  res.json({ banner: o.banner || '', stamp_reward: o.stamp_reward || 'a free snack', main_owner_id: m ? m.id : null, order_cutoff: o.order_cutoff || '', after_cutoff: o.after_cutoff === 'closed' ? 'closed' : 'tomorrow', order_window: await orderWindow(pool) });
 }));
 
 app.put('/api/admin/settings', auth, admin, wrap(async (req, res) => {
   const put = (k, v) => pool.query('INSERT INTO settings (key, value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value', [k, String(v || '').trim().slice(0, 200)]);
+  const cut = String(req.body.order_cutoff || '').trim();
+  if (cut && !/^([01]\d|2[0-3]):[0-5]\d$/.test(cut)) throw bad('Cutoff time must look like 15:00.');
   await put('banner', req.body.banner);
   await put('stamp_reward', req.body.stamp_reward);
+  await put('order_cutoff', cut);
+  await put('after_cutoff', req.body.after_cutoff === 'closed' ? 'closed' : 'tomorrow');
   res.json({ ok: true });
 }));
 
@@ -1217,10 +1223,21 @@ app.delete('/api/customers/:id/block', auth, staff, wrap(async (req, res) => {
 const TZ = process.env.REPORT_TZ || 'Asia/Manila';
 const r2 = (n) => Math.round(n * 100) / 100;
 const localParts = () => {
-  const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hourCycle: 'h23', weekday: 'short' })
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23', weekday: 'short' })
     .formatToParts(new Date()).map((x) => [x.type, x.value]));
-  return { date: `${p.year}-${p.month}-${p.day}`, hour: Number(p.hour), dow: p.weekday };
+  return { date: `${p.year}-${p.month}-${p.day}`, hour: Number(p.hour), min: Number(p.minute), dow: p.weekday };
 };
+const t12 = (hm) => { const [h, m] = hm.split(':').map(Number); return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`; };
+// Raven's order cutoff: before it, orders are for today; after it they are for tomorrow (or closed, if he chose that).
+async function orderWindow(db) {
+  const { rows } = await db.query("SELECT key,value FROM settings WHERE key IN ('order_cutoff','after_cutoff')");
+  const o = Object.fromEntries(rows.map((r) => [r.key, r.value]));
+  const t = localParts(), cutoff = /^\d{2}:\d{2}$/.test(o.order_cutoff || '') ? o.order_cutoff : '';
+  const now = `${String(t.hour).padStart(2, '0')}:${String(t.min).padStart(2, '0')}`, past = !!cutoff && now >= cutoff;
+  const next = new Date(t.date + 'T00:00:00Z'); next.setUTCDate(next.getUTCDate() + 1);
+  const mode = o.after_cutoff === 'closed' ? 'closed' : 'tomorrow';
+  return { cutoff, mode, closed: past && mode === 'closed', label: past ? 'tomorrow' : 'today', date: past ? next.toISOString().slice(0, 10) : t.date, today: t.date };
+}
 
 // Completed orders only. Raven sees the whole shop; a seller sees only her own items.
 // Profit = what she sold (after her share of any promo) minus the cost prices saved on the order lines
@@ -1363,6 +1380,7 @@ init()
       PRIMARY KEY (combo_id, owner_id)
     );
     ALTER TABLE custom_requests ADD COLUMN IF NOT EXISTS handled_by INT REFERENCES users(id) ON DELETE SET NULL;
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS deliver_for DATE;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS signup_ip VARCHAR(64);
     ALTER TABLE users ADD COLUMN IF NOT EXISTS device_id VARCHAR(64);
     ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change BOOLEAN NOT NULL DEFAULT false;
