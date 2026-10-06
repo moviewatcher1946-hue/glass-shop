@@ -174,7 +174,7 @@ function orderNote() {
   const t = fmtTime(w.cutoff);
   return w.closed ? `Orders are closed for today (they stopped at ${t}). Come back tomorrow!`
     : w.label === 'tomorrow' ? `It's past ${t}, so new orders will be packed tomorrow.`
-    : `Order before ${t} to get it delivered today. Orders after that go out tomorrow.`;
+    : `Order before ${t} to get it delivered tomorrow. Orders after that go out the next day.`;
 }
 function fillBanner() {
   const el = $('#banner'); if (!el) return;
