@@ -5,6 +5,7 @@ const money = (n) => CURRENCY + Number(n).toFixed(2);
 // Price after the product's % discount (the server works it out again when you order).
 const fin = (p) => Math.round(Number(p.price) * (100 - (Number(p.discount_percent) || 0))) / 100;
 // Bulk discount: buy bulk_min or more, get bulk_percent% off each (the lower of this and the normal discount; the server does the same maths).
+const fmtTime = (hm) => { const [h, m] = String(hm).split(':').map(Number); return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`; };
 const bulkOn = (p) => Number(p.bulk_min) >= 2 && Number(p.bulk_percent) > 0;
 const unitFor = (p, q) => (bulkOn(p) && q >= Number(p.bulk_min) ? Math.min(fin(p), Math.round(Number(p.price) * (100 - Number(p.bulk_percent))) / 100) : fin(p));
 const LOW_STOCK = 5;
@@ -168,9 +169,18 @@ function fillGrid() {
     || `<p class="panel glass">${products.length || combos.length ? 'No products match your search.' : 'No products yet.'}</p>`;
 }
 
+// What Raven's order cutoff means for an order placed right now.
+function orderNote() {
+  const w = settings.order_window; if (!w || !w.cutoff) return '';
+  const t = fmtTime(w.cutoff);
+  return w.closed ? `Orders are closed for today (they stopped at ${t}). Come back tomorrow!`
+    : w.label === 'tomorrow' ? `It's past ${t}, so new orders will be delivered tomorrow.`
+    : `Order before ${t} to get it delivered today. Orders after that go out tomorrow.`;
+}
 function fillBanner() {
-  const el = $('#banner');
-  if (el) el.innerHTML = settings.banner ? `<div class="banner glass">${esc(settings.banner)}</div>` : '';
+  const el = $('#banner'); if (!el) return;
+  const n = orderNote();
+  el.innerHTML = (settings.banner ? `<div class="banner glass">${esc(settings.banner)}</div>` : '') + (n ? `<div class="banner glass">${esc(n)}</div>` : '');
 }
 
 function renderShop() {
@@ -238,6 +248,11 @@ const statusOf = (o) => {
   return me ? me.status : o.status;
 };
 
+const forTag = (o) => {
+  const t = (settings.order_window || {}).today;
+  if (!t || !o.deliver_for || !['pending', 'packed'].includes(statusOf(o))) return '';
+  return `<span class="pill">${o.deliver_for === t ? 'For today' : o.deliver_for > t ? 'For tomorrow' : 'Late: was ' + esc(o.deliver_for)}</span>`;
+};
 const paidTag = (o) => (o.paid_by ? `<span class="pill st-packed">Paid - ${esc(o.paid_name || '')}</span>`
   : ['packed', 'completed'].includes(o.status) ? `<span class="pill st-cancelled">Not paid yet</span>` : '');
 const paidBtn = (o) => (!['packed', 'completed'].includes(o.status) ? ''
@@ -245,7 +260,7 @@ const paidBtn = (o) => (!['packed', 'completed'].includes(o.status) ? ''
   : o.paid_by === user.id || isRaven() ? `<button data-act="paid" data-id="${o.id}" data-paid="0">Undo paid</button>` : '');
 const orderCard = (o) => `
     <section class="panel glass">
-      <div class="between"><b>#${o.id} - ${esc(o.username)}</b><span>${paidTag(o)} <span class="pill st-${statusOf(o)}">${STATUS[statusOf(o)] || esc(statusOf(o))}</span></span></div>
+      <div class="between"><b>#${o.id} - ${esc(o.username)}</b><span>${forTag(o)} ${paidTag(o)} <span class="pill st-${statusOf(o)}">${STATUS[statusOf(o)] || esc(statusOf(o))}</span></span></div>
       <p class="muted" style="margin:2px 0 10px">${new Date(o.created_at).toLocaleString()}</p>
       ${orderLines(o)}
       ${partsLine(o)}
@@ -544,11 +559,14 @@ async function refreshAttention(force) {
 }
 function drawAttention() {
   const el = $('#attn'); if (!el) return;
+  const today = (settings.order_window || {}).today, pend = ordersCache.filter((o) => statusOf(o) === 'pending');
+  const forTomorrow = today ? pend.filter((o) => o.deliver_for && o.deliver_for > today).length : 0, toPack = ordersCache.length || !pendingCount ? pend.length - forTomorrow : pendingCount;
   const low = myProducts().filter((p) => p.stock != null && p.stock <= LOW_STOCK).length;
   const owed = attnCash ? attnCash.unpaid.filter((o) => o.status === 'completed').reduce((t, o) => t + Object.values(o.shares).reduce((a, b) => a + b, 0), 0) : 0;
   const chip = (tab, text, st = '') => `<button data-act="attn-go" data-tab="${tab}" ${st ? `data-st="${st}"` : ''}>${text}</button>`;
   const chips = [
-    pendingCount ? chip('orders', `${pendingCount} order${pendingCount === 1 ? '' : 's'} to pack`, 'pending') : '',
+    toPack ? chip('orders', `${toPack} order${toPack === 1 ? '' : 's'} to pack today`, 'pending') : '',
+    forTomorrow ? chip('orders', `${forTomorrow} for tomorrow`, 'pending') : '',
     pendingCustom ? chip('custom', `${pendingCustom} custom request${pendingCustom === 1 ? '' : 's'} to answer`) : '',
     owed > 0.004 ? chip('cash', `${money(owed)} delivered, not marked paid`) : '',
     low ? chip('products', `${low} item${low === 1 ? '' : 's'} low or sold out`) : '',
@@ -695,6 +713,8 @@ function renderAdmin() {
       <form id="settings-form">
         <label>Text shown at the top of the shop (leave empty to hide)</label><input name="banner" maxlength="200" value="${esc(settings.banner)}">
         <label>Stamp card reward (earned after every 10 completed orders)</label><input name="stamp_reward" maxlength="80" value="${esc(settings.stamp_reward)}">
+        <label>Order cutoff time (orders after this are for tomorrow; leave empty for no cutoff)</label><input name="order_cutoff" type="time" value="${esc(settings.order_cutoff || '')}">
+        <label>After the cutoff</label><select name="after_cutoff"><option value="tomorrow" ${settings.after_cutoff !== 'closed' ? 'selected' : ''}>Accept orders for tomorrow</option><option value="closed" ${settings.after_cutoff === 'closed' ? 'selected' : ''}>Stop taking orders</option></select>
         <button class="primary" type="submit">Save</button>
       </form>
     </section>` : ''}
@@ -878,6 +898,10 @@ async function loadProducts() {
 
 /* ---------- Dialogs ---------- */
 // Asks how many before adding to the cart. A counted item can't go above what is left in stock.
+function deliveryLine() {
+  const w = settings.order_window; if (!w || !w.cutoff) return '';
+  return `<p class="muted">${w.closed ? 'Orders are closed for today.' : w.label === 'tomorrow' ? 'This order will be delivered <b>tomorrow</b>.' : `Delivered <b>today</b> if you order before ${fmtTime(w.cutoff)}.`}</p>`;
+}
 function askQty(key, title, stock, hint) {
   const room = Math.min(99, stock != null ? stock - (cart[key] || 0) : 99 - (cart[key] || 0));
   if (room < 1) return toast(stock != null ? `You already have all ${stock} in your cart.` : 'Cart limit reached for this item.');
@@ -957,7 +981,7 @@ function cartDialog() {
       <div class="actions"><input id="promoin" value="${esc(promo ? promo.code : '')}" placeholder="Enter code" style="flex:1;margin:0"><button data-act="applypromo">Apply</button></div>
       <label style="display:block;margin-top:12px">Note for the seller (your name, seat, anything helpful)</label>
       <input id="ordernote" maxlength="300" value="${esc(cartNote)}">` : ''}
-    <p>Subtotal: <b>${money(sub)}</b>${off ? `<br>Promo ${esc(promo.code)} (-${promo.percent}%): <b>-${money(off)}</b>` : ''}<br><b>Total: ${money(sub - off)}</b></p>
+    <p>Subtotal: <b>${money(sub)}</b>${off ? `<br>Promo ${esc(promo.code)} (-${promo.percent}%): <b>-${money(off)}</b>` : ''}<br><b>Total: ${money(sub - off)}</b></p>${deliveryLine()}
     <p class="notice">Cash on delivery: you pay when your order is handed to you in class.</p>
     <button class="primary" data-act="checkout" ${lines.length ? '' : 'disabled'}>Place order</button>
     <button data-act="close">Close</button>`;
