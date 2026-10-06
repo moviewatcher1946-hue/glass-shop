@@ -24,7 +24,7 @@ const upload = multer({
   fileFilter: (req, f, cb) => cb(null, /^image\/(png|jpe?g|webp|gif)$/.test(f.mimetype)),
 });
 const wrap = (fn) => (req, res, next) => fn(req, res, next).catch(next);
-const COLS = 'id,title,description,price,is_sold_out,category,discount_percent,bulk_min,bulk_percent,image_url,created_at,owner_id,stock';
+const COLS = 'id,title,description,price,is_sold_out,category,discount_percent,bulk_min,bulk_percent,image_url,created_at,owner_id,stock,pinned,pin_pos';
 const LOW_STOCK = 5; // warn at this many left or fewer
 const CATEGORIES = ['drinks', 'snacks'];
 // Price after the product's % discount. The server always works the price out itself.
@@ -184,6 +184,7 @@ const ensureShop = () => pool.query(`
 `);
 
 // Seller accounts and ownership (safe to run every start). Existing rows become the main admin's.
+const ensurePinned = () => pool.query('ALTER TABLE products ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT false; ALTER TABLE products ADD COLUMN IF NOT EXISTS pin_pos INT NOT NULL DEFAULT 0');
 const ensureOwners = () => pool.query(`
   ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
   ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('admin','customer','seller'));
@@ -921,6 +922,39 @@ app.patch('/api/custom-requests/:id/respond', auth, wrap(async (req, res) => {
   res.json(r);
 }));
 
+/* ---------- Pin products + dashboard (main admin only) ---------- */
+app.patch('/api/admin/products/:id/pin', auth, admin, wrap(async (req, res) => {
+  const { rows: [p] } = await pool.query('UPDATE products SET pinned = NOT pinned, pin_pos = CASE WHEN pinned THEN 0 ELSE (SELECT COALESCE(max(pin_pos),0)+1 FROM products) END WHERE id=$1 RETURNING id,pinned', [req.params.id]);
+  if (!p) throw bad('Product not found.', 404);
+  res.json(p);
+}));
+app.put('/api/admin/products/reorder', auth, admin, wrap(async (req, res) => {
+  const ids = (Array.isArray(req.body.ids) ? req.body.ids : []).map(Number).filter(Number.isInteger);
+  await Promise.all(ids.map((id, n) => pool.query('UPDATE products SET pinned=true, pin_pos=$1 WHERE id=$2', [n + 1, id])));
+  res.json({ ok: true });
+}));
+app.patch('/api/admin/products/:id/move', auth, admin, wrap(async (req, res) => {
+  const up = req.body.dir === 'up';
+  const { rows } = await pool.query('SELECT id FROM products WHERE pinned ORDER BY pin_pos, id');
+  const i = rows.findIndex((r) => String(r.id) === req.params.id), j = up ? i - 1 : i + 1;
+  if (i < 0) throw bad('Pin the product first.');
+  if (j >= 0 && j < rows.length) { const t = rows[i]; rows[i] = rows[j]; rows[j] = t; }
+  await Promise.all(rows.map((r, n) => pool.query('UPDATE products SET pin_pos=$1 WHERE id=$2', [n + 1, r.id])));
+  res.json({ ok: true });
+}));
+app.get('/api/admin/dashboard', auth, admin, wrap(async (req, res) => {
+  const q = async (sql) => (await pool.query(sql)).rows;
+  const [[o], [p], [u], top, recent, statuses] = await Promise.all([
+    q("SELECT count(*) FILTER (WHERE status IN ('pending','packed'))::int AS open, count(*) FILTER (WHERE status='completed')::int AS done, COALESCE(sum(total) FILTER (WHERE status='completed'),0)::float AS revenue, COALESCE(sum(total) FILTER (WHERE status='completed' AND created_at >= date_trunc('day',now())),0)::float AS today FROM orders"),
+    q("SELECT count(*)::int AS total, count(*) FILTER (WHERE is_sold_out)::int AS sold_out, count(*) FILTER (WHERE pinned)::int AS pinned FROM products"),
+    q("SELECT count(*) FILTER (WHERE role='customer')::int AS customers, count(*) FILTER (WHERE role='seller')::int AS sellers FROM users"),
+    q("SELECT oi.title, sum(oi.quantity)::int AS qty FROM order_items oi JOIN orders o ON o.id=oi.order_id WHERE o.status<>'cancelled' GROUP BY oi.title ORDER BY qty DESC LIMIT 5"),
+    q("SELECT o.id,o.status,o.total::float AS total,o.created_at,u.username FROM orders o JOIN users u ON u.id=o.user_id ORDER BY o.id DESC LIMIT 6"),
+    q("SELECT status, count(*)::int AS n FROM orders GROUP BY status ORDER BY status")
+  ]);
+  res.json({ orders: o, products: p, users: u, top, recent, statuses, people: await peopleTotals(req.user) });
+}));
+
 /* ---------- Backup / restore (admin only) ---------- */
 const BACKUP_TABLES = ['users', 'customer_blocks', 'products', 'combos', 'combo_items', 'combo_approvals', 'promo_codes', 'settings', 'orders', 'order_items', 'custom_requests', 'order_approvals', 'order_stock', 'settlements', 'password_resets']; // parents first
 
@@ -1367,6 +1401,7 @@ const PORT = process.env.PORT || 3000;
 init()
   .then(ensureCustomRequests)
   .then(ensureCategory)
+  .then(ensurePinned)
   .then(ensureCombos)
   .then(ensureShop)
   .then(ensureOwners)
