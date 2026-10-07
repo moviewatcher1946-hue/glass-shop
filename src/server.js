@@ -753,7 +753,7 @@ app.patch('/api/orders/:id/status', auth, staff, wrap(async (req, res) => {
 
   // One owner (or raven stepping in on an order he has no items in): change the status directly.
   if (owners.length < 2 || !owners.includes(req.user.id)) {
-    const { rows: [o] } = await pool.query("UPDATE orders SET status=$1, cancel_reason=CASE WHEN $1='cancelled' THEN $3 ELSE '' END WHERE id=$2 RETURNING id,status", [status, id, reason]);
+    const { rows: [o] } = await pool.query('UPDATE orders SET status=$1, cancel_reason=$3 WHERE id=$2 RETURNING id,status', [status, id, status === 'cancelled' ? reason : '']);
     if (status === 'cancelled') await restoreStock(pool, id);
     return res.json(o);
   }
@@ -768,7 +768,7 @@ app.patch('/api/orders/:id/status', auth, staff, wrap(async (req, res) => {
   const sts = owners.map((x) => got.get(x) || 'pending');
   const rank = { pending: 0, packed: 1, completed: 2, cancelled: 0 };
   const overall = sts.every((x) => x === 'cancelled') ? 'cancelled' : ['pending', 'packed', 'completed'][Math.min(...sts.map((x) => rank[x]))];
-  await pool.query("UPDATE orders SET status=$1, cancel_reason=CASE WHEN $1='cancelled' THEN $3 ELSE '' END WHERE id=$2", [overall, id, reason]);
+  await pool.query('UPDATE orders SET status=$1, cancel_reason=$3 WHERE id=$2', [overall, id, overall === 'cancelled' ? reason : '']);
   if (overall === 'cancelled') await restoreStock(pool, id);
   const waiting = ow.filter((r) => (got.get(r.owner_id) || 'pending') !== status && r.owner_id !== req.user.id).map((r) => r.username);
   if (waiting.length) {
