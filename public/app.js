@@ -268,6 +268,7 @@ const orderCard = (o) => `
       ${orderLines(o)}
       ${partsLine(o)}
       ${o.note ? `<p class="muted" style="margin:8px 0 0">Note: ${esc(o.note)}</p>` : ''}
+      ${o.status === 'cancelled' && o.cancel_reason ? `<p class="muted" style="margin:8px 0 0">Cancel reason: ${esc(o.cancel_reason)}</p>` : ''}
       <div class="actions" style="margin-top:12px">${adminBtns(o)}${paidBtn(o)}<button data-act="print-order" data-id="${o.id}">Print receipt</button>${o.user_id ? `<button class="danger" data-act="cust-block" data-id="${o.user_id}" data-name="${esc(o.username)}">Block customer</button>` : ''}</div>
     </section>`;
 
@@ -867,6 +868,7 @@ async function fillMine() {
       <div class="between"><b>Order #${o.id}</b><span class="pill st-${o.status}">${STATUS[o.status] || esc(o.status)}</span></div>
       <p class="muted" style="margin:2px 0 10px">${new Date(o.created_at).toLocaleString()}</p>
       ${o.status === 'packed' ? '<p class="ready">Your order is packed and ready!</p>' : ''}
+      ${o.status === 'cancelled' && o.cancel_reason ? `<p style="margin:8px 0 0;padding:10px 12px;border-radius:12px;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.35)"><b>Order cancelled:</b> ${esc(o.cancel_reason)}</p>` : ''}
       ${orderLines(o)}
       ${o.note ? `<p class="muted" style="margin:8px 0 0">Your note: ${esc(o.note)}</p>` : ''}
       <div class="actions" style="margin-top:12px">
@@ -1265,8 +1267,12 @@ const actions = {
     await refreshCash(); toast('Recorded.');
   },
   setstatus: async (id, d) => {
-    if (d.status === 'cancelled' && !confirm('Cancel this order?')) return;
-    const r = await api(`/api/orders/${id}/status`, { method: 'PATCH', json: { status: d.status } });
+    let reason = '';
+    if (d.status === 'cancelled') {
+      reason = prompt('Why are you cancelling? The customer will see this.\nExample: Sorry, an item ran out of stock.', 'Sorry, an item ran out of stock.');
+      if (reason === null) return;
+    }
+    const r = await api(`/api/orders/${id}/status`, { method: 'PATCH', json: { status: d.status, reason } });
     const o0 = ordersCache.find((x) => x.id == id);
     if (d.status === 'completed' && o0 && !o0.paid_by && confirm('Did you collect the cash?\nOK = tick Paid. Cancel = not yet.')) {
       try { await api(`/api/orders/${id}/paid`, { method: 'PATCH', json: { paid: true } }); } catch (e) { toast(e.message); }
