@@ -1034,12 +1034,39 @@ function changePwDialog() {
   if (!$('#dlg').open) $('#dlg').showModal();
 }
 function authDialog() {
-  $('#dlg').innerHTML = `<h2>Welcome</h2><form data-form="auth">
-    <label>Username</label><input name="username" required autocomplete="username">
-    <label>Password (8+ characters to sign up)</label><input name="password" type="password" required autocomplete="current-password">
-    <button class="primary" data-mode="login">Log in</button>
-    <button data-mode="signup">Create account</button>
-    <button type="button" data-act="close">Cancel</button></form>`;
+  const box = 'padding:12px;border-radius:14px;background:rgba(127,127,127,.12);margin-top:12px';
+  $('#dlg').innerHTML = `<h2 style="margin-bottom:4px">&#128075; Welcome!</h2>
+    <p class="muted" style="margin:0 0 6px;font-size:1.05em">Type your name and a password. Then press one of the big buttons.</p>
+    <form data-form="auth">
+      <label style="font-size:1.05em"><b>1.</b> Your name</label>
+      <input name="username" required autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="Example: maria" style="font-size:1.15rem;padding:14px">
+      <small class="muted">Pick any name you like. You will use it every time.</small>
+      <label style="font-size:1.05em;margin-top:10px"><b>2.</b> Your password</label>
+      <input name="password" id="authpw" type="password" required autocomplete="current-password" placeholder="At least 8 letters or numbers" style="font-size:1.15rem;padding:14px">
+      <label style="display:flex;align-items:center;gap:8px;font-size:1em;margin:6px 0 0"><input type="checkbox" onchange="document.getElementById('authpw').type=this.checked?'text':'password'" style="width:22px;height:22px"> Show my password</label>
+      <small class="muted">Tip: write your password somewhere safe so you do not forget it.</small>
+      <div style="${box}"><b>Been here before?</b><br><button class="primary" data-mode="login" style="width:100%;font-size:1.15rem;padding:14px;margin-top:8px">&#9989; Log in</button></div>
+      <div style="${box}"><b>First time here?</b><br><button data-mode="signup" style="width:100%;font-size:1.15rem;padding:14px;margin-top:8px">&#10024; Create my account</button></div>
+      <button type="button" data-act="close" style="width:100%;margin-top:12px">Maybe later</button></form>
+    <details open style="${box}"><summary style="cursor:pointer;font-size:1.05em"><b>&#10024; I do not have an account yet. What do I do?</b></summary>
+      <ol style="margin:10px 0 0;padding-left:22px;line-height:1.6">
+        <li>Type a <b>name</b> you like in box 1.</li>
+        <li>Type a <b>password</b> in box 2. Use at least 8 letters or numbers.</li>
+        <li>Press <b>Create my account</b>. Done! You are inside.</li>
+      </ol></details>
+    <details style="${box}"><summary style="cursor:pointer;font-size:1.05em"><b>&#9989; I already have an account. How do I get in?</b></summary>
+      <ol style="margin:10px 0 0;padding-left:22px;line-height:1.6">
+        <li>Type the <b>same name</b> you used before in box 1.</li>
+        <li>Type your <b>password</b> in box 2. Tick "Show my password" to check it.</li>
+        <li>Press <b>Log in</b>.</li>
+      </ol>
+      <p class="muted" style="margin:8px 0 0">Forgot your password? Ask the shop owner to help you.</p></details>
+    <details style="${box}"><summary style="cursor:pointer;font-size:1.05em"><b>&#128722; What happens after I log in?</b></summary>
+      <ol style="margin:10px 0 0;padding-left:22px;line-height:1.6">
+        <li>Press <b>Add to cart</b> on the things you want.</li>
+        <li>Open your <b>Cart</b> and press the button to order.</li>
+        <li>Watch <b>My orders</b> to see when your order is ready.</li>
+      </ol></details>`;
   $('#dlg').showModal();
 }
 // Splits a combo's price between the sellers whose products are in it (by value), like the server does.
