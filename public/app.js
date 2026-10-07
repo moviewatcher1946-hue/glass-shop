@@ -109,7 +109,7 @@ function renderNav() {
 const productCard = (p) => {
   const off = Number(p.discount_percent) || 0;
   return `
-    <article class="card glass">
+    <article class="card glass"${isRaven() ? ` data-pid="${p.id}" data-drag="1" style="user-select:none;-webkit-user-select:none;-webkit-touch-callout:none"` : ''}>
       <div class="img">${p.image_url ? `<img loading="lazy" src="${esc(p.image_url)}" alt="${esc(p.title)}">` : ''}
         ${p.is_sold_out ? '<span class="badge">Sold out</span>' : ''}${off ? `<span class="badge off">-${off}% OFF</span>` : ''}</div>
       <h3>${esc(p.title)}</h3><p>${esc(p.description)}</p>
@@ -147,9 +147,12 @@ const shuffled = (list, keyOf) => [...list].sort((a, b) => rank(keyOf(a)) - rank
 const PINNED = 3;
 const shuffledPinned = (list) => {
   const mix = shuffled(list, (p) => 'p' + p.id);
-  // Products Raven pinned always lead; the rest follow in random order.
-  const top = mix.filter((p) => p.pinned).sort((x, y) => x.pin_pos - y.pin_pos);
-  return [...top, ...mix.filter((p) => !p.pinned)];
+  // Pinned products sit in the slot Raven chose; every other product (his and sellers') fills the gaps in random order.
+  const rest = mix.filter((p) => !p.pinned), out = new Array(mix.length).fill(null);
+  mix.filter((p) => p.pinned).sort((x, y) => x.pin_pos - y.pin_pos).forEach((p) => {
+    let i = Math.min(Math.max(p.pin_pos, 1), out.length) - 1; while (out[i]) i = (i + 1) % out.length; out[i] = p;
+  });
+  return out.map((x) => x || rest.shift());
 };
 function fillGrid() {
   const el = $('#grid');
@@ -174,7 +177,7 @@ function orderNote() {
   const t = fmtTime(w.cutoff);
   return w.closed ? `Orders are closed for today (they stopped at ${t}). Come back tomorrow!`
     : w.label === 'tomorrow' ? `It's past ${t}, so new orders will be packed tomorrow.`
-    : `Order before ${t} to get it delivered tomorrow. Orders after that go out the next day.`;
+    : `Order before ${t} to get it delivered today. Orders after that go out tomorrow.`;
 }
 function fillBanner() {
   const el = $('#banner'); if (!el) return;
@@ -192,9 +195,9 @@ function renderShop() {
   fillGrid();
 }
 
-const productTable = () => `<table>${(isRaven() ? [...products].sort((x, y) => (y.pinned - x.pinned) || (x.pinned ? x.pin_pos - y.pin_pos : 0)) : products).map((p) => {
+const productTable = () => `<table>${products.map((p) => {
   const mine = canEdit(p.owner_id);
-  return `<tr data-pid="${p.id}"${isRaven() ? ' data-drag="1" style="cursor:grab;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none"' : ''}>
+  return `<tr data-pid="${p.id}">
     <td>${mine ? `<input type="checkbox" class="pick" value="${p.id}" ${selected.has(p.id) ? 'checked' : ''}>` : ''}</td>
     <td>${p.image_url ? `<img class="thumb" src="${esc(p.image_url)}" alt="">` : ''}</td>
     <td><b>${esc(p.title)}</b><br>${money(p.price)}${p.discount_percent ? ` (-${p.discount_percent}%)` : ''}${bulkOn(p) ? ` | Bulk: ${p.bulk_min}+ = -${p.bulk_percent}%` : ''} | ${CATS[p.category] || 'Snacks'}${mine && costMap[p.id] != null ? ` | Profit ${money(fin(p) - Number(costMap[p.id]))} each` : ''}${p.stock != null ? ` | Stock: ${p.stock}${p.stock > 0 && p.stock <= LOW_STOCK ? ' (low!)' : ''}` : ''}${p.is_sold_out ? ' - sold out' : ''}${ownerName(p.owner_id) ? ` | by ${esc(ownerName(p.owner_id))}` : ''}</td>
@@ -575,25 +578,59 @@ function drawAttention() {
   if (el.dataset.h !== html) { el.dataset.h = html; el.innerHTML = html; } // only redraw on a change, so the pop-in doesn't replay every refresh
 }
 async function refreshCosts() { costMap = await api('/api/admin/costs'); fillProducts(); }
+const DASH_CSS = `
+.dash{display:grid;gap:14px}.dash h2{margin:0}.dash .sub{color:var(--muted);margin:2px 0 0;font-size:.95em}
+.dash .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.dash .stat{display:flex;gap:12px;align-items:center;padding:14px;border-radius:16px;background:var(--glass);border:1px solid var(--border);box-shadow:var(--shadow)}
+.dash .ico{width:44px;height:44px;border-radius:12px;display:grid;place-items:center;font-size:22px;flex:none}
+.dash .stat b{display:block;font-size:1.35em;line-height:1.2;word-break:break-word}.dash .stat span{color:var(--muted);font-size:.85em}
+.dash .box{padding:16px;border-radius:16px;background:var(--glass);border:1px solid var(--border);box-shadow:var(--shadow)}
+.dash .box h3{margin:0 0 12px;font-size:1.05em}.dash .two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.dash .donut{display:flex;align-items:center;gap:18px;flex-wrap:wrap;justify-content:center}.dash .donut svg{width:160px;height:160px;flex:none}
+.dash .leg div{display:flex;align-items:center;gap:8px;margin:5px 0}.dash .dot{width:12px;height:12px;border-radius:50%;flex:none}
+.dash .bar{margin:10px 0}.dash .bar .t{display:flex;justify-content:space-between;gap:8px;font-size:.92em;margin-bottom:4px}
+.dash .bar .t span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dash .track{height:10px;border-radius:99px;background:var(--border);overflow:hidden}.dash .fill{height:100%;border-radius:99px;background:linear-gradient(90deg,var(--acc),var(--acc2))}
+.dash .row{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--border)}.dash .row:first-of-type{border-top:0}
+.dash .row small{color:var(--muted);display:block}.dash .pill{padding:3px 10px;border-radius:99px;font-size:.8em;font-weight:600;color:#fff;text-transform:capitalize;white-space:nowrap}
+.dash .empty{color:var(--muted);text-align:center;margin:8px 0}
+@media(max-width:700px){.dash .two{grid-template-columns:1fr}.dash .stats{grid-template-columns:1fr 1fr}.dash .stat{padding:12px;gap:10px}.dash .ico{width:38px;height:38px;font-size:19px}}
+@media(max-width:380px){.dash .stats{grid-template-columns:1fr}}`;
+const STATUS_COL = { pending: '#f59e0b', packed: '#3b82f6', completed: '#10b981', cancelled: '#ef4444' };
 function donut(list) {
-  const cols = { pending: '#f5a524', packed: '#4da3ff', completed: '#2ecc71', cancelled: '#e5484d' };
   const tot = list.reduce((s, x) => s + x.n, 0);
-  if (!tot) return '<p class="muted">No orders yet.</p>';
+  if (!tot) return '<p class="empty">No orders yet. They will show up here.</p>';
   let off = 0; const R = 15.9155;
-  const arcs = list.map((x) => { const len = x.n / tot * 100, c = `<circle r="${R}" cx="21" cy="21" fill="none" stroke="${cols[x.status] || '#999'}" stroke-width="6" stroke-dasharray="${len} ${100 - len}" stroke-dashoffset="${25 - off}"/>`; off += len; return c; }).join('');
-  return `<h3>Orders by status</h3><div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:14px">
-    <svg viewBox="0 0 42 42" width="150" height="150">${arcs}<text x="21" y="22.5" text-anchor="middle" font-size="7" font-weight="700" fill="currentColor">${tot}</text></svg>
-    <div>${list.map((x) => `<div><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${cols[x.status] || '#999'};margin-right:6px"></span>${esc(x.status)}: <b>${x.n}</b></div>`).join('')}</div></div>`;
+  const arcs = list.map((x) => { const len = x.n / tot * 100, c = `<circle r="${R}" cx="21" cy="21" fill="none" stroke="${STATUS_COL[x.status] || '#999'}" stroke-width="5.5" stroke-dasharray="${len} ${100 - len}" stroke-dashoffset="${25 - off}"/>`; off += len; return c; }).join('');
+  return `<div class="donut"><svg viewBox="0 0 42 42"><circle r="${R}" cx="21" cy="21" fill="none" stroke="var(--border)" stroke-width="5.5"/>${arcs}<text x="21" y="21" text-anchor="middle" font-size="7" font-weight="700" fill="currentColor">${tot}</text><text x="21" y="26" text-anchor="middle" font-size="2.6" fill="currentColor" opacity=".6">orders</text></svg>
+    <div class="leg">${list.map((x) => `<div><span class="dot" style="background:${STATUS_COL[x.status] || '#999'}"></span><span style="text-transform:capitalize">${esc(x.status)}</span> <b>${x.n}</b></div>`).join('')}</div></div>`;
 }
 async function refreshDash() {
   const d = await api('/api/admin/dashboard'), b = $('#dashbox'); if (!b) return;
-  const card = (k, v) => `<div class="glass" style="padding:12px;min-width:130px"><div class="muted">${k}</div><b style="font-size:1.4em">${v}</b></div>`;
-  b.innerHTML = `<div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:14px">
-    ${card('Revenue (done)', money(d.orders.revenue))}${card('Today', money(d.orders.today))}${card('Open orders', d.orders.open)}${card('Completed', d.orders.done)}
-    ${card('Products', d.products.total)}${card('Pinned', d.products.pinned)}${card('Sold out', d.products.sold_out)}${card('Customers', d.users.customers)}${card('Sellers', d.users.sellers)}</div>
-    ${donut(d.statuses)}<h3>Per seller</h3><table>${d.people.map((r) => `<tr><td><b>${esc(r.username)}</b></td><td>Gross ${money(r.gross)}</td><td>Income ${money(r.income)}</td><td>${r.open} open</td></tr>`).join('')}</table>
-    <h3>Top items</h3><table>${d.top.map((t) => `<tr><td>${esc(t.title)}</td><td>${t.qty} sold</td></tr>`).join('') || '<tr><td>No sales yet</td></tr>'}</table>
-    <h3>Recent orders</h3><table>${d.recent.map((r) => `<tr><td>#${r.id}</td><td>${esc(r.username)}</td><td>${money(r.total)}</td><td>${esc(r.status)}</td></tr>`).join('')}</table>`;
+  if (!document.getElementById('dash-css')) document.head.insertAdjacentHTML('beforeend', `<style id="dash-css">${DASH_CSS}</style>`);
+  const stat = (ico, bg, v, k) => `<div class="stat"><div class="ico" style="background:${bg}22">${ico}</div><div><b>${v}</b><span>${k}</span></div></div>`;
+  const max = Math.max(1, ...d.top.map((t) => t.qty));
+  b.innerHTML = `<div class="dash">
+    <div><h2>Dashboard</h2><p class="sub">A quick look at how your shop is doing.</p></div>
+    <div class="stats">
+      ${stat('💰', '#10b981', money(d.orders.revenue), 'Total earned (finished orders)')}
+      ${stat('📅', '#7c3aed', money(d.orders.today), 'Earned today')}
+      ${stat('🛒', '#f59e0b', d.orders.open, 'Orders waiting')}
+      ${stat('✅', '#10b981', d.orders.done, 'Orders finished')}
+      ${stat('📦', '#3b82f6', d.products.total, 'Products in shop')}
+      ${stat('📌', '#e11d74', d.products.pinned, 'Pinned products')}
+      ${stat('🚫', '#ef4444', d.products.sold_out, 'Sold out')}
+      ${stat('🙋', '#7c3aed', d.users.customers, 'Customers')}
+      ${stat('🏪', '#f59e0b', d.users.sellers, 'Sellers')}
+    </div>
+    <div class="two">
+      <div class="box"><h3>Orders at a glance</h3>${donut(d.statuses)}</div>
+      <div class="box"><h3>Best sellers</h3>${d.top.map((t) => `<div class="bar"><div class="t"><span>${esc(t.title)}</span><b>${t.qty} sold</b></div><div class="track"><div class="fill" style="width:${Math.round(t.qty / max * 100)}%"></div></div></div>`).join('') || '<p class="empty">Nothing sold yet.</p>'}</div>
+    </div>
+    <div class="two">
+      <div class="box"><h3>Sellers</h3>${d.people.map((r) => `<div class="row"><div><b>${esc(r.username)}</b><small>${r.open} open order${r.open == 1 ? '' : 's'}</small></div><div style="text-align:right"><b>${money(r.income)}</b><small>earned of ${money(r.gross)} sold</small></div></div>`).join('') || '<p class="empty">No sellers yet.</p>'}</div>
+      <div class="box"><h3>Latest orders</h3>${d.recent.map((r) => `<div class="row"><div><b>#${r.id} · ${esc(r.username)}</b><small>${money(r.total)}</small></div><span class="pill" style="background:${STATUS_COL[r.status] || '#999'}">${esc(r.status)}</span></div>`).join('') || '<p class="empty">No orders yet.</p>'}</div>
+    </div></div>`;
 }
 async function refreshReport() { repData = await api('/api/admin/report?days=30'); drawReport(); }
 function drawReport() {
@@ -786,7 +823,7 @@ function renderAdmin() {
   const customersView = `<h2>Customers</h2>
     <p class="muted">Block people who abuse the shop (fake orders, not showing up). ${isRaven() ? 'Your block covers the whole shop.' : 'Your block stops them ordering your items only.'} The list shows the most cancelled orders first.</p>
     <div id="custlist"><p>Loading...</p></div>`;
-  $('#app').innerHTML = tabs + '<div id="attn"></div><div id="adminnotes"></div>' + (adminTab === 'dashboard' && isRaven() ? '<section class="panel glass table-wrap"><h2>Dashboard</h2><div id="dashbox"><p>Loading...</p></div></section>' : adminTab === 'report' ? reportView : adminTab === 'cash' ? cashView : adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'alerts' && !isRaven() ? alertsView : adminTab === 'combos' ? combosView : adminTab === 'promos' ? promosView : adminTab === 'customers' ? customersView : productsView);
+  $('#app').innerHTML = tabs + '<div id="attn"></div><div id="adminnotes"></div>' + (adminTab === 'dashboard' && isRaven() ? '<div id="dashbox"><p>Loading...</p></div>' : adminTab === 'report' ? reportView : adminTab === 'cash' ? cashView : adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'alerts' && !isRaven() ? alertsView : adminTab === 'combos' ? combosView : adminTab === 'promos' ? promosView : adminTab === 'customers' ? customersView : productsView);
   fillProducts();
   comboAdminHtml = ''; refreshAdminCombos().catch(() => {});
   promoAdminHtml = ''; refreshAdminPromos().catch(() => {});
@@ -914,43 +951,49 @@ async function loadProductsQuiet() {
 }
 // Slides rows smoothly to their new place (FLIP): remember positions, reload, then animate from old to new.
 async function flip(change, movedId) {
-  const tops = () => new Map([...document.querySelectorAll('tr[data-pid]')].map((r) => [r.dataset.pid, r.getBoundingClientRect().top]));
+  const tops = () => new Map([...document.querySelectorAll('[data-pid]')].map((r) => { const b = r.getBoundingClientRect(); return [r.dataset.pid, [b.left, b.top]]; }));
   const before = tops();
   await change();
   await loadProducts();
-  document.querySelectorAll('tr[data-pid]').forEach((r) => {
+  document.querySelectorAll('[data-pid]').forEach((r) => {
     const was = before.get(r.dataset.pid); if (was == null) return;
-    const dy = was - r.getBoundingClientRect().top; if (!dy) return;
-    r.style.transition = 'none'; r.style.transform = `translateY(${dy}px)`; r.style.position = 'relative'; r.style.zIndex = r.dataset.pid === String(movedId) ? 2 : 1;
+    const b = r.getBoundingClientRect(), dx = was[0] - b.left, dy = was[1] - b.top; if (!dx && !dy) return;
+    r.style.transition = 'none'; r.style.transform = `translate(${dx}px,${dy}px)`; r.style.position = 'relative'; r.style.zIndex = r.dataset.pid === String(movedId) ? 2 : 1;
     requestAnimationFrame(() => requestAnimationFrame(() => { r.style.transition = 'transform .35s ease'; r.style.transform = ''; }));
   });
 }
 const moveAnimated = (id, dir) => flip(() => api(`/api/admin/products/${id}/move`, { method: 'PATCH', json: { dir } }), id);
-// Press and hold any product row (mouse or finger), drag it, let go where you want it (Raven only).
+// Press and hold any product (admin list row or shop card, mouse or finger), drag it, let go where you want it (Raven only).
 let drag = null;
 document.addEventListener('touchmove', (e) => { if (drag) e.preventDefault(); }, { passive: false });
+document.addEventListener('dragstart', (e) => { if (e.target.closest && e.target.closest('[data-drag]')) e.preventDefault(); });
 document.addEventListener('pointerdown', (e) => {
-  const r = e.target.closest && e.target.closest('tr[data-drag]');
+  const r = e.target.closest && e.target.closest('[data-drag]');
   if (!r || e.target.closest('button,input,a,select,textarea')) return;
   const sx = e.clientX, sy = e.clientY;
   const cancel = () => { clearTimeout(t); document.removeEventListener('pointermove', early); document.removeEventListener('pointerup', cancel); document.removeEventListener('pointercancel', cancel); };
   const early = (ev) => { if (Math.abs(ev.clientX - sx) + Math.abs(ev.clientY - sy) > 10) cancel(); };
-  const t = setTimeout(() => { cancel(); startDrag(r, sy); }, 350);
+  const t = setTimeout(() => { cancel(); startDrag(r, sx, sy); }, 350);
   document.addEventListener('pointermove', early); document.addEventListener('pointerup', cancel); document.addEventListener('pointercancel', cancel);
 });
-function startDrag(r, sy) {
+function startDrag(r, sx, sy) {
   drag = r; r.style.transition = 'none'; r.style.position = 'relative'; r.style.zIndex = 5; r.style.opacity = '.8'; r.style.boxShadow = '0 8px 24px rgba(0,0,0,.35)';
   if (navigator.vibrate) navigator.vibrate(20);
-  const move = (e) => { r.style.transform = `translateY(${e.clientY - sy}px)`; };
+  const move = (e) => { r.style.transform = `translate(${e.clientX - sx}px,${e.clientY - sy}px)`; };
   const end = async (e) => {
     document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', end); document.removeEventListener('pointercancel', end);
-    const id = r.dataset.pid, others = [...document.querySelectorAll('tr[data-drag]')].filter((x) => x !== r);
-    const at = others.filter((x) => { const b = x.getBoundingClientRect(); return b.top + b.height / 2 < e.clientY; }).length;
-    const ids = others.map((x) => x.dataset.pid); ids.splice(at, 0, id);
-    const same = ids.join() === [...document.querySelectorAll('tr[data-drag]')].map((x) => x.dataset.pid).join();
+    const id = r.dataset.pid, row = r.tagName === 'TR';
+    const all = [...document.querySelectorAll('[data-drag]')], before = all.map((x) => x.dataset.pid);
+    const scope = r.closest('.grid, table'), near = [...scope.querySelectorAll('[data-drag]')].filter((x) => x !== r)
+      .map((x) => { const b = x.getBoundingClientRect(), cx = b.left + b.width / 2, cy = b.top + b.height / 2; return { x, b, cx, cy, d: Math.hypot(e.clientX - cx, e.clientY - cy) }; }).sort((p, q) => p.d - q.d)[0];
     r.style.transform = ''; r.style.opacity = ''; r.style.boxShadow = ''; drag = null;
-    if (same) return;
-    await flip(() => api('/api/admin/products/reorder', { method: 'PUT', json: { ids } }), id).catch((err) => toast(err.message));
+    if (!near) return;
+    const first = row ? e.clientY < near.cy : e.clientY < near.b.top ? true : e.clientY > near.b.bottom ? false : e.clientX < near.cx;
+    const ids = [...scope.querySelectorAll('[data-drag]')].map((x) => x.dataset.pid).filter((x) => x !== id);
+    const orig = [...scope.querySelectorAll('[data-drag]')].map((x) => x.dataset.pid);
+    ids.splice(ids.indexOf(near.x.dataset.pid) + (first ? 0 : 1), 0, id);
+    if (ids.join() === orig.join()) return;
+    await flip(() => api('/api/admin/products/' + id + '/slot', { method: 'PUT', json: { pos: ids.indexOf(id) + 1 } }), id).catch((err) => toast(err.message));
   };
   document.addEventListener('pointermove', move); document.addEventListener('pointerup', end); document.addEventListener('pointercancel', end);
 }
