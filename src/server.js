@@ -164,6 +164,7 @@ const ensureCombos = () => pool.query(`
 // Order notes, promo codes and shop settings (safe to run every start).
 const ensureShop = () => pool.query(`
   ALTER TABLE orders ADD COLUMN IF NOT EXISTS note VARCHAR(300) NOT NULL DEFAULT '';
+  ALTER TABLE orders ADD COLUMN IF NOT EXISTS cancel_reason VARCHAR(200) NOT NULL DEFAULT '';
   ALTER TABLE orders ADD COLUMN IF NOT EXISTS promo_code VARCHAR(40);
   ALTER TABLE orders ADD COLUMN IF NOT EXISTS discount NUMERIC(10,2) NOT NULL DEFAULT 0;
   CREATE TABLE IF NOT EXISTS promo_codes (
@@ -671,7 +672,7 @@ app.post('/api/orders', auth, wrap(async (req, res) => {
   }
 }));
 
-const ORDER_SQL = `SELECT o.id,o.user_id,o.total,o.status,o.note,o.promo_code,o.discount,o.created_at,o.paid_by,o.paid_at,to_char(o.deliver_for,'YYYY-MM-DD') AS deliver_for,(SELECT username FROM users WHERE id=o.paid_by) AS paid_name,u.username,
+const ORDER_SQL = `SELECT o.id,o.user_id,o.total,o.status,o.note,o.cancel_reason,o.promo_code,o.discount,o.created_at,o.paid_by,o.paid_at,to_char(o.deliver_for,'YYYY-MM-DD') AS deliver_for,(SELECT username FROM users WHERE id=o.paid_by) AS paid_name,u.username,
   (SELECT json_agg(json_build_object('product_id',product_id,'title',title,'unit_price',unit_price,'quantity',quantity,'owner_id',owner_id))
    FROM order_items WHERE order_id=o.id) AS items,
   (SELECT json_agg(json_build_object('owner_id',x.owner_id,'username',pu.username,'status',COALESCE(a.status,'pending')) ORDER BY x.owner_id)
@@ -705,7 +706,7 @@ const withCosts = async (rows, user) => {
 app.get('/api/orders', auth, staff, wrap(async (req, res) => {
   if (isMain(req.user)) return res.json(await withCosts((await pool.query(`${ORDER_SQL} ORDER BY o.created_at DESC`)).rows, req.user));
   const { rows } = await pool.query(
-    `SELECT o.id,o.user_id,o.status,o.note,o.promo_code,o.discount,o.created_at,o.paid_by,o.paid_at,to_char(o.deliver_for,'YYYY-MM-DD') AS deliver_for,(SELECT username FROM users WHERE id=o.paid_by) AS paid_name,u.username,
+    `SELECT o.id,o.user_id,o.status,o.note,o.cancel_reason,o.promo_code,o.discount,o.created_at,o.paid_by,o.paid_at,to_char(o.deliver_for,'YYYY-MM-DD') AS deliver_for,(SELECT username FROM users WHERE id=o.paid_by) AS paid_name,u.username,
        (SELECT json_agg(json_build_object('product_id',oi.product_id,'title',oi.title,'unit_price',oi.unit_price,'quantity',oi.quantity) ORDER BY oi.id)
           FROM order_items oi WHERE oi.order_id=o.id AND oi.owner_id=$1) AS items,
        EXISTS (SELECT 1 FROM promo_codes pc WHERE upper(pc.code)=upper(o.promo_code) AND pc.owner_id=$1) AS promo_mine,
@@ -739,6 +740,7 @@ app.patch('/api/orders/:id/cancel', auth, wrap(async (req, res) => {
 // Admin moves an order along: pending -> packed (ready) -> completed, or cancelled.
 app.patch('/api/orders/:id/status', auth, staff, wrap(async (req, res) => {
   const { status } = req.body || {};
+  const reason = String((req.body || {}).reason || '').trim().slice(0, 200);
   if (!['pending', 'packed', 'completed', 'cancelled'].includes(status)) throw bad('Invalid status.');
   const id = parseInt(req.params.id);
   if (!Number.isInteger(id)) throw bad('Order not found.', 404);
@@ -751,7 +753,7 @@ app.patch('/api/orders/:id/status', auth, staff, wrap(async (req, res) => {
 
   // One owner (or raven stepping in on an order he has no items in): change the status directly.
   if (owners.length < 2 || !owners.includes(req.user.id)) {
-    const { rows: [o] } = await pool.query('UPDATE orders SET status=$1 WHERE id=$2 RETURNING id,status', [status, id]);
+    const { rows: [o] } = await pool.query("UPDATE orders SET status=$1, cancel_reason=CASE WHEN $1='cancelled' THEN $3 ELSE '' END WHERE id=$2 RETURNING id,status", [status, id, reason]);
     if (status === 'cancelled') await restoreStock(pool, id);
     return res.json(o);
   }
@@ -766,7 +768,7 @@ app.patch('/api/orders/:id/status', auth, staff, wrap(async (req, res) => {
   const sts = owners.map((x) => got.get(x) || 'pending');
   const rank = { pending: 0, packed: 1, completed: 2, cancelled: 0 };
   const overall = sts.every((x) => x === 'cancelled') ? 'cancelled' : ['pending', 'packed', 'completed'][Math.min(...sts.map((x) => rank[x]))];
-  await pool.query('UPDATE orders SET status=$1 WHERE id=$2', [overall, id]);
+  await pool.query("UPDATE orders SET status=$1, cancel_reason=CASE WHEN $1='cancelled' THEN $3 ELSE '' END WHERE id=$2", [overall, id, reason]);
   if (overall === 'cancelled') await restoreStock(pool, id);
   const waiting = ow.filter((r) => (got.get(r.owner_id) || 'pending') !== status && r.owner_id !== req.user.id).map((r) => r.username);
   if (waiting.length) {
@@ -924,22 +926,19 @@ app.patch('/api/custom-requests/:id/respond', auth, wrap(async (req, res) => {
 
 /* ---------- Pin products + dashboard (main admin only) ---------- */
 app.patch('/api/admin/products/:id/pin', auth, admin, wrap(async (req, res) => {
-  const { rows: [p] } = await pool.query('UPDATE products SET pinned = NOT pinned, pin_pos = CASE WHEN pinned THEN 0 ELSE (SELECT COALESCE(max(pin_pos),0)+1 FROM products) END WHERE id=$1 RETURNING id,pinned', [req.params.id]);
+  const { rows: [p] } = await pool.query('UPDATE products SET pinned = NOT pinned, pin_pos = CASE WHEN pinned THEN 0 ELSE (SELECT 1) END WHERE id=$1 RETURNING id,pinned', [req.params.id]);
   if (!p) throw bad('Product not found.', 404);
   res.json(p);
 }));
-app.put('/api/admin/products/reorder', auth, admin, wrap(async (req, res) => {
-  const ids = (Array.isArray(req.body.ids) ? req.body.ids : []).map(Number).filter(Number.isInteger);
-  await Promise.all(ids.map((id, n) => pool.query('UPDATE products SET pinned=true, pin_pos=$1 WHERE id=$2', [n + 1, id])));
+app.put('/api/admin/products/:id/slot', auth, admin, wrap(async (req, res) => {
+  const pos = Math.max(1, parseInt(req.body.pos, 10) || 1);
+  await pool.query('UPDATE products SET pinned=true, pin_pos=$1 WHERE id=$2', [pos, req.params.id]);
   res.json({ ok: true });
 }));
 app.patch('/api/admin/products/:id/move', auth, admin, wrap(async (req, res) => {
-  const up = req.body.dir === 'up';
-  const { rows } = await pool.query('SELECT id FROM products WHERE pinned ORDER BY pin_pos, id');
-  const i = rows.findIndex((r) => String(r.id) === req.params.id), j = up ? i - 1 : i + 1;
-  if (i < 0) throw bad('Pin the product first.');
-  if (j >= 0 && j < rows.length) { const t = rows[i]; rows[i] = rows[j]; rows[j] = t; }
-  await Promise.all(rows.map((r, n) => pool.query('UPDATE products SET pin_pos=$1 WHERE id=$2', [n + 1, r.id])));
+  const d = req.body.dir === 'up' ? -1 : 1;
+  const { rows: [p] } = await pool.query('UPDATE products SET pin_pos = GREATEST(1, pin_pos + $1) WHERE id=$2 AND pinned RETURNING id', [d, req.params.id]);
+  if (!p) throw bad('Pin the product first.');
   res.json({ ok: true });
 }));
 app.get('/api/admin/dashboard', auth, admin, wrap(async (req, res) => {
