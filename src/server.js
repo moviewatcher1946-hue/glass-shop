@@ -1,5 +1,7 @@
 const express = require('express');
 const multer = require('multer');
+let sharp = null; try { sharp = require('sharp'); } catch { /* optional: without it pictures are sent as uploaded */ }
+const smallPics = new Map(); // id:version -> shrunk picture, so each one is resized only once
 const bcrypt = require('bcryptjs');
 const path = require('path');
 const crypto = require('crypto');
@@ -320,7 +322,18 @@ app.get('/api/products/:id', wrap(async (req, res) => {
 app.get('/api/products/:id/image', wrap(async (req, res) => {
   const { rows: [p] } = await pool.query('SELECT image_data, image_mime FROM products WHERE id=$1', [req.params.id]);
   if (!p || !p.image_data) return res.sendStatus(404);
-  res.set('Content-Type', p.image_mime).set('Cache-Control', 'public, max-age=31536000, immutable').send(p.image_data);
+  let buf = p.image_data, mime = p.image_mime;
+  if (sharp && mime !== 'image/gif') { // shrink big pictures (max 800px wide, WebP): ~50-100 KB instead of several MB
+    const key = req.params.id + ':' + (req.query.v || '');
+    let hit = smallPics.get(key);
+    if (!hit) {
+      try { hit = { buf: await sharp(buf).rotate().resize({ width: 800, withoutEnlargement: true }).webp({ quality: 74 }).toBuffer(), mime: 'image/webp' }; } catch { hit = { buf, mime }; }
+      if (smallPics.size >= 300) smallPics.delete(smallPics.keys().next().value);
+      smallPics.set(key, hit);
+    }
+    ({ buf, mime } = hit);
+  }
+  res.set('Content-Type', mime).set('Cache-Control', 'public, max-age=31536000, immutable').send(buf);
 }));
 
 /* ---------- Products (admin write) ---------- */
