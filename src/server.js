@@ -1,7 +1,5 @@
 const express = require('express');
 const multer = require('multer');
-let sharp = null; try { sharp = require('sharp'); } catch { /* optional: without it pictures are sent as uploaded */ }
-const smallPics = new Map(); // id:version -> shrunk picture, so each one is resized only once
 const bcrypt = require('bcryptjs');
 const path = require('path');
 const crypto = require('crypto');
@@ -26,7 +24,7 @@ const upload = multer({
   fileFilter: (req, f, cb) => cb(null, /^image\/(png|jpe?g|webp|gif)$/.test(f.mimetype)),
 });
 const wrap = (fn) => (req, res, next) => fn(req, res, next).catch(next);
-const COLS = 'id,title,description,price,is_sold_out,category,discount_percent,bulk_min,bulk_percent,image_url,created_at,owner_id,stock,pinned,pin_pos';
+const COLS = 'id,title,description,price,is_sold_out,category,discount_percent,bulk_min,bulk_percent,image_url,created_at,owner_id,stock';
 const LOW_STOCK = 5; // warn at this many left or fewer
 const CATEGORIES = ['drinks', 'snacks'];
 // Price after the product's % discount. The server always works the price out itself.
@@ -166,7 +164,6 @@ const ensureCombos = () => pool.query(`
 // Order notes, promo codes and shop settings (safe to run every start).
 const ensureShop = () => pool.query(`
   ALTER TABLE orders ADD COLUMN IF NOT EXISTS note VARCHAR(300) NOT NULL DEFAULT '';
-  ALTER TABLE orders ADD COLUMN IF NOT EXISTS cancel_reason VARCHAR(200) NOT NULL DEFAULT '';
   ALTER TABLE orders ADD COLUMN IF NOT EXISTS promo_code VARCHAR(40);
   ALTER TABLE orders ADD COLUMN IF NOT EXISTS discount NUMERIC(10,2) NOT NULL DEFAULT 0;
   CREATE TABLE IF NOT EXISTS promo_codes (
@@ -187,7 +184,6 @@ const ensureShop = () => pool.query(`
 `);
 
 // Seller accounts and ownership (safe to run every start). Existing rows become the main admin's.
-const ensurePinned = () => pool.query('ALTER TABLE products ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT false; ALTER TABLE products ADD COLUMN IF NOT EXISTS pin_pos INT NOT NULL DEFAULT 0');
 const ensureOwners = () => pool.query(`
   ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
   ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('admin','customer','seller'));
@@ -322,18 +318,7 @@ app.get('/api/products/:id', wrap(async (req, res) => {
 app.get('/api/products/:id/image', wrap(async (req, res) => {
   const { rows: [p] } = await pool.query('SELECT image_data, image_mime FROM products WHERE id=$1', [req.params.id]);
   if (!p || !p.image_data) return res.sendStatus(404);
-  let buf = p.image_data, mime = p.image_mime;
-  if (sharp && mime !== 'image/gif') { // shrink big pictures (max 800px wide, WebP): ~50-100 KB instead of several MB
-    const key = req.params.id + ':' + (req.query.v || '');
-    let hit = smallPics.get(key);
-    if (!hit) {
-      try { hit = { buf: await sharp(buf).rotate().resize({ width: 800, withoutEnlargement: true }).webp({ quality: 74 }).toBuffer(), mime: 'image/webp' }; } catch { hit = { buf, mime }; }
-      if (smallPics.size >= 300) smallPics.delete(smallPics.keys().next().value);
-      smallPics.set(key, hit);
-    }
-    ({ buf, mime } = hit);
-  }
-  res.set('Content-Type', mime).set('Cache-Control', 'public, max-age=31536000, immutable').send(buf);
+  res.set('Content-Type', p.image_mime).set('Cache-Control', 'public, max-age=31536000, immutable').send(p.image_data);
 }));
 
 /* ---------- Products (admin write) ---------- */
@@ -685,7 +670,7 @@ app.post('/api/orders', auth, wrap(async (req, res) => {
   }
 }));
 
-const ORDER_SQL = `SELECT o.id,o.user_id,o.total,o.status,o.note,o.cancel_reason,o.promo_code,o.discount,o.created_at,o.paid_by,o.paid_at,to_char(o.deliver_for,'YYYY-MM-DD') AS deliver_for,(SELECT username FROM users WHERE id=o.paid_by) AS paid_name,u.username,
+const ORDER_SQL = `SELECT o.id,o.user_id,o.total,o.status,o.note,o.promo_code,o.discount,o.created_at,o.paid_by,o.paid_at,to_char(o.deliver_for,'YYYY-MM-DD') AS deliver_for,(SELECT username FROM users WHERE id=o.paid_by) AS paid_name,u.username,
   (SELECT json_agg(json_build_object('product_id',product_id,'title',title,'unit_price',unit_price,'quantity',quantity,'owner_id',owner_id))
    FROM order_items WHERE order_id=o.id) AS items,
   (SELECT json_agg(json_build_object('owner_id',x.owner_id,'username',pu.username,'status',COALESCE(a.status,'pending')) ORDER BY x.owner_id)
@@ -719,7 +704,7 @@ const withCosts = async (rows, user) => {
 app.get('/api/orders', auth, staff, wrap(async (req, res) => {
   if (isMain(req.user)) return res.json(await withCosts((await pool.query(`${ORDER_SQL} ORDER BY o.created_at DESC`)).rows, req.user));
   const { rows } = await pool.query(
-    `SELECT o.id,o.user_id,o.status,o.note,o.cancel_reason,o.promo_code,o.discount,o.created_at,o.paid_by,o.paid_at,to_char(o.deliver_for,'YYYY-MM-DD') AS deliver_for,(SELECT username FROM users WHERE id=o.paid_by) AS paid_name,u.username,
+    `SELECT o.id,o.user_id,o.status,o.note,o.promo_code,o.discount,o.created_at,o.paid_by,o.paid_at,to_char(o.deliver_for,'YYYY-MM-DD') AS deliver_for,(SELECT username FROM users WHERE id=o.paid_by) AS paid_name,u.username,
        (SELECT json_agg(json_build_object('product_id',oi.product_id,'title',oi.title,'unit_price',oi.unit_price,'quantity',oi.quantity) ORDER BY oi.id)
           FROM order_items oi WHERE oi.order_id=o.id AND oi.owner_id=$1) AS items,
        EXISTS (SELECT 1 FROM promo_codes pc WHERE upper(pc.code)=upper(o.promo_code) AND pc.owner_id=$1) AS promo_mine,
@@ -739,12 +724,20 @@ app.get('/api/orders', auth, staff, wrap(async (req, res) => {
 
 // Customer cancels their own order, only while it is still pending.
 app.patch('/api/orders/:id/cancel', auth, wrap(async (req, res) => {
+  // change = the customer is cancelling to edit the order, which is only allowed for a few minutes after placing it
+  const change = !!(req.body || {}).change;
+  if (change) {
+    const raw = await getSetting('edit_window'), mins = raw === '' ? 10 : Number(raw);
+    const { rowCount } = await pool.query("SELECT 1 FROM orders WHERE id=$1 AND user_id=$2 AND created_at > now() - make_interval(mins => $3::int)", [req.params.id, req.user.id, mins]);
+    if (!rowCount) throw bad('The time to change this order is over. You can still cancel it and order again.');
+  }
   const { rows: [o] } = await pool.query(
-    "UPDATE orders SET status='cancelled' WHERE id=$1 AND user_id=$2 AND status='pending' RETURNING id,status",
+    "UPDATE orders SET status='cancelled' WHERE id=$1 AND user_id=$2 AND status='pending' RETURNING id,status,promo_code",
     [req.params.id, req.user.id]);
   if (!o) throw bad('Only pending orders can be cancelled.');
   await restoreStock(pool, o.id);
-  notify(`Order #${o.id} was cancelled by ${req.user.username}.`);
+  if (o.promo_code) await pool.query('UPDATE promo_codes SET used_count = GREATEST(used_count - 1, 0) WHERE upper(code)=upper($1)', [o.promo_code]);
+  notify(`Order #${o.id} was cancelled by ${req.user.username}${change ? ' (changing it, may re-order)' : ''}.`);
   const { rows: ow } = await pool.query('SELECT DISTINCT owner_id FROM order_items WHERE order_id=$1 AND owner_id IS NOT NULL', [o.id]);
   notifySellers(new Map(ow.map((r) => [r.owner_id, `Order #${o.id} was cancelled by ${req.user.username}.`])));
   res.json(o);
@@ -753,7 +746,6 @@ app.patch('/api/orders/:id/cancel', auth, wrap(async (req, res) => {
 // Admin moves an order along: pending -> packed (ready) -> completed, or cancelled.
 app.patch('/api/orders/:id/status', auth, staff, wrap(async (req, res) => {
   const { status } = req.body || {};
-  const reason = String((req.body || {}).reason || '').trim().slice(0, 200);
   if (!['pending', 'packed', 'completed', 'cancelled'].includes(status)) throw bad('Invalid status.');
   const id = parseInt(req.params.id);
   if (!Number.isInteger(id)) throw bad('Order not found.', 404);
@@ -766,7 +758,7 @@ app.patch('/api/orders/:id/status', auth, staff, wrap(async (req, res) => {
 
   // One owner (or raven stepping in on an order he has no items in): change the status directly.
   if (owners.length < 2 || !owners.includes(req.user.id)) {
-    const { rows: [o] } = await pool.query('UPDATE orders SET status=$1, cancel_reason=$3 WHERE id=$2 RETURNING id,status', [status, id, status === 'cancelled' ? reason : '']);
+    const { rows: [o] } = await pool.query('UPDATE orders SET status=$1 WHERE id=$2 RETURNING id,status', [status, id]);
     if (status === 'cancelled') await restoreStock(pool, id);
     return res.json(o);
   }
@@ -781,7 +773,7 @@ app.patch('/api/orders/:id/status', auth, staff, wrap(async (req, res) => {
   const sts = owners.map((x) => got.get(x) || 'pending');
   const rank = { pending: 0, packed: 1, completed: 2, cancelled: 0 };
   const overall = sts.every((x) => x === 'cancelled') ? 'cancelled' : ['pending', 'packed', 'completed'][Math.min(...sts.map((x) => rank[x]))];
-  await pool.query('UPDATE orders SET status=$1, cancel_reason=$3 WHERE id=$2', [overall, id, overall === 'cancelled' ? reason : '']);
+  await pool.query('UPDATE orders SET status=$1 WHERE id=$2', [overall, id]);
   if (overall === 'cancelled') await restoreStock(pool, id);
   const waiting = ow.filter((r) => (got.get(r.owner_id) || 'pending') !== status && r.owner_id !== req.user.id).map((r) => r.username);
   if (waiting.length) {
@@ -935,36 +927,6 @@ app.patch('/api/custom-requests/:id/respond', auth, wrap(async (req, res) => {
   if (!r) throw bad('This request has no price to respond to.');
   notifyAll(`Custom request #${r.id}: ${req.user.username} ${status} your price.`);
   res.json(r);
-}));
-
-/* ---------- Pin products + dashboard (main admin only) ---------- */
-app.patch('/api/admin/products/:id/pin', auth, admin, wrap(async (req, res) => {
-  const { rows: [p] } = await pool.query('UPDATE products SET pinned = NOT pinned, pin_pos = CASE WHEN pinned THEN 0 ELSE (SELECT 1) END WHERE id=$1 RETURNING id,pinned', [req.params.id]);
-  if (!p) throw bad('Product not found.', 404);
-  res.json(p);
-}));
-app.put('/api/admin/products/:id/slot', auth, admin, wrap(async (req, res) => {
-  const pos = Math.max(1, parseInt(req.body.pos, 10) || 1);
-  await pool.query('UPDATE products SET pinned=true, pin_pos=$1 WHERE id=$2', [pos, req.params.id]);
-  res.json({ ok: true });
-}));
-app.patch('/api/admin/products/:id/move', auth, admin, wrap(async (req, res) => {
-  const d = req.body.dir === 'up' ? -1 : 1;
-  const { rows: [p] } = await pool.query('UPDATE products SET pin_pos = GREATEST(1, pin_pos + $1) WHERE id=$2 AND pinned RETURNING id', [d, req.params.id]);
-  if (!p) throw bad('Pin the product first.');
-  res.json({ ok: true });
-}));
-app.get('/api/admin/dashboard', auth, admin, wrap(async (req, res) => {
-  const q = async (sql) => (await pool.query(sql)).rows;
-  const [[o], [p], [u], top, recent, statuses] = await Promise.all([
-    q("SELECT count(*) FILTER (WHERE status IN ('pending','packed'))::int AS open, count(*) FILTER (WHERE status='completed')::int AS done, COALESCE(sum(total) FILTER (WHERE status='completed'),0)::float AS revenue, COALESCE(sum(total) FILTER (WHERE status='completed' AND created_at >= date_trunc('day',now())),0)::float AS today FROM orders"),
-    q("SELECT count(*)::int AS total, count(*) FILTER (WHERE is_sold_out)::int AS sold_out, count(*) FILTER (WHERE pinned)::int AS pinned FROM products"),
-    q("SELECT count(*) FILTER (WHERE role='customer')::int AS customers, count(*) FILTER (WHERE role='seller')::int AS sellers FROM users"),
-    q("SELECT oi.title, sum(oi.quantity)::int AS qty FROM order_items oi JOIN orders o ON o.id=oi.order_id WHERE o.status<>'cancelled' GROUP BY oi.title ORDER BY qty DESC LIMIT 5"),
-    q("SELECT o.id,o.status,o.total::float AS total,o.created_at,u.username FROM orders o JOIN users u ON u.id=o.user_id ORDER BY o.id DESC LIMIT 6"),
-    q("SELECT status, count(*)::int AS n FROM orders GROUP BY status ORDER BY status")
-  ]);
-  res.json({ orders: o, products: p, users: u, top, recent, statuses, people: await peopleTotals(req.user) });
 }));
 
 /* ---------- Backup / restore (admin only) ---------- */
@@ -1122,6 +1084,46 @@ app.delete('/api/admin/sellers/:id', auth, admin, wrap(async (req, res) => {
   }
 }));
 
+// Split off: parting ways with a seller. Deletes her products, combos and promo codes and her account.
+// Needs Raven's password, and is refused while she has open orders or money is still unsettled.
+app.post('/api/admin/sellers/:id/split-off', auth, admin, wrap(async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) throw bad('Seller not found.', 404);
+  const wait = lockedOut(req.ip);
+  if (wait) throw bad(`Too many wrong attempts. Try again in ${wait} minute${wait === 1 ? '' : 's'}.`, 429);
+  const { rows: [me] } = await pool.query('SELECT password_hash FROM users WHERE id=$1', [req.user.id]);
+  if (!me || !(await bcrypt.compare(String((req.body || {}).admin_password || ''), me.password_hash))) { failLogin(req.ip); throw bad('Your admin password is wrong.', 401); }
+  const { rows: [sl] } = await pool.query("SELECT id, username FROM users WHERE id=$1 AND role='seller'", [id]);
+  if (!sl) throw bad('Seller not found.', 404);
+  const { rows: [open] } = await pool.query("SELECT count(DISTINCT o.id)::int AS n FROM orders o JOIN order_items i ON i.order_id=o.id WHERE i.owner_id=$1 AND o.status IN ('pending','packed')", [id]);
+  if (open.n) throw bad(`${sl.username} still has ${open.n} open order${open.n === 1 ? '' : 's'}. Finish or cancel ${open.n === 1 ? 'it' : 'them'} first.`, 409);
+  const cash = await cashSummary({ id, role: 'seller' });
+  const unpaid = cash.unpaid.filter((o) => o.status === 'completed').reduce((t, o) => t + (o.shares[id] || 0), 0);
+  if (unpaid > 0.004) throw bad(`${peso(unpaid)} of ${sl.username}'s delivered orders is not marked paid yet. Mark them paid first.`, 409);
+  const names = await teamNames(), owed = cash.balances.filter((b) => b.from === id || b.to === id);
+  if (owed.length) throw bad('Settle up first: ' + owed.map((b) => b.from === id ? `${sl.username} owes ${names.get(b.to)} ${peso(b.amount)}` : `${names.get(b.from)} owes ${sl.username} ${peso(b.amount)}`).join('; ') + '.', 409);
+  const c = await pool.connect();
+  try {
+    await c.query('BEGIN');
+    // Other sellers' combos that use her products would lose parts, so switch them off instead of leaving them broken.
+    const off = await c.query('UPDATE combos SET is_active=false WHERE owner_id IS DISTINCT FROM $1 AND is_active AND id IN (SELECT combo_id FROM combo_items WHERE product_id IN (SELECT id FROM products WHERE owner_id=$1))', [id]);
+    const combos = await c.query('DELETE FROM combos WHERE owner_id=$1', [id]);
+    await c.query('DELETE FROM promo_codes WHERE owner_id=$1', [id]);
+    const prods = await c.query('DELETE FROM products WHERE owner_id=$1', [id]);
+    await c.query('UPDATE order_items SET owner_id=$1 WHERE owner_id=$2', [req.user.id, id]); // past sales stay in the history
+    await c.query('UPDATE orders SET paid_by=$1 WHERE paid_by=$2', [req.user.id, id]);
+    await c.query('DELETE FROM users WHERE id=$1', [id]);
+    await c.query('COMMIT');
+    notify(`Split off from ${sl.username}: ${prods.rowCount} products removed.`);
+    res.json({ products: prods.rowCount, combos: combos.rowCount, switched_off: off.rowCount });
+  } catch (e) {
+    await c.query('ROLLBACK');
+    throw e;
+  } finally {
+    c.release();
+  }
+}));
+
 /* ---------- Promo codes and settings ---------- */
 app.get('/api/promos/check', auth, wrap(async (req, res) => {
   const p = await checkPromo(pool, req.query.code, req.user.id);
@@ -1187,7 +1189,7 @@ app.get('/api/settings', wrap(async (req, res) => {
   const { rows } = await pool.query('SELECT key,value FROM settings');
   const o = Object.fromEntries(rows.map((r) => [r.key, r.value]));
   const { rows: [m] } = await pool.query("SELECT id FROM users WHERE role='admin' ORDER BY id LIMIT 1"); // raven: his products are pinned to the top of the shop
-  res.json({ banner: o.banner || '', stamp_reward: o.stamp_reward || 'a free snack', main_owner_id: m ? m.id : null, order_cutoff: o.order_cutoff || '', after_cutoff: o.after_cutoff === 'closed' ? 'closed' : 'tomorrow', order_window: await orderWindow(pool) });
+  res.json({ banner: o.banner || '', stamp_reward: o.stamp_reward || 'a free snack', main_owner_id: m ? m.id : null, edit_window: o.edit_window === undefined || o.edit_window === '' ? 10 : Number(o.edit_window), order_cutoff: o.order_cutoff || '', after_cutoff: o.after_cutoff === 'closed' ? 'closed' : 'tomorrow', order_window: await orderWindow(pool) });
 }));
 
 app.put('/api/admin/settings', auth, admin, wrap(async (req, res) => {
@@ -1196,6 +1198,9 @@ app.put('/api/admin/settings', auth, admin, wrap(async (req, res) => {
   if (cut && !/^([01]\d|2[0-3]):[0-5]\d$/.test(cut)) throw bad('Cutoff time must look like 15:00.');
   await put('banner', req.body.banner);
   await put('stamp_reward', req.body.stamp_reward);
+  const ew = req.body.edit_window === undefined || req.body.edit_window === '' ? 10 : parseInt(req.body.edit_window);
+  if (!(ew >= 0 && ew <= 120)) throw bad('Change window must be 0 to 120 minutes.');
+  await put('edit_window', String(ew));
   await put('order_cutoff', cut);
   await put('after_cutoff', req.body.after_cutoff === 'closed' ? 'closed' : 'tomorrow');
   res.json({ ok: true });
@@ -1413,7 +1418,6 @@ const PORT = process.env.PORT || 3000;
 init()
   .then(ensureCustomRequests)
   .then(ensureCategory)
-  .then(ensurePinned)
   .then(ensureCombos)
   .then(ensureShop)
   .then(ensureOwners)
