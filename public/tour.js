@@ -23,7 +23,7 @@
       x: 'New here? Pick a username (letters, numbers or _) and a password of 8+ characters, then press Create account. Already registered? Type your details and press Log in.',
       target: () => $('[data-mode="signup"]', dlg), wait: loggedIn },
     { when: loggedIn, t: 'You are logged in', x: 'Your name now shows in the top bar. Press Log out there when you are finished, and use Log in next time with the same username and password.', target: () => $('#nav .pill, #acct .pill') },
-    { when: () => !!firstAdd() || cartCount() > 0, t: 'Add something to your cart', x: 'Press Add to cart on any product.', target: firstAdd, wait: () => cartCount() > 0 },
+    { when: () => !!firstAdd() || cartCount() > 0, t: 'Add something to your cart', x: 'Tap the round + button on any product.', target: firstAdd, wait: () => cartCount() > 0 },
     { t: 'Open your cart', x: 'Click Cart in the top bar to see what you picked.', target: () => $('[data-act="cart"]'), wait: cartOpen },
     { t: 'Place your order', x: 'Check the items and total. Press Place order to send it to the shop (this is a real order). Or press Next to carry on without ordering.',
       target: () => $('[data-act="checkout"]', dlg), wait: onOrders },
