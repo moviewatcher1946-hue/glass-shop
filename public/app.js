@@ -109,7 +109,7 @@ function renderNav() {
 const productCard = (p) => {
   const off = Number(p.discount_percent) || 0;
   return `
-    <article class="card glass"${isRaven() ? ` data-pid="${p.id}" data-drag="1" style="user-select:none;-webkit-user-select:none;-webkit-touch-callout:none"` : ''}>
+    <article class="card glass">
       <div class="img">${p.image_url ? `<img loading="lazy" src="${esc(p.image_url)}" alt="${esc(p.title)}">` : ''}
         ${p.is_sold_out ? '<span class="badge">Sold out</span>' : ''}${off ? `<span class="badge off">-${off}% OFF</span>` : ''}</div>
       <h3>${esc(p.title)}</h3><p>${esc(p.description)}</p>
@@ -147,12 +147,10 @@ const shuffled = (list, keyOf) => [...list].sort((a, b) => rank(keyOf(a)) - rank
 const PINNED = 3;
 const shuffledPinned = (list) => {
   const mix = shuffled(list, (p) => 'p' + p.id);
-  // Pinned products sit in the slot Raven chose; every other product (his and sellers') fills the gaps in random order.
-  const rest = mix.filter((p) => !p.pinned), out = new Array(mix.length).fill(null);
-  mix.filter((p) => p.pinned).sort((x, y) => x.pin_pos - y.pin_pos).forEach((p) => {
-    let i = Math.min(Math.max(p.pin_pos, 1), out.length) - 1; while (out[i]) i = (i + 1) % out.length; out[i] = p;
-  });
-  return out.map((x) => x || rest.shift());
+  const mine = mix.filter((p) => settings.main_owner_id != null && p.owner_id === settings.main_owner_id)
+    .sort((a, b) => Number(!!a.is_sold_out) - Number(!!b.is_sold_out)); // stable: keeps the random order among equals
+  const top = mine.slice(0, PINNED);
+  return [...top, ...mix.filter((p) => !top.includes(p))];
 };
 function fillGrid() {
   const el = $('#grid');
@@ -176,7 +174,7 @@ function orderNote() {
   const w = settings.order_window; if (!w || !w.cutoff) return '';
   const t = fmtTime(w.cutoff);
   return w.closed ? `Orders are closed for today (they stopped at ${t}). Come back tomorrow!`
-    : w.label === 'tomorrow' ? `It's past ${t}, so new orders will be packed tomorrow.`
+    : w.label === 'tomorrow' ? `It's past ${t}, so new orders will be delivered tomorrow.`
     : `Order before ${t} to get it delivered today. Orders after that go out tomorrow.`;
 }
 function fillBanner() {
@@ -197,13 +195,12 @@ function renderShop() {
 
 const productTable = () => `<table>${products.map((p) => {
   const mine = canEdit(p.owner_id);
-  return `<tr data-pid="${p.id}">
+  return `<tr>
     <td>${mine ? `<input type="checkbox" class="pick" value="${p.id}" ${selected.has(p.id) ? 'checked' : ''}>` : ''}</td>
     <td>${p.image_url ? `<img class="thumb" src="${esc(p.image_url)}" alt="">` : ''}</td>
     <td><b>${esc(p.title)}</b><br>${money(p.price)}${p.discount_percent ? ` (-${p.discount_percent}%)` : ''}${bulkOn(p) ? ` | Bulk: ${p.bulk_min}+ = -${p.bulk_percent}%` : ''} | ${CATS[p.category] || 'Snacks'}${mine && costMap[p.id] != null ? ` | Profit ${money(fin(p) - Number(costMap[p.id]))} each` : ''}${p.stock != null ? ` | Stock: ${p.stock}${p.stock > 0 && p.stock <= LOW_STOCK ? ' (low!)' : ''}` : ''}${p.is_sold_out ? ' - sold out' : ''}${ownerName(p.owner_id) ? ` | by ${esc(ownerName(p.owner_id))}` : ''}</td>
     <td>${mine ? `<div class="actions">
       <button data-act="edit" data-id="${p.id}">Edit</button>
-      ${isRaven() ? `<button data-act="pin" data-id="${p.id}">${p.pinned ? 'Unpin' : 'Pin'}</button>${p.pinned ? `<button data-act="moveup" data-id="${p.id}">&uarr;</button><button data-act="movedown" data-id="${p.id}">&darr;</button>` : ''}` : ''}
       <button data-act="toggle" data-id="${p.id}">${p.is_sold_out ? 'Mark available' : 'Mark sold out'}</button>
       <button class="danger" data-act="delete" data-id="${p.id}">Delete</button></div>` : '<span class="muted">View only</span>'}</td></tr>`;
 }).join('')}</table>`;
@@ -268,7 +265,6 @@ const orderCard = (o) => `
       ${orderLines(o)}
       ${partsLine(o)}
       ${o.note ? `<p class="muted" style="margin:8px 0 0">Note: ${esc(o.note)}</p>` : ''}
-      ${o.status === 'cancelled' && o.cancel_reason ? `<p class="muted" style="margin:8px 0 0">Cancel reason: ${esc(o.cancel_reason)}</p>` : ''}
       <div class="actions" style="margin-top:12px">${adminBtns(o)}${paidBtn(o)}<button data-act="print-order" data-id="${o.id}">Print receipt</button>${o.user_id ? `<button class="danger" data-act="cust-block" data-id="${o.user_id}" data-name="${esc(o.username)}">Block customer</button>` : ''}</div>
     </section>`;
 
@@ -545,7 +541,7 @@ async function refreshSellers() {
   const el = $('#sellerlist');
   if (el) el.innerHTML = sellers.length ? `<table>${sellers.map((x) => `<tr><td><b>${esc(x.username)}</b></td>
     <td><div class="actions"><button data-act="seller-rename" data-id="${x.id}">Rename</button><button data-act="seller-pw" data-id="${x.id}">New password</button>
-    <button class="danger" data-act="seller-del" data-id="${x.id}">Remove</button></div></td></tr>`).join('')}</table>` : '<p>No sellers yet.</p>';
+    <button class="danger" data-act="seller-del" data-id="${x.id}">Remove</button><button class="danger" data-act="seller-split" data-id="${x.id}" data-name="${esc(x.username)}">Split off</button></div></td></tr>`).join('')}</table>` : '<p>No sellers yet.</p>';
   const ob = $('#ownerbox');
   if (ob) {
     const cur = ob.querySelector('select') ? ob.querySelector('select').value : '';
@@ -579,60 +575,6 @@ function drawAttention() {
   if (el.dataset.h !== html) { el.dataset.h = html; el.innerHTML = html; } // only redraw on a change, so the pop-in doesn't replay every refresh
 }
 async function refreshCosts() { costMap = await api('/api/admin/costs'); fillProducts(); }
-const DASH_CSS = `
-.dash{display:grid;gap:14px}.dash h2{margin:0}.dash .sub{color:var(--muted);margin:2px 0 0;font-size:.95em}
-.dash .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
-.dash .stat{display:flex;gap:12px;align-items:center;padding:14px;border-radius:16px;background:var(--glass);border:1px solid var(--border);box-shadow:var(--shadow)}
-.dash .ico{width:44px;height:44px;border-radius:12px;display:grid;place-items:center;font-size:22px;flex:none}
-.dash .stat b{display:block;font-size:1.35em;line-height:1.2;word-break:break-word}.dash .stat span{color:var(--muted);font-size:.85em}
-.dash .box{padding:16px;border-radius:16px;background:var(--glass);border:1px solid var(--border);box-shadow:var(--shadow)}
-.dash .box h3{margin:0 0 12px;font-size:1.05em}.dash .two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
-.dash .donut{display:flex;align-items:center;gap:18px;flex-wrap:wrap;justify-content:center}.dash .donut svg{width:160px;height:160px;flex:none}
-.dash .leg div{display:flex;align-items:center;gap:8px;margin:5px 0}.dash .dot{width:12px;height:12px;border-radius:50%;flex:none}
-.dash .bar{margin:10px 0}.dash .bar .t{display:flex;justify-content:space-between;gap:8px;font-size:.92em;margin-bottom:4px}
-.dash .bar .t span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.dash .track{height:10px;border-radius:99px;background:var(--border);overflow:hidden}.dash .fill{height:100%;border-radius:99px;background:linear-gradient(90deg,var(--acc),var(--acc2))}
-.dash .row{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--border)}.dash .row:first-of-type{border-top:0}
-.dash .row small{color:var(--muted);display:block}.dash .pill{padding:3px 10px;border-radius:99px;font-size:.8em;font-weight:600;color:#fff;text-transform:capitalize;white-space:nowrap}
-.dash .empty{color:var(--muted);text-align:center;margin:8px 0}
-@media(max-width:700px){.dash .two{grid-template-columns:1fr}.dash .stats{grid-template-columns:1fr 1fr}.dash .stat{padding:12px;gap:10px}.dash .ico{width:38px;height:38px;font-size:19px}}
-@media(max-width:380px){.dash .stats{grid-template-columns:1fr}}`;
-const STATUS_COL = { pending: '#f59e0b', packed: '#3b82f6', completed: '#10b981', cancelled: '#ef4444' };
-function donut(list) {
-  const tot = list.reduce((s, x) => s + x.n, 0);
-  if (!tot) return '<p class="empty">No orders yet. They will show up here.</p>';
-  let off = 0; const R = 15.9155;
-  const arcs = list.map((x) => { const len = x.n / tot * 100, c = `<circle r="${R}" cx="21" cy="21" fill="none" stroke="${STATUS_COL[x.status] || '#999'}" stroke-width="5.5" stroke-dasharray="${len} ${100 - len}" stroke-dashoffset="${25 - off}"/>`; off += len; return c; }).join('');
-  return `<div class="donut"><svg viewBox="0 0 42 42"><circle r="${R}" cx="21" cy="21" fill="none" stroke="var(--border)" stroke-width="5.5"/>${arcs}<text x="21" y="21" text-anchor="middle" font-size="7" font-weight="700" fill="currentColor">${tot}</text><text x="21" y="26" text-anchor="middle" font-size="2.6" fill="currentColor" opacity=".6">orders</text></svg>
-    <div class="leg">${list.map((x) => `<div><span class="dot" style="background:${STATUS_COL[x.status] || '#999'}"></span><span style="text-transform:capitalize">${esc(x.status)}</span> <b>${x.n}</b></div>`).join('')}</div></div>`;
-}
-async function refreshDash() {
-  const d = await api('/api/admin/dashboard'), b = $('#dashbox'); if (!b) return;
-  if (!document.getElementById('dash-css')) document.head.insertAdjacentHTML('beforeend', `<style id="dash-css">${DASH_CSS}</style>`);
-  const stat = (ico, bg, v, k) => `<div class="stat"><div class="ico" style="background:${bg}22">${ico}</div><div><b>${v}</b><span>${k}</span></div></div>`;
-  const max = Math.max(1, ...d.top.map((t) => t.qty));
-  b.innerHTML = `<div class="dash">
-    <div><h2>Dashboard</h2><p class="sub">A quick look at how your shop is doing.</p></div>
-    <div class="stats">
-      ${stat('💰', '#10b981', money(d.orders.revenue), 'Total earned (finished orders)')}
-      ${stat('📅', '#7c3aed', money(d.orders.today), 'Earned today')}
-      ${stat('🛒', '#f59e0b', d.orders.open, 'Orders waiting')}
-      ${stat('✅', '#10b981', d.orders.done, 'Orders finished')}
-      ${stat('📦', '#3b82f6', d.products.total, 'Products in shop')}
-      ${stat('📌', '#e11d74', d.products.pinned, 'Pinned products')}
-      ${stat('🚫', '#ef4444', d.products.sold_out, 'Sold out')}
-      ${stat('🙋', '#7c3aed', d.users.customers, 'Customers')}
-      ${stat('🏪', '#f59e0b', d.users.sellers, 'Sellers')}
-    </div>
-    <div class="two">
-      <div class="box"><h3>Orders at a glance</h3>${donut(d.statuses)}</div>
-      <div class="box"><h3>Best sellers</h3>${d.top.map((t) => `<div class="bar"><div class="t"><span>${esc(t.title)}</span><b>${t.qty} sold</b></div><div class="track"><div class="fill" style="width:${Math.round(t.qty / max * 100)}%"></div></div></div>`).join('') || '<p class="empty">Nothing sold yet.</p>'}</div>
-    </div>
-    <div class="two">
-      <div class="box"><h3>Sellers</h3>${d.people.map((r) => `<div class="row"><div><b>${esc(r.username)}</b><small>${r.open} open order${r.open == 1 ? '' : 's'}</small></div><div style="text-align:right"><b>${money(r.income)}</b><small>earned of ${money(r.gross)} sold</small></div></div>`).join('') || '<p class="empty">No sellers yet.</p>'}</div>
-      <div class="box"><h3>Latest orders</h3>${d.recent.map((r) => `<div class="row"><div><b>#${r.id} · ${esc(r.username)}</b><small>${money(r.total)}</small></div><span class="pill" style="background:${STATUS_COL[r.status] || '#999'}">${esc(r.status)}</span></div>`).join('') || '<p class="empty">No orders yet.</p>'}</div>
-    </div></div>`;
-}
 async function refreshReport() { repData = await api('/api/admin/report?days=30'); drawReport(); }
 function drawReport() {
   const el = $('#reportbox'); if (!el || !repData) return;
@@ -701,7 +643,7 @@ function renderAdmin() {
   adminHtml = ''; customAdminHtml = '';
   const tab = (id, label, extra = '') =>
     `<button id="tab-${id}" class="${adminTab === id ? 'primary' : ''}" data-act="admintab" data-tab="${id}">${label}${extra}</button>`;
-  const tabs = `<div class="tabs">${isRaven() ? tab('dashboard', 'Dashboard') : ''}${tab('products', 'Products')}${tab('orders', 'Orders', pendingCount ? ` (${pendingCount})` : '')}${tab('custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : '')}${tab('cash', 'Cash')}${tab('report', 'Report')}${tab('combos', 'Combos')}${tab('promos', 'Promos')}${tab('customers', 'Customers')}${isRaven() ? tab('sellers', 'Sellers') + tab('backup', 'Backup') : tab('alerts', 'Alerts')}</div>`;
+  const tabs = `<div class="tabs">${tab('products', 'Products')}${tab('orders', 'Orders', pendingCount ? ` (${pendingCount})` : '')}${tab('custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : '')}${tab('cash', 'Cash')}${tab('report', 'Report')}${tab('combos', 'Combos')}${tab('promos', 'Promos')}${tab('customers', 'Customers')}${isRaven() ? tab('sellers', 'Sellers') + tab('backup', 'Backup') : tab('alerts', 'Alerts')}</div>`;
   const productsView = `
     <section class="panel glass">
       <h2 id="form-title">Add a product</h2>
@@ -771,8 +713,9 @@ function renderAdmin() {
       <form id="settings-form">
         <label>Text shown at the top of the shop (leave empty to hide)</label><input name="banner" maxlength="200" value="${esc(settings.banner)}">
         <label>Stamp card reward (earned after every 10 completed orders)</label><input name="stamp_reward" maxlength="80" value="${esc(settings.stamp_reward)}">
+        <label>Customers can change an order for this many minutes after placing it (0 = off)</label><input name="edit_window" type="number" min="0" max="120" step="1" value="${settings.edit_window ?? 10}">
         <label>Order cutoff time (orders after this are for tomorrow; leave empty for no cutoff)</label><input name="order_cutoff" type="time" value="${esc(settings.order_cutoff || '')}">
-        <label>After the cutoff</label><select name="after_cutoff"><option value="tomorrow" ${settings.after_cutoff !== 'closed' ? 'selected' : ''}>receive orders for tomorrow packing</option><option value="closed" ${settings.after_cutoff === 'closed' ? 'selected' : ''}>Stop taking orders</option></select>
+        <label>After the cutoff</label><select name="after_cutoff"><option value="tomorrow" ${settings.after_cutoff !== 'closed' ? 'selected' : ''}>Accept orders for tomorrow</option><option value="closed" ${settings.after_cutoff === 'closed' ? 'selected' : ''}>Stop taking orders</option></select>
         <button class="primary" type="submit">Save</button>
       </form>
     </section>` : ''}
@@ -824,7 +767,7 @@ function renderAdmin() {
   const customersView = `<h2>Customers</h2>
     <p class="muted">Block people who abuse the shop (fake orders, not showing up). ${isRaven() ? 'Your block covers the whole shop.' : 'Your block stops them ordering your items only.'} The list shows the most cancelled orders first.</p>
     <div id="custlist"><p>Loading...</p></div>`;
-  $('#app').innerHTML = tabs + '<div id="attn"></div><div id="adminnotes"></div>' + (adminTab === 'dashboard' && isRaven() ? '<div id="dashbox"><p>Loading...</p></div>' : adminTab === 'report' ? reportView : adminTab === 'cash' ? cashView : adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'alerts' && !isRaven() ? alertsView : adminTab === 'combos' ? combosView : adminTab === 'promos' ? promosView : adminTab === 'customers' ? customersView : productsView);
+  $('#app').innerHTML = tabs + '<div id="attn"></div><div id="adminnotes"></div>' + (adminTab === 'report' ? reportView : adminTab === 'cash' ? cashView : adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'alerts' && !isRaven() ? alertsView : adminTab === 'combos' ? combosView : adminTab === 'promos' ? promosView : adminTab === 'customers' ? customersView : productsView);
   fillProducts();
   comboAdminHtml = ''; refreshAdminCombos().catch(() => {});
   promoAdminHtml = ''; refreshAdminPromos().catch(() => {});
@@ -835,7 +778,6 @@ function renderAdmin() {
   refreshTeam().catch(() => {});
   if (adminTab === 'cash') refreshCash().catch(() => {});
   if (adminTab === 'report') refreshReport().catch(() => {});
-  if (adminTab === 'dashboard' && isRaven()) refreshDash().catch(() => {});
   refreshCosts().catch(() => {});
   refreshAttention().catch(() => {});
   if (isRaven() && adminTab === 'backup') refreshBackup().catch(() => {});
@@ -852,6 +794,9 @@ async function loadMine() {
   return orders;
 }
 
+// Change order: allowed for a few minutes while the order is still pending (orders with combos can only be cancelled).
+const changeLeft = (o) => Math.ceil((new Date(o.created_at).getTime() + Number(settings.edit_window ?? 10) * 60000 - Date.now()) / 60000);
+const canChange = (o) => o.status === 'pending' && Number(settings.edit_window ?? 10) > 0 && changeLeft(o) > 0 && (o.items || []).length > 0 && (o.items || []).every((i) => i.product_id);
 async function fillMine() {
   const el = $('#mine');
   const orders = await loadMine();
@@ -868,10 +813,11 @@ async function fillMine() {
       <div class="between"><b>Order #${o.id}</b><span class="pill st-${o.status}">${STATUS[o.status] || esc(o.status)}</span></div>
       <p class="muted" style="margin:2px 0 10px">${new Date(o.created_at).toLocaleString()}</p>
       ${o.status === 'packed' ? '<p class="ready">Your order is packed and ready!</p>' : ''}
-      ${o.status === 'cancelled' && o.cancel_reason ? `<p style="margin:8px 0 0;padding:10px 12px;border-radius:12px;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.35)"><b>Order cancelled:</b> ${esc(o.cancel_reason)}</p>` : ''}
       ${orderLines(o)}
       ${o.note ? `<p class="muted" style="margin:8px 0 0">Your note: ${esc(o.note)}</p>` : ''}
+      ${canChange(o) ? `<p class="muted" style="margin:8px 0 0">You can change this order for ${changeLeft(o)} more minute${changeLeft(o) === 1 ? '' : 's'}.</p>` : ''}
       <div class="actions" style="margin-top:12px">
+        ${canChange(o) ? `<button class="primary" data-act="change" data-id="${o.id}">Change order</button>` : ''}
         ${o.status === 'pending' ? `<button class="danger" data-act="cancel" data-id="${o.id}">Cancel order</button>` : ''}
         ${(o.items || []).some((i) => i.product_id) ? `<button data-act="reorder" data-id="${o.id}">Order again</button>` : ''}
       </div>
@@ -951,54 +897,6 @@ async function loadProductsQuiet() {
   [products, combos, settings] = got || await Promise.all([api('/api/products'), api('/api/combos'), api('/api/settings')]);
   sig = JSON.stringify([products, combos, settings]);
 }
-// Slides rows smoothly to their new place (FLIP): remember positions, reload, then animate from old to new.
-async function flip(change, movedId) {
-  const tops = () => new Map([...document.querySelectorAll('[data-pid]')].map((r) => { const b = r.getBoundingClientRect(); return [r.dataset.pid, [b.left, b.top]]; }));
-  const before = tops();
-  await change();
-  await loadProducts();
-  document.querySelectorAll('[data-pid]').forEach((r) => {
-    const was = before.get(r.dataset.pid); if (was == null) return;
-    const b = r.getBoundingClientRect(), dx = was[0] - b.left, dy = was[1] - b.top; if (!dx && !dy) return;
-    r.style.transition = 'none'; r.style.transform = `translate(${dx}px,${dy}px)`; r.style.position = 'relative'; r.style.zIndex = r.dataset.pid === String(movedId) ? 2 : 1;
-    requestAnimationFrame(() => requestAnimationFrame(() => { r.style.transition = 'transform .35s ease'; r.style.transform = ''; }));
-  });
-}
-const moveAnimated = (id, dir) => flip(() => api(`/api/admin/products/${id}/move`, { method: 'PATCH', json: { dir } }), id);
-// Press and hold any product (admin list row or shop card, mouse or finger), drag it, let go where you want it (Raven only).
-let drag = null;
-document.addEventListener('touchmove', (e) => { if (drag) e.preventDefault(); }, { passive: false });
-document.addEventListener('dragstart', (e) => { if (e.target.closest && e.target.closest('[data-drag]')) e.preventDefault(); });
-document.addEventListener('pointerdown', (e) => {
-  const r = e.target.closest && e.target.closest('[data-drag]');
-  if (!r || e.target.closest('button,input,a,select,textarea')) return;
-  const sx = e.clientX, sy = e.clientY;
-  const cancel = () => { clearTimeout(t); document.removeEventListener('pointermove', early); document.removeEventListener('pointerup', cancel); document.removeEventListener('pointercancel', cancel); };
-  const early = (ev) => { if (Math.abs(ev.clientX - sx) + Math.abs(ev.clientY - sy) > 10) cancel(); };
-  const t = setTimeout(() => { cancel(); startDrag(r, sx, sy); }, 350);
-  document.addEventListener('pointermove', early); document.addEventListener('pointerup', cancel); document.addEventListener('pointercancel', cancel);
-});
-function startDrag(r, sx, sy) {
-  drag = r; r.style.transition = 'none'; r.style.position = 'relative'; r.style.zIndex = 5; r.style.opacity = '.8'; r.style.boxShadow = '0 8px 24px rgba(0,0,0,.35)';
-  if (navigator.vibrate) navigator.vibrate(20);
-  const move = (e) => { r.style.transform = `translate(${e.clientX - sx}px,${e.clientY - sy}px)`; };
-  const end = async (e) => {
-    document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', end); document.removeEventListener('pointercancel', end);
-    const id = r.dataset.pid, row = r.tagName === 'TR';
-    const all = [...document.querySelectorAll('[data-drag]')], before = all.map((x) => x.dataset.pid);
-    const scope = r.closest('.grid, table'), near = [...scope.querySelectorAll('[data-drag]')].filter((x) => x !== r)
-      .map((x) => { const b = x.getBoundingClientRect(), cx = b.left + b.width / 2, cy = b.top + b.height / 2; return { x, b, cx, cy, d: Math.hypot(e.clientX - cx, e.clientY - cy) }; }).sort((p, q) => p.d - q.d)[0];
-    r.style.transform = ''; r.style.opacity = ''; r.style.boxShadow = ''; drag = null;
-    if (!near) return;
-    const first = row ? e.clientY < near.cy : e.clientY < near.b.top ? true : e.clientY > near.b.bottom ? false : e.clientX < near.cx;
-    const ids = [...scope.querySelectorAll('[data-drag]')].map((x) => x.dataset.pid).filter((x) => x !== id);
-    const orig = [...scope.querySelectorAll('[data-drag]')].map((x) => x.dataset.pid);
-    ids.splice(ids.indexOf(near.x.dataset.pid) + (first ? 0 : 1), 0, id);
-    if (ids.join() === orig.join()) return;
-    await flip(() => api('/api/admin/products/' + id + '/slot', { method: 'PUT', json: { pos: ids.indexOf(id) + 1 } }), id).catch((err) => toast(err.message));
-  };
-  document.addEventListener('pointermove', move); document.addEventListener('pointerup', end); document.addEventListener('pointercancel', end);
-}
 async function loadProducts() {
   await loadProductsQuiet();
   render();
@@ -1034,39 +932,12 @@ function changePwDialog() {
   if (!$('#dlg').open) $('#dlg').showModal();
 }
 function authDialog() {
-  const box = 'padding:12px;border-radius:14px;background:rgba(127,127,127,.12);margin-top:12px';
-  $('#dlg').innerHTML = `<h2 style="margin-bottom:4px">&#128075; Welcome!</h2>
-    <p class="muted" style="margin:0 0 6px;font-size:1.05em">Type your name and a password. Then press one of the big buttons.</p>
-    <form data-form="auth">
-      <label style="font-size:1.05em"><b>1.</b> Your name</label>
-      <input name="username" required autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="Example: maria" style="font-size:1.15rem;padding:14px">
-      <small class="muted">Pick any name you like. You will use it every time.</small>
-      <label style="font-size:1.05em;margin-top:10px"><b>2.</b> Your password</label>
-      <input name="password" id="authpw" type="password" required autocomplete="current-password" placeholder="At least 8 letters or numbers" style="font-size:1.15rem;padding:14px">
-      <label style="display:flex;align-items:center;gap:8px;font-size:1em;margin:6px 0 0"><input type="checkbox" onchange="document.getElementById('authpw').type=this.checked?'text':'password'" style="width:22px;height:22px"> Show my password</label>
-      <small class="muted">Tip: write your password somewhere safe so you do not forget it.</small>
-      <div style="${box}"><b>Been here before?</b><br><button class="primary" data-mode="login" style="width:100%;font-size:1.15rem;padding:14px;margin-top:8px">&#9989; Log in</button></div>
-      <div style="${box}"><b>First time here?</b><br><button data-mode="signup" style="width:100%;font-size:1.15rem;padding:14px;margin-top:8px">&#10024; Create my account</button></div>
-      <button type="button" data-act="close" style="width:100%;margin-top:12px">Maybe later</button></form>
-    <details open style="${box}"><summary style="cursor:pointer;font-size:1.05em"><b>&#10024; I do not have an account yet. What do I do?</b></summary>
-      <ol style="margin:10px 0 0;padding-left:22px;line-height:1.6">
-        <li>Type a <b>name</b> you like in box 1.</li>
-        <li>Type a <b>password</b> in box 2. Use at least 8 letters or numbers.</li>
-        <li>Press <b>Create my account</b>. Done! You are inside.</li>
-      </ol></details>
-    <details style="${box}"><summary style="cursor:pointer;font-size:1.05em"><b>&#9989; I already have an account. How do I get in?</b></summary>
-      <ol style="margin:10px 0 0;padding-left:22px;line-height:1.6">
-        <li>Type the <b>same name</b> you used before in box 1.</li>
-        <li>Type your <b>password</b> in box 2. Tick "Show my password" to check it.</li>
-        <li>Press <b>Log in</b>.</li>
-      </ol>
-      <p class="muted" style="margin:8px 0 0">Forgot your password? Ask the shop owner to help you.</p></details>
-    <details style="${box}"><summary style="cursor:pointer;font-size:1.05em"><b>&#128722; What happens after I log in?</b></summary>
-      <ol style="margin:10px 0 0;padding-left:22px;line-height:1.6">
-        <li>Press <b>Add to cart</b> on the things you want.</li>
-        <li>Open your <b>Cart</b> and press the button to order.</li>
-        <li>Watch <b>My orders</b> to see when your order is ready.</li>
-      </ol></details>`;
+  $('#dlg').innerHTML = `<h2>Welcome</h2><form data-form="auth">
+    <label>Username</label><input name="username" required autocomplete="username">
+    <label>Password (8+ characters to sign up)</label><input name="password" type="password" required autocomplete="current-password">
+    <button class="primary" data-mode="login">Log in</button>
+    <button data-mode="signup">Create account</button>
+    <button type="button" data-act="close">Cancel</button></form>`;
   $('#dlg').showModal();
 }
 // Splits a combo's price between the sellers whose products are in it (by value), like the server does.
@@ -1164,6 +1035,17 @@ const actions = {
     promo = await api('/api/promos/check?code=' + encodeURIComponent(code));
     cartDialog(); toast(`${promo.percent}% off applied.`);
   },
+  change: async (id) => {
+    const o = myOrders.find((x) => x.id == id); if (!o) return;
+    if (!confirm('Change this order? It will be cancelled and its items put back in your cart so you can edit them and place it again.')) return;
+    await api(`/api/orders/${id}/cancel`, { method: 'PATCH', json: { change: true } });
+    await loadProductsQuiet(); // the cancel gave the stock back
+    let skipped = 0;
+    (o.items || []).forEach((i) => { const p = products.find((x) => x.id == i.product_id); if (p && !p.is_sold_out) cart[p.id] = Math.min(99, (cart[p.id] || 0) + i.quantity); else skipped++; });
+    saveCart(); await fillMine().catch(() => {});
+    toast(skipped ? 'Some items are no longer available.' : o.promo_code ? `Back in your cart. Re-enter promo ${o.promo_code}.` : 'Back in your cart. Edit it and place it again.');
+    cartDialog();
+  },
   reorder: (id) => {
     const o = myOrders.find((x) => x.id == id);
     let added = 0;
@@ -1185,6 +1067,14 @@ const actions = {
     const pw = prompt('New password for this seller (8+ characters):');
     if (!pw) return;
     await api(`/api/admin/sellers/${id}/password`, { method: 'PATCH', json: { password: pw } }); toast('Password changed.');
+  },
+  'seller-split': (id, d) => {
+    $('#dlg').innerHTML = `<h2>Split off from ${esc(d.name)}</h2>
+      <p>This <b>permanently deletes</b> all of ${esc(d.name)}'s products, combos and promo codes, and her account. Past orders stay in your history. Other sellers' combos that use her products are switched off.</p>
+      <p class="muted">It is refused while she has open orders or money is unsettled between you. Type your admin password to confirm.</p>
+      <form data-form="split" data-id="${id}"><label>Your admin password</label><input name="admin_password" type="password" required autocomplete="current-password">
+      <button class="danger">Split off for good</button><button type="button" data-act="close">Cancel</button></form>`;
+    $('#dlg').showModal();
   },
   'seller-del': async (id) => {
     if (!confirm('Remove this seller? Her products, combos and promos will become yours.')) return;
@@ -1294,12 +1184,8 @@ const actions = {
     await refreshCash(); toast('Recorded.');
   },
   setstatus: async (id, d) => {
-    let reason = '';
-    if (d.status === 'cancelled') {
-      reason = prompt('Why are you cancelling? The customer will see this.\nExample: Sorry, an item ran out of stock.', 'Sorry, an item ran out of stock.');
-      if (reason === null) return;
-    }
-    const r = await api(`/api/orders/${id}/status`, { method: 'PATCH', json: { status: d.status, reason } });
+    if (d.status === 'cancelled' && !confirm('Cancel this order?')) return;
+    const r = await api(`/api/orders/${id}/status`, { method: 'PATCH', json: { status: d.status } });
     const o0 = ordersCache.find((x) => x.id == id);
     if (d.status === 'completed' && o0 && !o0.paid_by && confirm('Did you collect the cash?\nOK = tick Paid. Cancel = not yet.')) {
       try { await api(`/api/orders/${id}/paid`, { method: 'PATCH', json: { paid: true } }); } catch (e) { toast(e.message); }
@@ -1344,9 +1230,6 @@ const actions = {
     const o = await api('/api/orders', { method: 'POST', json: { items, promo: promo ? promo.code : '', note: cartNote } });
     cart = {}; promo = null; cartNote = ''; saveCart(); $('#dlg').close(); toast(`Order #${o.id} placed.`); view = 'orders'; render();
   },
-  moveup: (id) => moveAnimated(id, 'up'),
-  movedown: (id) => moveAnimated(id, 'down'),
-  pin: async (id) => { await api(`/api/admin/products/${id}/pin`, { method: 'PATCH' }); await loadProducts(); },
   toggle: async (id) => { await api(`/api/products/${id}/sold-out`, { method: 'PATCH' }); await loadProducts(); },
   delete: async (id) => { if (confirm('Delete this product?')) { await api(`/api/products/${id}`, { method: 'DELETE' }); await loadProducts(); toast('Deleted.'); } },
   edit: (id) => {
@@ -1380,6 +1263,10 @@ document.addEventListener('submit', async (e) => {
     } else if (e.target.dataset.form === 'changepw') {
       const d = await api('/api/auth/change-password', { method: 'POST', json: Object.fromEntries(new FormData(e.target)) });
       setSession(d.token, d.user); forcePw = false; $('#dlg').close(); render(); toast('Password changed.');
+    } else if (e.target.dataset.form === 'split') {
+      const d = await api(`/api/admin/sellers/${e.target.dataset.id}/split-off`, { method: 'POST', json: Object.fromEntries(new FormData(e.target)) });
+      $('#dlg').close(); await refreshSellers(); await loadProducts();
+      toast(`Done. ${d.products} product${d.products === 1 ? '' : 's'} removed${d.switched_off ? `, ${d.switched_off} combo${d.switched_off === 1 ? '' : 's'} switched off` : ''}.`);
     } else if (e.target.dataset.form === 'reset') {
       const d = await api(`/api/admin/customers/${e.target.dataset.id}/reset-password`, { method: 'POST', json: Object.fromEntries(new FormData(e.target)) });
       $('#dlg').innerHTML = `<h2>Temporary password</h2><p>For <b>${esc(d.username)}</b>. It is shown <b>once</b>, works for 24 hours, and they must choose their own password when they log in.</p>
@@ -1535,6 +1422,7 @@ document.addEventListener('click', (e) => {
 });
 // The service worker is what lets Chrome treat the shop as an installable app, and keeps the shell opening if the signal drops.
 // app.js now loads after the startup animation, so the page's load event may already have fired.
+setInterval(() => { if (view === 'orders' && myOrders.some((o) => o.status === 'pending')) fillMine().catch(() => {}); }, 30000); // keeps the change-order countdown fresh
 if ('serviceWorker' in navigator) {
   const reg = () => navigator.serviceWorker.register('/sw.js').catch(() => {});
   if (document.readyState === 'complete') reg(); else window.addEventListener('load', reg);
