@@ -104,8 +104,17 @@ function renderNav() {
     (user ? `<span class="pill">${esc(user.username)}</span><button data-act="logout">Log out</button>`
           : '<button class="primary" data-act="auth">Log in / Sign up</button>');
   renderMobileNav();
+  updateCartBar();
 }
 
+// Floating cart bar: item count, total and a View cart button, shown on the shop page whenever the cart has something.
+function updateCartBar() {
+  let bar = $('#cartbar');
+  if (!bar) { bar = document.createElement('button'); bar.id = 'cartbar'; bar.dataset.act = 'cart'; bar.type = 'button'; document.body.appendChild(bar); }
+  const lines = cartLines(), n = lines.reduce((s, l) => s + l.q, 0), sub = lines.reduce((s, l) => s + l.price * l.q, 0);
+  bar.hidden = !n || view !== 'shop';
+  bar.innerHTML = `<span class="cb-n">${n}</span><span>View cart</span><b>${money(sub)}</b>`;
+}
 const productCard = (p) => {
   const off = Number(p.discount_percent) || 0;
   return `
@@ -116,7 +125,7 @@ const productCard = (p) => {
       ${bulkOn(p) ? `<p class="muted"><b>Buy ${p.bulk_min}+ and save ${p.bulk_percent}%</b></p>` : ''}
       ${!p.is_sold_out && p.stock != null && p.stock <= LOW_STOCK ? `<p class="muted"><b>Only ${p.stock} left</b></p>` : ''}
       <footer><span>${off ? `<span class="was">${money(p.price)}</span> ` : ''}<b>${money(fin(p))}</b></span>
-        <button class="primary" data-act="add" data-id="${p.id}" ${p.is_sold_out ? 'disabled' : ''}>Add to cart</button></footer>
+        <button class="primary add" data-act="add" data-id="${p.id}" aria-label="Add ${esc(p.title)} to cart" ${p.is_sold_out ? 'disabled' : ''}>+</button></footer>
     </article>`;
 };
 
@@ -132,7 +141,7 @@ const comboCard = (c) => {
       <h3>${esc(c.title)}</h3>
       <p>${c.items.map((x) => `${x.quantity}x ${esc(x.title)}`).join(', ')}${c.description ? ' - ' + esc(c.description) : ''}</p>
       <footer><span>${save > 0 ? `<span class="was">${money(regular)}</span> ` : ''}<b>${money(c.price)}</b></span>
-        <button class="primary" data-act="addcombo" data-id="${c.id}" ${out ? 'disabled' : ''}>Add to cart</button></footer>
+        <button class="primary add" data-act="addcombo" data-id="${c.id}" aria-label="Add ${esc(c.title)} to cart" ${out ? 'disabled' : ''}>+</button></footer>
     </article>`;
 };
 
@@ -183,14 +192,17 @@ function fillBanner() {
   el.innerHTML = (settings.banner ? `<div class="banner glass">${esc(settings.banner)}</div>` : '') + (n ? `<div class="banner glass">${esc(n)}</div>` : '');
 }
 
+const CAT_IC = { all: '\u2728', combos: '\u{1F381}', drinks: '\u{1F964}', snacks: '\u{1F37F}' };
 function renderShop() {
-  const chip = (id, label) => `<button class="${catFilter === id ? 'primary' : ''}" data-act="cat" data-cat="${id}">${label}</button>`;
-  $('#app').innerHTML = `<div id="banner"></div><div class="toolbar">
-      <input id="search" type="search" placeholder="Search products..." value="${esc(searchText)}" autocomplete="off">
-      <div class="chips">${chip('all', 'All')}${chip('combos', 'Combos')}${Object.entries(CATS).map(([id, label]) => chip(id, label)).join('')}</div>
-    </div><div id="grid"></div>`;
+  const tile = (id, label) => `<button class="tile${catFilter === id ? ' on' : ''}" data-act="cat" data-cat="${id}"><span class="ic">${CAT_IC[id] || '\u{1F37D}\uFE0F'}</span>${label}</button>`;
+  $('#app').innerHTML = `<section class="hero"><h2>What are you craving?</h2><p>Fresh drinks and snacks. Pay cash when it is handed to you.</p>
+      <input id="search" type="search" placeholder="Search snacks and drinks..." value="${esc(searchText)}" autocomplete="off"></section>
+    <div id="banner"></div>
+    <div class="cats">${tile('all', 'All')}${tile('combos', 'Combos')}${Object.entries(CATS).map(([id, label]) => tile(id, label)).join('')}</div>
+    <div id="grid"></div>`;
   fillBanner();
   fillGrid();
+  updateCartBar();
 }
 
 const productTable = () => `<table>${products.map((p) => {
@@ -563,15 +575,8 @@ function drawAttention() {
   const forTomorrow = today ? pend.filter((o) => o.deliver_for && o.deliver_for > today).length : 0, toPack = ordersCache.length || !pendingCount ? pend.length - forTomorrow : pendingCount;
   const low = myProducts().filter((p) => p.stock != null && p.stock <= LOW_STOCK).length;
   const owed = attnCash ? attnCash.unpaid.filter((o) => o.status === 'completed').reduce((t, o) => t + Object.values(o.shares).reduce((a, b) => a + b, 0), 0) : 0;
-  const chip = (tab, text, st = '') => `<button data-act="attn-go" data-tab="${tab}" ${st ? `data-st="${st}"` : ''}>${text}</button>`;
-  const chips = [
-    toPack ? chip('orders', `${toPack} order${toPack === 1 ? '' : 's'} to pack today`, 'pending') : '',
-    forTomorrow ? chip('orders', `${forTomorrow} for tomorrow`, 'pending') : '',
-    pendingCustom ? chip('custom', `${pendingCustom} custom request${pendingCustom === 1 ? '' : 's'} to answer`) : '',
-    owed > 0.004 ? chip('cash', `${money(owed)} delivered, not marked paid`) : '',
-    low ? chip('products', `${low} item${low === 1 ? '' : 's'} low or sold out`) : '',
-  ].join('');
-  const html = chips ? `<div class="attn">${chips}</div>` : '';
+  const card = (tab, big, label, on, st = '', hot = false) => `<button class="stat${on ? (hot ? ' hot' : ' on') : ''}" data-act="attn-go" data-tab="${tab}" ${st ? `data-st="${st}"` : ''}><b>${big}</b><span>${label}</span></button>`;
+  const html = `<div class="stats">${card('orders', toPack, 'to pack today', toPack > 0, 'pending', true)}${card('orders', forTomorrow, 'for tomorrow', forTomorrow > 0, 'pending')}${card('cash', money(owed), 'delivered, not marked paid', owed > 0.004)}${card('products', low, 'items low or sold out', low > 0)}${pendingCustom ? card('custom', pendingCustom, 'custom requests to answer', true) : ''}</div>`;
   if (el.dataset.h !== html) { el.dataset.h = html; el.innerHTML = html; } // only redraw on a change, so the pop-in doesn't replay every refresh
 }
 async function refreshCosts() { costMap = await api('/api/admin/costs'); fillProducts(); }
@@ -641,8 +646,9 @@ function drawCash() {
 
 function renderAdmin() {
   adminHtml = ''; customAdminHtml = '';
+  const TAB_IC = { products: '\u{1F6CD}\uFE0F', orders: '\u{1F4E6}', custom: '\u270F\uFE0F', cash: '\u{1F4B5}', report: '\u{1F4C8}', combos: '\u{1F381}', promos: '\u{1F3F7}\uFE0F', customers: '\u{1F465}', sellers: '\u{1F91D}', backup: '\u{1F4BE}', alerts: '\u{1F514}' };
   const tab = (id, label, extra = '') =>
-    `<button id="tab-${id}" class="${adminTab === id ? 'primary' : ''}" data-act="admintab" data-tab="${id}">${label}${extra}</button>`;
+    `<button id="tab-${id}" class="${adminTab === id ? 'primary' : ''}" data-act="admintab" data-tab="${id}"><span class="ti">${TAB_IC[id] || ''}</span>${label}${extra}</button>`;
   const tabs = `<div class="tabs">${tab('products', 'Products')}${tab('orders', 'Orders', pendingCount ? ` (${pendingCount})` : '')}${tab('custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : '')}${tab('cash', 'Cash')}${tab('report', 'Report')}${tab('combos', 'Combos')}${tab('promos', 'Promos')}${tab('customers', 'Customers')}${isRaven() ? tab('sellers', 'Sellers') + tab('backup', 'Backup') : tab('alerts', 'Alerts')}</div>`;
   const productsView = `
     <section class="panel glass">
@@ -797,6 +803,10 @@ async function loadMine() {
 // Change order: allowed for a few minutes while the order is still pending (orders with combos can only be cancelled).
 const changeLeft = (o) => Math.ceil((new Date(o.created_at).getTime() + Number(settings.edit_window ?? 10) * 60000 - Date.now()) / 60000);
 const canChange = (o) => o.status === 'pending' && Number(settings.edit_window ?? 10) > 0 && changeLeft(o) > 0 && (o.items || []).length > 0 && (o.items || []).every((i) => i.product_id);
+const tracker = (status) => {
+  const idx = { pending: 0, packed: 1, completed: 2 }[status] ?? 0;
+  return `<div class="track">${['Placed', 'Packed', 'Delivered'].map((l, i) => `<div class="st${i <= idx ? ' done' : ''}"><i>${i <= idx ? '\u2713' : i + 1}</i>${l}</div>`).join('')}</div>`;
+};
 async function fillMine() {
   const el = $('#mine');
   const orders = await loadMine();
@@ -812,6 +822,7 @@ async function fillMine() {
     <section class="panel glass">
       <div class="between"><b>Order #${o.id}</b><span class="pill st-${o.status}">${STATUS[o.status] || esc(o.status)}</span></div>
       <p class="muted" style="margin:2px 0 10px">${new Date(o.created_at).toLocaleString()}</p>
+      ${o.status !== 'cancelled' ? tracker(o.status) : ''}
       ${o.status === 'packed' ? '<p class="ready">Your order is packed and ready!</p>' : ''}
       ${orderLines(o)}
       ${o.note ? `<p class="muted" style="margin:8px 0 0">Your note: ${esc(o.note)}</p>` : ''}
@@ -991,6 +1002,7 @@ function cartDialog() {
     <p class="notice">Cash on delivery: you pay when your order is handed to you in class.</p>
     <button class="primary" data-act="checkout" ${lines.length ? '' : 'disabled'}>Place order</button>
     <button data-act="close">Close</button>`;
+  $('#dlg').dataset.kind = 'cart'; // desktop shows the cart as a side drawer, phones as a bottom sheet
   $('#dlg').showModal();
 }
 function quoteDialog(id) {
@@ -1318,7 +1330,8 @@ document.addEventListener('submit', async (e) => {
 
 // Close the dialog when clicking the dimmed backdrop
 $('#dlg').addEventListener('click', (e) => { if (e.target === $('#dlg') && !forcePw) $('#dlg').close(); });
-$('#dlg').addEventListener('cancel', (e) => { if (forcePw) e.preventDefault(); }); // Esc cannot skip the forced password change
+$('#dlg').addEventListener('cancel', (e) => { if (forcePw) e.preventDefault(); });
+$('#dlg').addEventListener('close', () => { delete $('#dlg').dataset.kind; }); // Esc cannot skip the forced password change
 
 document.addEventListener('input', (e) => { if (e.target.id === 'osearch') { ordSearch = e.target.value; drawOrders(); } });
 
