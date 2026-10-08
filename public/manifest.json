@@ -12,8 +12,8 @@
     "shopping",
     "food"
   ],
-  "background_color": "#f7f5ff",
-  "theme_color": "#7c3aed",
+  "background_color": "#fafafa",
+  "theme_color": "#fafafa",
   "icons": [
     {
       "src": "icon-192.png",
