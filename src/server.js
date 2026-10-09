@@ -7,7 +7,7 @@ const { promisify } = require('util');
 const zlib = require('zlib');
 const gzip = promisify(zlib.gzip), gunzip = promisify(zlib.gunzip);
 const { pool, init } = require('./db');
-const { sign, auth, admin, staff } = require('./auth');
+const { sign, auth, admin, staff, invalidateUser } = require('./auth');
 
 const app = express();
 const compression = require('compression');
@@ -15,12 +15,99 @@ const sharp = require('sharp');
 app.set('trust proxy', 1); // Render sits behind a proxy; this makes req.ip the visitor's real address
 // Gzip text responses (the JSON lists, HTML, CSS, JS) over 1 KB. Images are already compressed, so they are skipped. Same data, a fraction of the bytes; polling stays just as fresh.
 app.use(compression({ threshold: 1024 }));
-const json = express.json();
+// Small safety headers on everything.
+app.disable('x-powered-by');
+app.use((req, res, next) => {
+  res.set({ 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'same-origin', 'X-Frame-Options': 'SAMEORIGIN' });
+  next();
+});
+// "Revision": a counter that goes up whenever anything is changed through the API. Phones ask /api/rev (a few bytes) every few
+// seconds and only download the real lists when it moved. Same live feel as before, a fraction of the outbound traffic.
+// (One server process, which is what Render's free plan runs. After a restart the id changes, so every phone refreshes once.)
+let REV = 0;
+const BOOT_ID = Date.now().toString(36);
+app.use('/api', (req, res, next) => {
+  // Live data must never be kept by a shared cache; the browser may keep it only to ask "has this changed?" (304, no body).
+  res.set('Cache-Control', 'private, no-cache');
+  if (req.method !== 'GET' && req.method !== 'HEAD' && !req.path.startsWith('/auth/') && !req.path.startsWith('/favorites')) res.on('finish', () => { if (res.statusCode < 400) REV++; }); // logging in changes nothing anyone else sees
+  next();
+});
+/* ---------- Activity log (who changed what) ---------- */
+// Every successful change made by raven or a seller is written down: what, who, and the old value where it matters.
+// Passwords and other secrets are never written. The newest 5000 lines are kept.
+const money2 = (v) => (v === undefined || v === null || v === '' || isNaN(v) ? null : Number(v).toFixed(2));
+const brief = (b) => Object.entries(b || {}).filter(([k, v]) => !/pass|token|secret|data/i.test(k) && v !== undefined && v !== '')
+  .map(([k, v]) => `${k}: ${Array.isArray(v) ? `${v.length} items` : String(v).slice(0, 60)}`).join(', ');
+const SNAP = {
+  product: 'SELECT title, price, stock, discount_percent, category, cost, bulk_min, bulk_percent, is_sold_out FROM products WHERE id=$1',
+  combo: 'SELECT title FROM combos WHERE id=$1',
+  order: 'SELECT status FROM orders WHERE id=$1',
+  user: 'SELECT username FROM users WHERE id=$1',
+  promo: 'SELECT code FROM promo_codes WHERE id=$1',
+};
+const FIELDS = [['title', 'name'], ['price', 'price'], ['stock', 'stock'], ['discount_percent', 'discount %'], ['category', 'category'], ['cost', 'cost'], ['bulk_min', 'bulk min'], ['bulk_percent', 'bulk %']];
+const same = (a, b) => (a === null || a === undefined ? '' : String(a)) === (b === null || b === undefined ? '' : String(b)) || (a !== '' && b !== '' && a != null && b != null && !isNaN(a) && !isNaN(b) && Number(a) === Number(b));
+const AUDIT_RULES = [
+  { m: 'POST', re: /^\/products$/, f: (b) => ['Added a product', `${b.title} at ${money2(b.price)}${b.stock ? `, stock ${b.stock}` : ''}`] },
+  { m: 'PUT', re: /^\/products\/(\d+)$/, snap: 'product', f: (b, o) => {
+    const ch = o ? FIELDS.filter(([k]) => b[k] !== undefined && !same(o[k], b[k])).map(([k, l]) => `${l} ${o[k] ?? '-'} -> ${b[k] === '' ? '-' : b[k]}`) : [];
+    return ['Edited a product', `${o ? o.title : ''}: ${ch.join('; ') || 'description or photo'}`];
+  } },
+  { m: 'PATCH', re: /^\/products\/(\d+)\/sold-out$/, snap: 'product', f: (b, o) => ['Changed sold-out', `${o ? o.title : ''} (was ${o && o.is_sold_out ? 'sold out' : 'in stock'})`] },
+  { m: 'PATCH', re: /^\/products\/category$/, f: (b) => ['Moved products to another category', brief(b)] },
+  { m: 'PATCH', re: /^\/products\/discount$/, f: (b) => ['Changed discounts on products', brief(b)] },
+  { m: 'DELETE', re: /^\/products\/(\d+)$/, snap: 'product', f: (b, o) => ['Deleted a product', o ? o.title : ''] },
+  { m: 'POST', re: /^\/combos$/, f: (b) => ['Created a combo', `${b.title} at ${money2(b.price)}`] },
+  { m: 'PATCH', re: /^\/combos\/(\d+)\/active$/, snap: 'combo', f: (b, o) => ['Turned a combo on/off', o ? o.title : ''] },
+  { m: 'PATCH', re: /^\/combos\/(\d+)\/approval$/, snap: 'combo', f: (b, o) => ['Answered a combo approval', `${o ? o.title : ''} (${b.status || b.approve || ''})`] },
+  { m: 'DELETE', re: /^\/combos\/(\d+)$/, snap: 'combo', f: (b, o) => ['Deleted a combo', o ? o.title : ''] },
+  { m: 'PATCH', re: /^\/orders\/(\d+)\/status$/, snap: 'order', f: (b, o, id) => [`Order #${id} status`, `${o ? o.status : '?'} -> ${b.status}`] },
+  { m: 'PATCH', re: /^\/orders\/(\d+)\/paid$/, f: (b, o, id) => [`Order #${id} payment`, b.paid ? 'marked paid' : 'paid tick removed'] },
+  { m: 'POST', re: /^\/orders\/reprice$/, f: () => ['Re-priced open orders', ''] },
+  { m: 'POST', re: /^\/admin\/sellers$/, f: (b) => ['Created a seller', b.username] },
+  { m: 'PATCH', re: /^\/admin\/sellers\/(\d+)$/, snap: 'user', f: (b, o) => ['Renamed a seller', `${o ? o.username : ''} -> ${b.username}`] },
+  { m: 'PATCH', re: /^\/admin\/sellers\/(\d+)\/password$/, snap: 'user', f: (b, o) => ['Reset a seller password', o ? o.username : ''] },
+  { m: 'DELETE', re: /^\/admin\/sellers\/(\d+)$/, snap: 'user', f: (b, o) => ['Removed a seller', o ? o.username : ''] },
+  { m: 'POST', re: /^\/admin\/sellers\/(\d+)\/split-off$/, snap: 'user', f: (b, o) => ['Split off a seller', o ? o.username : ''] },
+  { m: 'PUT', re: /^\/admin\/settings$/, f: (b) => ['Changed shop settings', brief(b)] },
+  { m: 'POST', re: /^\/admin\/import$/, f: () => ['Restored a backup', ''] },
+  { m: 'POST', re: /^\/promos$/, f: (b) => ['Created a promo code', brief({ code: b.code, percent: b.percent, amount: b.amount })] },
+  { m: 'PATCH', re: /^\/promos\/(\d+)\/active$/, snap: 'promo', f: (b, o) => ['Turned a promo on/off', o ? o.code : ''] },
+  { m: 'PATCH', re: /^\/promos\/(\d+)\/shop-wide$/, snap: 'promo', f: (b, o) => ['Changed a promo to/from shop-wide', o ? o.code : ''] },
+  { m: 'DELETE', re: /^\/promos\/(\d+)$/, snap: 'promo', f: (b, o) => ['Deleted a promo', o ? o.code : ''] },
+];
+let auditN = 0;
+async function writeAudit(req, action, detail) {
+  try {
+    await pool.query('INSERT INTO audit_log (user_id, username, role, action, detail) VALUES ($1,$2,$3,$4,$5)',
+      [req.user.id, req.user.username, req.user.role, action, String(detail || '').slice(0, 500)]);
+    if (++auditN % 200 === 0) await pool.query('DELETE FROM audit_log WHERE id < (SELECT COALESCE(MAX(id),0) - 5000 FROM audit_log)');
+  } catch (e) { console.error('Activity log failed:', e.message); }
+}
+app.use('/api', async (req, res, next) => {
+  if (req.method === 'GET' || req.method === 'HEAD') return next();
+  const rule = AUDIT_RULES.find((r) => r.m === req.method && r.re.test(req.path));
+  if (!rule) return next();
+  const id = (req.path.match(rule.re) || [])[1];
+  let old;
+  if (rule.snap && id) { try { old = (await pool.query(SNAP[rule.snap], [id])).rows[0]; } catch (e) { /* the log line just has less detail */ } }
+  res.on('finish', () => {
+    if (res.statusCode >= 400 || !req.user || !['admin', 'seller'].includes(req.user.role)) return;
+    try { const [a, d] = rule.f(req.body || {}, old, id); writeAudit(req, a, d); } catch (e) { /* never break a request over the log */ }
+  });
+  next();
+});
+const json = express.json({ limit: '200kb' });
 // The restore route accepts big files, so it brings its own larger body parser.
 app.use((req, res, next) => (req.path === '/api/admin/import' ? next() : json(req, res, next)));
 // The service worker must never be cached hard, or a new version of the app would not reach phones.
 app.get('/sw.js', (req, res, next) => { res.set('Cache-Control', 'no-cache'); next(); });
-app.use(express.static(path.join(__dirname, '../public')));
+app.use(express.static(path.join(__dirname, '../public'), {
+  etag: true,
+  setHeaders: (res, file) => { // icons never change under the same name; code files are re-checked (304 = a few hundred bytes)
+    if (/\.(png|ico)$/.test(file)) res.set('Cache-Control', 'public, max-age=604800');
+  },
+}));
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -141,7 +228,9 @@ const alertSellersShopWide = async (code, percent) => {
 async function checkPromo(db, code, userId) {
   const clean = String(code || '').trim();
   if (!clean) return null;
-  const { rows: [p] } = await db.query('SELECT * FROM promo_codes WHERE upper(code)=upper($1) AND is_active', [clean]); // applies only to the items its owner sells
+  // Inside an order the code's row is locked, so two orders placed at the same moment cannot both use the last use
+  // (or the same person use a once-per-account code twice).
+  const { rows: [p] } = await db.query(`SELECT * FROM promo_codes WHERE upper(code)=upper($1) AND is_active${db === pool ? '' : ' FOR UPDATE'}`, [clean]); // applies only to the items its owner sells
   if (!p) throw bad('That promo code is not valid.');
   if (p.max_uses != null && p.used_count >= p.max_uses) throw bad('That promo code has been fully used.');
   const { rowCount } = await db.query("SELECT 1 FROM orders WHERE user_id=$1 AND upper(promo_code)=upper($2) AND status <> 'cancelled'", [userId, p.code]);
@@ -247,6 +336,16 @@ const withImage = async (id) =>
 
 app.get('/healthz', (req, res) => res.send('ok'));
 
+// What the phones ask every few seconds: a couple of dozen bytes. `w` covers things that change with the clock (the order cutoff).
+let revWin = { t: 0, v: '' };
+app.get('/api/rev', wrap(async (req, res) => {
+  if (Date.now() - revWin.t > 3000) { // many phones asking at once share one database visit
+    const w = await orderWindow(pool);
+    revWin = { t: Date.now(), v: `${w.closed ? 1 : 0}${w.label}${w.date}` };
+  }
+  res.json({ r: `${BOOT_ID}.${REV}`, w: revWin.v });
+}));
+
 /* ---------- Auth ---------- */
 // Login guard: 10 wrong passwords from one address locks that address out for 15 minutes.
 const LOGIN_MAX = 10, LOGIN_WINDOW = 15 * 60e3, loginFails = new Map();
@@ -328,10 +427,39 @@ app.get('/api/products/:id', wrap(async (req, res) => {
   res.json(p);
 }));
 
+// Picture sizes: the shop grid asks for ?w=480 (or 240 for small ones) instead of the full 1400 px photo, so a phone downloads
+// about 15-40 KB per product instead of 100-300 KB. Resized copies are kept in memory (least recently used goes first).
+const THUMB_WIDTHS = [160, 240, 480, 800], THUMB_BUDGET = 48 * 1024 * 1024;
+const thumbs = new Map(); let thumbBytes = 0;
+const thumbPending = new Map();
+async function thumbFor(id, ver, w, data) {
+  if (!ver) return sharp(data).rotate().resize({ width: w, withoutEnlargement: true }).webp({ quality: 72 }).toBuffer(); // no version = no way to know when it goes stale
+  const key = `${id}:${ver}:${w}`, hit = thumbs.get(key);
+  if (hit) { thumbs.delete(key); thumbs.set(key, hit); return hit; }
+  if (thumbPending.has(key)) return thumbPending.get(key);
+  const job = sharp(data).rotate().resize({ width: w, withoutEnlargement: true }).webp({ quality: 72 }).toBuffer()
+    .then((buf) => {
+      thumbs.set(key, buf); thumbBytes += buf.length;
+      for (const [k, v] of thumbs) { if (thumbBytes <= THUMB_BUDGET) break; thumbs.delete(k); thumbBytes -= v.length; }
+      return buf;
+    }).finally(() => thumbPending.delete(key));
+  thumbPending.set(key, job);
+  return job;
+}
 app.get('/api/products/:id/image', wrap(async (req, res) => {
-  const { rows: [p] } = await pool.query('SELECT image_data, image_mime FROM products WHERE id=$1', [req.params.id]);
+  const id = parseInt(req.params.id);
+  if (!Number.isInteger(id)) return res.sendStatus(404);
+  const w = THUMB_WIDTHS.find((x) => x >= (parseInt(req.query.w) || 0)), ver = String(req.query.v || '').slice(0, 20);
+  res.set('Cache-Control', 'public, max-age=31536000, immutable');
+  // The ?v= in the picture's address changes whenever the picture does, so a copy already in memory needs no database visit at all.
+  const hit = req.query.w && w && ver ? thumbs.get(`${id}:${ver}:${w}`) : null;
+  if (hit) return res.type('image/webp').send(await thumbFor(id, ver, w, null));
+  const { rows: [p] } = await pool.query('SELECT image_data, image_mime FROM products WHERE id=$1', [id]);
   if (!p || !p.image_data) return res.sendStatus(404);
-  res.set('Content-Type', p.image_mime).set('Cache-Control', 'public, max-age=31536000, immutable').send(p.image_data);
+  if (req.query.w && w && p.image_mime !== 'image/gif') { // gifs may be animated: always sent as they are
+    try { return res.type('image/webp').send(await thumbFor(id, ver, w, p.image_data)); } catch (e) { /* fall back to the original */ }
+  }
+  res.type(p.image_mime).send(p.image_data);
 }));
 
 /* ---------- Products (admin write) ---------- */
@@ -398,7 +526,9 @@ app.post('/api/products', auth, staff, upload.single('image'), wrap(async (req, 
   if (stock !== null && !(stock >= 0)) throw bad('Stock must be 0 or more.');
   const cost = req.body.cost === undefined || req.body.cost === '' ? null : Number(req.body.cost);
   if (cost !== null && !(cost >= 0)) throw bad('Cost must be 0 or more.');
-  if (!title || price === '' || isNaN(price) || price < 0) throw bad('Title and a valid price are required.');
+  if (!String(title || '').trim() || price === '' || price === undefined || isNaN(price) || price < 0 || price > 99999999) throw bad('Title and a valid price are required.');
+  if (String(title).trim().length > 200) throw bad('The name can be up to 200 characters.');
+  if (String(description).length > 2000) throw bad('The description can be up to 2000 characters.');
   if (!CATEGORIES.includes(category)) throw bad('Pick Drinks or Snacks.');
   const disc = parseInt(discount_percent) || 0;
   if (disc < 0 || disc > 90) throw bad('Discount must be between 0 and 90%.');
@@ -407,7 +537,7 @@ app.post('/api/products', auth, staff, upload.single('image'), wrap(async (req, 
   const owner = await pickOwner(req.user, req.body.owner_id);
   const { rows: [p] } = await pool.query(
     'INSERT INTO products (title, description, price, image_data, image_mime, category, discount_percent, owner_id, stock, is_sold_out, cost, bulk_min, bulk_percent) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id',
-    [title, description, price, f ? f.buffer : null, f ? f.mimetype : null, category, disc, owner, stock, stock === 0, cost, bulk.min, bulk.pct]
+    [String(title).trim(), description, price, f ? f.buffer : null, f ? f.mimetype : null, category, disc, owner, stock, stock === 0, cost, bulk.min, bulk.pct]
   );
   res.status(201).json(await withImage(p.id));
 }));
@@ -419,7 +549,9 @@ app.put('/api/products/:id', auth, staff, upload.single('image'), wrap(async (re
   const disc = discount_percent === undefined || discount_percent === '' ? null : parseInt(discount_percent);
   if (disc !== null && !(disc >= 0 && disc <= 90)) throw bad('Discount must be between 0 and 90%.');
   if (category !== undefined && !CATEGORIES.includes(category)) throw bad('Pick Drinks or Snacks.');
-  if (price !== undefined && (price === '' || isNaN(price) || price < 0)) throw bad('Invalid price.');
+  if (price !== undefined && (price === '' || isNaN(price) || price < 0 || price > 99999999)) throw bad('Invalid price.');
+  if (title !== undefined && (!String(title).trim() || String(title).trim().length > 200)) throw bad('The name is required and can be up to 200 characters.');
+  if (description !== undefined && String(description).length > 2000) throw bad('The description can be up to 2000 characters.');
   const f = await squeeze(req.file);
   const setStock = req.body.stock !== undefined; // empty = stop counting
   const stock = !setStock || req.body.stock === '' ? null : parseInt(req.body.stock);
@@ -436,7 +568,7 @@ app.put('/api/products/:id', auth, staff, upload.single('image'), wrap(async (re
        stock=CASE WHEN $10::boolean THEN $11::int ELSE stock END,
        is_sold_out=CASE WHEN $10::boolean AND $11::int IS NOT NULL THEN $11::int = 0 ELSE is_sold_out END, title=COALESCE($1,title), description=COALESCE($2,description), price=COALESCE($3,price),
        image_data=COALESCE($4,image_data), image_mime=COALESCE($5,image_mime), category=COALESCE($6,category), discount_percent=COALESCE($7,discount_percent), owner_id=COALESCE($9,owner_id) WHERE id=$8`,
-    [title ?? null, description ?? null, price ?? null, f ? f.buffer : null, f ? f.mimetype : null, category ?? null, disc, req.params.id, newOwner, setStock, stock, setCost, cost, setBulk, bulk.min, bulk.pct]
+    [title === undefined ? null : String(title).trim(), description ?? null, price ?? null, f ? f.buffer : null, f ? f.mimetype : null, category ?? null, disc, req.params.id, newOwner, setStock, stock, setCost, cost, setBulk, bulk.min, bulk.pct]
   );
   if (!rowCount) throw bad('Product not found.', 404);
   res.json({ ...(await withImage(req.params.id)), ...(await repriceSafe([req.params.id])) });
@@ -518,7 +650,9 @@ app.post('/api/combos', auth, staff, wrap(async (req, res) => {
     for (const i of items)
       await c.query('INSERT INTO combo_items (combo_id, product_id, quantity) VALUES ($1,$2,$3) ON CONFLICT (combo_id, product_id) DO UPDATE SET quantity=EXCLUDED.quantity',
         [cb.id, i.pid, i.q]);
-    const others = [...new Set(found.map((p) => p.owner_id).filter((id) => id != null && id !== req.user.id))];
+    // Raven (the main admin) controls the whole shop, so his combos go live without waiting for any seller. A seller's combo that
+    // uses someone else's products still needs that person's approval.
+    const others = isMain(req.user) ? [] : [...new Set(found.map((p) => p.owner_id).filter((id) => id != null && id !== req.user.id))];
     for (const o of others) await c.query("INSERT INTO combo_approvals (combo_id, owner_id, status) VALUES ($1,$2,'pending')", [cb.id, o]);
     await c.query('COMMIT');
     if (others.length) {
@@ -575,7 +709,8 @@ app.delete('/api/products/:id', auth, staff, wrap(async (req, res) => {
 
 /* ---------- Orders ---------- */
 app.post('/api/orders', auth, wrap(async (req, res) => {
-  const items = (req.body.items || []).filter((i) => parseInt(i.quantity) > 0);
+  if (!Array.isArray(req.body.items) || req.body.items.length > 100) throw bad('Your cart is empty.');
+  const items = req.body.items.filter((i) => i && typeof i === 'object' && parseInt(i.quantity) > 0);
   if (!items.length) throw bad('Your cart is empty.');
   const prodIds = items.filter((i) => i.product_id).map((i) => parseInt(i.product_id)).filter(Number.isInteger);
   const comboIds = items.filter((i) => i.combo_id).map((i) => parseInt(i.combo_id)).filter(Number.isInteger);
@@ -714,8 +849,12 @@ const withCosts = async (rows, user) => {
   return rows.map((o) => ({ ...o, costs: by.get(o.id) || [] }));
 };
 
+// Open orders (to pack / packed) are always sent. Finished ones (completed / cancelled) come newest first, 30 at a time
+// (?finished=60 for more), so the list stays small however old the shop gets.
 app.get('/api/orders', auth, staff, wrap(async (req, res) => {
-  if (isMain(req.user)) return res.json(await withCosts((await pool.query(`${ORDER_SQL} ORDER BY o.created_at DESC`)).rows, req.user));
+  const fin = Math.min(2000, Math.max(1, parseInt(req.query.finished) || 30));
+  if (isMain(req.user)) return res.json(await withCosts((await pool.query(
+    `${ORDER_SQL} WHERE o.status IN ('pending','packed') OR o.id IN (SELECT id FROM orders WHERE status NOT IN ('pending','packed') ORDER BY created_at DESC LIMIT $1) ORDER BY o.created_at DESC`, [fin])).rows, req.user));
   const { rows } = await pool.query(
     `SELECT o.id,o.user_id,o.status,o.note,o.promo_code,o.discount,o.created_at,o.paid_by,o.paid_at,to_char(o.deliver_for,'YYYY-MM-DD') AS deliver_for,(SELECT username FROM users WHERE id=o.paid_by) AS paid_name,u.username,
        (SELECT json_agg(json_build_object('product_id',oi.product_id,'title',oi.title,'unit_price',oi.unit_price,'quantity',oi.quantity) ORDER BY oi.id)
@@ -727,7 +866,9 @@ app.get('/api/orders', auth, staff, wrap(async (req, res) => {
      LEFT JOIN order_approvals a ON a.order_id=o.id AND a.owner_id=x.owner_id) AS parts
      FROM orders o JOIN users u ON u.id=o.user_id
      WHERE EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id=o.id AND oi.owner_id=$1)
-     ORDER BY o.created_at DESC`, [req.user.id]);
+       AND (o.status IN ('pending','packed') OR o.id IN (SELECT o2.id FROM orders o2 WHERE o2.status NOT IN ('pending','packed')
+            AND EXISTS (SELECT 1 FROM order_items x WHERE x.order_id=o2.id AND x.owner_id=$1) ORDER BY o2.created_at DESC LIMIT $2))
+     ORDER BY o.created_at DESC`, [req.user.id, fin]);
   res.json(await withCosts(rows.map(({ promo_mine, ...o }) => {
     const sub = o.items.reduce((s, i) => s + Number(i.unit_price) * i.quantity, 0);
     const discount = promo_mine ? Number(o.discount) : 0;
@@ -768,16 +909,27 @@ app.patch('/api/orders/:id/status', auth, staff, wrap(async (req, res) => {
     'SELECT DISTINCT oi.owner_id, u.username FROM order_items oi JOIN users u ON u.id=oi.owner_id WHERE oi.order_id=$1', [id]);
   const owners = ow.map((r) => r.owner_id);
   if (!isMain(req.user) && !owners.includes(req.user.id)) throw bad('Order not found.', 404);
+  // A cancelled order already gave its stock back, so it cannot come back to life (the customer can simply order again).
+  if (ord.status === 'cancelled' && status !== 'cancelled') throw bad('This order was cancelled. The customer can place a new one.', 409);
 
-  // One owner (or raven stepping in on an order he has no items in): change the status directly.
-  if (owners.length < 2 || !owners.includes(req.user.id)) {
+  // Raven decides for the whole order, even when sellers are involved: no waiting for anyone's approval.
+  // Every seller's part is set to match, so the screens agree.
+  if (isMain(req.user)) {
+    const { rows: [o] } = await pool.query('UPDATE orders SET status=$1 WHERE id=$2 RETURNING id,status', [status, id]);
+    for (const x of owners)
+      await pool.query('INSERT INTO order_approvals (order_id, owner_id, status) VALUES ($1,$2,$3) ON CONFLICT (order_id, owner_id) DO UPDATE SET status=EXCLUDED.status', [id, x, status]);
+    if (status === 'cancelled') await restoreStock(pool, id);
+    return res.json(o);
+  }
+
+  // One owner: change the status directly.
+  if (owners.length < 2) {
     const { rows: [o] } = await pool.query('UPDATE orders SET status=$1 WHERE id=$2 RETURNING id,status', [status, id]);
     if (status === 'cancelled') await restoreStock(pool, id);
     return res.json(o);
   }
 
   // Mixed order: every owner approves their own part; the order moves only as far as all of them have.
-  if (ord.status === 'cancelled') throw bad('This order was cancelled.', 409);
   await pool.query(
     'INSERT INTO order_approvals (order_id, owner_id, status) VALUES ($1,$2,$3) ON CONFLICT (order_id, owner_id) DO UPDATE SET status=EXCLUDED.status',
     [id, req.user.id, status]);
@@ -996,6 +1148,7 @@ app.post('/api/admin/import', auth, admin, express.json({ limit: '100mb' }), wra
       if (!['order_approvals', 'combo_approvals', 'order_stock'].includes(t)) await c.query(`SELECT setval(pg_get_serial_sequence('${t}', 'id'), COALESCE((SELECT MAX(id) FROM ${t}), 0) + 1, false)`);
     }
     await c.query('COMMIT');
+    invalidateUser(); // everyone's role is read fresh from the restored data
     res.json({ ok: true });
   } catch (e) {
     await c.query('ROLLBACK');
@@ -1060,6 +1213,7 @@ app.patch('/api/admin/sellers/:id', auth, admin, wrap(async (req, res) => {
   try {
     const { rows: [u] } = await pool.query("UPDATE users SET username=$1 WHERE id=$2 AND role='seller' RETURNING id,username", [username, req.params.id]);
     if (!u) throw bad('Seller not found.', 404);
+    invalidateUser(u.id);
     res.json(u);
   } catch (e) {
     if (e.code === '23505') throw bad('That username is taken.', 409);
@@ -1073,6 +1227,8 @@ app.patch('/api/admin/sellers/:id/password', auth, admin, wrap(async (req, res) 
   const { rowCount } = await pool.query("UPDATE users SET password_hash=$1 WHERE id=$2 AND role='seller'",
     [await bcrypt.hash(password, 12), req.params.id]);
   if (!rowCount) throw bad('Seller not found.', 404);
+  // Her old login stops working at once: she has to use the new password. (The "must change" flag is not used for sellers.)
+  invalidateUser(req.params.id);
   res.json({ ok: true });
 }));
 
@@ -1088,6 +1244,7 @@ app.delete('/api/admin/sellers/:id', auth, admin, wrap(async (req, res) => {
     await c.query('UPDATE orders SET paid_by=$1 WHERE paid_by=$2', [req.user.id, req.params.id]);
     await c.query('DELETE FROM users WHERE id=$1', [req.params.id]);
     await c.query('COMMIT');
+    invalidateUser(req.params.id);
     res.sendStatus(204);
   } catch (e) {
     await c.query('ROLLBACK');
@@ -1127,6 +1284,7 @@ app.post('/api/admin/sellers/:id/split-off', auth, admin, wrap(async (req, res) 
     await c.query('UPDATE orders SET paid_by=$1 WHERE paid_by=$2', [req.user.id, id]);
     await c.query('DELETE FROM users WHERE id=$1', [id]);
     await c.query('COMMIT');
+    invalidateUser(id);
     notify(`Split off from ${sl.username}: ${prods.rowCount} products removed.`);
     res.json({ products: prods.rowCount, combos: combos.rowCount, switched_off: off.rowCount });
   } catch (e) {
@@ -1420,7 +1578,53 @@ async function tick() {
   } catch (e) { console.error('Scheduled job failed:', e.message); } finally { busy = false; }
 }
 
+/* ---------- Activity log (read), sales CSV, favorites ---------- */
+app.get('/api/admin/audit', auth, admin, wrap(async (req, res) => {
+  const before = /^\d+$/.test(String(req.query.before || '')) ? req.query.before : null;
+  res.json((await pool.query('SELECT id, at, username, role, action, detail FROM audit_log WHERE ($1::bigint IS NULL OR id < $1::bigint) ORDER BY id DESC LIMIT 50', [before])).rows);
+}));
+
+// One row per item sold. Raven gets every seller's items, a seller only her own. Opens in Excel / Google Sheets.
+const csvCell = (v) => {
+  let t = v == null ? '' : String(v);
+  if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; // a name that starts with = or + must not run as a formula in a spreadsheet
+  return /[",\n\r]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+};
+app.get('/api/admin/sales.csv', auth, staff, wrap(async (req, res) => {
+  const ok = /^\d{4}-\d{2}-\d{2}$/, from = String(req.query.from || ''), to = String(req.query.to || '');
+  if (!ok.test(from) || !ok.test(to) || from > to) throw bad('Pick a start day and an end day (start first).');
+  if ((new Date(to) - new Date(from)) / 864e5 > 366) throw bad('Pick a range of one year or less.');
+  const withCancelled = req.query.cancelled === '1';
+  const { rows } = await pool.query(`SELECT o.id, to_char(o.created_at AT TIME ZONE $1,'YYYY-MM-DD HH24:MI') AS ordered, to_char(o.deliver_for,'YYYY-MM-DD') AS deliver_for,
+      u.username AS customer, o.status, (o.paid_at IS NOT NULL) AS paid, o.promo_code, o.discount, oi.title, oi.quantity, oi.unit_price,
+      (oi.unit_price*oi.quantity) AS line_total, ow.username AS seller, COALESCE(oi.cost_price,p.cost) AS cost,
+      (oi.id = (SELECT MIN(id) FROM order_items WHERE order_id=o.id)) AS first_line
+    FROM orders o JOIN users u ON u.id=o.user_id JOIN order_items oi ON oi.order_id=o.id
+    LEFT JOIN users ow ON ow.id=oi.owner_id LEFT JOIN products p ON p.id=oi.product_id
+    WHERE (o.created_at AT TIME ZONE $1)::date BETWEEN $2::date AND $3::date AND ($4 OR oi.owner_id=$5) AND ($6 OR o.status <> 'cancelled')
+    ORDER BY o.created_at, o.id, oi.id`, [TZ, from, to, isMain(req.user), req.user.id, withCancelled]);
+  const head = ['Order', 'Ordered', 'Deliver for', 'Customer', 'Status', 'Paid', 'Item', 'Qty', 'Unit price', 'Line total', 'Seller', 'Cost each', 'Promo code', 'Order discount (first line only)'];
+  const lines = [head.join(',')].concat(rows.map((r) => [r.id, r.ordered, r.deliver_for, r.customer, r.status, r.paid ? 'yes' : 'no', r.title, r.quantity,
+    r.unit_price, Number(r.line_total).toFixed(2), r.seller, r.cost, isMain(req.user) ? r.promo_code : '', isMain(req.user) && r.first_line && Number(r.discount) ? r.discount : ''].map(csvCell).join(',')));
+  res.set({ 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="sales-${from}_to_${to}.csv"` }).send('\ufeff' + lines.join('\r\n') + '\r\n');
+}));
+
+app.get('/api/favorites', auth, wrap(async (req, res) => {
+  res.json((await pool.query('SELECT product_id FROM favorites WHERE user_id=$1', [req.user.id])).rows.map((r) => r.product_id));
+}));
+app.post('/api/favorites/:id', auth, wrap(async (req, res) => {
+  const id = parseInt(req.params.id);
+  if (!Number.isInteger(id)) throw bad('Product not found.', 404);
+  await pool.query('INSERT INTO favorites (user_id, product_id) SELECT $1, id FROM products WHERE id=$2 ON CONFLICT DO NOTHING', [req.user.id, id]);
+  res.sendStatus(204);
+}));
+app.delete('/api/favorites/:id', auth, wrap(async (req, res) => {
+  await pool.query('DELETE FROM favorites WHERE user_id=$1 AND product_id=$2', [req.user.id, parseInt(req.params.id) || 0]);
+  res.sendStatus(204);
+}));
+
 /* ---------- Errors & boot ---------- */
+app.use('/api', (req, res) => res.status(404).json({ error: 'Not found.' }));
 app.use((err, req, res, next) => {
   if (err.code === 'LIMIT_FILE_SIZE') err = bad('Image must be 5 MB or smaller.');
   if (!err.status) console.error(err);
