@@ -8,6 +8,8 @@ const fin = (p) => Math.round(Number(p.price) * (100 - (Number(p.discount_percen
 const fmtTime = (hm) => { const [h, m] = String(hm).split(':').map(Number); return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`; };
 const bulkOn = (p) => Number(p.bulk_min) >= 2 && Number(p.bulk_percent) > 0;
 const unitFor = (p, q) => (bulkOn(p) && q >= Number(p.bulk_min) ? Math.min(fin(p), Math.round(Number(p.price) * (100 - Number(p.bulk_percent))) / 100) : fin(p));
+// Smaller copies of product photos for lists and grids (the server makes and remembers them): a fraction of the bytes, same look.
+const thumb = (url, w) => (url ? url + (url.includes('?') ? '&' : '?') + 'w=' + w : '');
 const LOW_STOCK = 5;
 const CATS = { drinks: 'Drinks', snacks: 'Snacks' };
 const STATUS = { pending: 'Pending', packed: 'Packed', completed: 'Completed', cancelled: 'Cancelled' };
@@ -21,11 +23,11 @@ let view = 'shop';
 let searchText = '', catFilter = 'all';
 const selected = new Set(); // products ticked in Admin for bulk changes
 let combos = [], comboAdminHtml = '';
-let ordersCache = [], shownOrders = [], ordStatus = 'active', ordRange = 'all', ordDay = '', custHtml = '';
+let ordLimit = 30, ordHasMore = false, favs = new Set(), auditLast = null, ordersCache = [], shownOrders = [], ordStatus = 'active', ordRange = 'all', ordDay = '', custHtml = '';
 let installEvt = null; // Chrome's "install app" offer, kept until the person taps Install
 let promo = null, cartNote = '', settings = { banner: '', stamp_reward: 'a free snack' }, promoAdminHtml = '', myOrders = [];
 let sig = '', lastOrderId = null, mineHtml = '', adminHtml = '', statusMap = null, adminTab = 'products', pendingCount = 0;
-let ordSearch = '', costMap = {}, repData = null;
+let ordSearch = '', costMap = {}, repData = null, revSig = '';
 let customHtml = '', customAdminHtml = '', crMap = null, crList = [], lastCrId = null, pendingCustom = 0;
 
 // A random ID this browser keeps, so the server can limit how many accounts one device makes.
@@ -67,8 +69,8 @@ function animateApp() {
 }
 const bumpCart = () => document.querySelectorAll('[data-act="cart"]').forEach((b) => { b.classList.remove('bump'); void b.offsetWidth; b.classList.add('bump'); });
 const saveCart = () => { localStorage.cart = JSON.stringify(cart); renderNav(); bumpCart(); };
-const setSession = (t, u) => { token = t; user = u; statusMap = null; crMap = null; localStorage.token = t; localStorage.user = JSON.stringify(u); };
-const clearSession = () => { token = ''; user = null; statusMap = null; crMap = null; localStorage.removeItem('token'); localStorage.removeItem('user'); };
+const setSession = (t, u) => { token = t; user = u; favs = new Set(); loadFavs(); statusMap = null; crMap = null; revSig = ''; localStorage.token = t; localStorage.user = JSON.stringify(u); };
+const clearSession = () => { token = ''; user = null; favs = new Set(); if (catFilter === 'favs') catFilter = 'all'; statusMap = null; crMap = null; revSig = ''; localStorage.removeItem('token'); localStorage.removeItem('user'); };
 // isAdmin = any staff account (raven or a seller); isRaven = the main admin, who controls everything.
 const isAdmin = () => user && (user.role === 'admin' || user.role === 'seller');
 const isRaven = () => user && user.role === 'admin';
@@ -117,19 +119,25 @@ function updateCartBar() {
   bar.hidden = !n || view !== 'shop';
   bar.innerHTML = `<span class="cb-n">${n}</span><span>View cart</span><b>${money(sub)}</b>`;
 }
+async function loadFavs() {
+  if (!token) return;
+  try { favs = new Set(await api('/api/favorites')); if (view === 'shop') fillGrid(); } catch (e) { /* hearts just stay empty */ }
+}
+const heartBtn = (id) => `<button class="fav${favs.has(id) ? ' on' : ''}" data-act="fav" data-id="${id}" aria-pressed="${favs.has(id)}" aria-label="Favorite">${favs.has(id) ? '\u2665' : '\u2661'}</button>`;
 const capHtml = (title, sub, price, attrs, dis) => `<div class="cap"><div><h3>${title}</h3>${sub ? `<small>${sub}</small>` : ''}</div><span class="pr">${price}</span><button class="primary add" ${attrs} aria-label="Add ${title} to cart" ${dis ? 'disabled' : ''}>+</button></div>`;
 const productCard = (p) => {
   const off = Number(p.discount_percent) || 0;
   const note = bulkOn(p) ? `Buy ${p.bulk_min}+ and save ${p.bulk_percent}%` : (!p.is_sold_out && p.stock != null && p.stock <= LOW_STOCK ? `Only ${p.stock} left` : esc(p.description));
-  return `<article class="card t"><div class="img">${p.image_url ? `<img loading="lazy" src="${esc(p.image_url)}" alt="${esc(p.title)}">` : ''}${p.is_sold_out ? '<span class="badge">Sold out</span>' : ''}${off ? `<span class="badge off">-${off}% OFF</span>` : ''}</div>` +
+  return `<article class="card t has-fav"><div class="img">${heartBtn(p.id)}${p.image_url ? `<img loading="lazy" decoding="async" src="${esc(thumb(p.image_url, 480))}" srcset="${esc(thumb(p.image_url, 240))} 240w, ${esc(thumb(p.image_url, 480))} 480w, ${esc(thumb(p.image_url, 800))} 800w" sizes="(max-width:380px) 100vw, (max-width:900px) 50vw, 25vw" alt="${esc(p.title)}">` : ''}${p.is_sold_out ? '<span class="badge">Sold out</span>' : ''}${off ? `<span class="badge off">-${off}% OFF</span>` : ''}</div>` +
     capHtml(esc(p.title), note, `${off ? `<span class="was">${money(p.price)}</span> ` : ''}<b>${money(fin(p))}</b>`, `data-act="add" data-id="${p.id}"`, p.is_sold_out) + '</article>';
 };
 const comboCard = (c) => {
   const out = c.items.some((x) => x.is_sold_out);
   const regular = c.items.reduce((s, x) => s + fin(x) * x.quantity, 0);
   const save = regular - Number(c.price);
-  const imgs = c.items.filter((x) => x.image_url).slice(0, 4).map((x) => `<img loading="lazy" src="${esc(x.image_url)}" alt="">`).join('');
-  return `<article class="card t"><div class="img"><div class="combo-imgs">${imgs}</div>${out ? '<span class="badge">Sold out</span>' : save > 0 ? `<span class="badge off">Save ${money(save)}</span>` : ''}</div>` +
+  const withPic = c.items.filter((x) => x.image_url).slice(0, 4);
+  const imgs = withPic.map((x) => `<img loading="lazy" decoding="async" src="${esc(thumb(x.image_url, withPic.length === 1 ? 480 : 240))}" alt="">`).join('');
+  return `<article class="card t combo"><div class="img"><div class="combo-imgs">${imgs}</div>${out ? '<span class="badge">Sold out</span>' : save > 0 ? `<span class="badge off">Save ${money(save)}</span>` : ''}</div>` +
     capHtml(esc(c.title), c.items.map((x) => `${x.quantity}x ${esc(x.title)}`).join(', '), `${save > 0 ? `<span class="was">${money(regular)}</span> ` : ''}<b>${money(c.price)}</b>`, `data-act="addcombo" data-id="${c.id}"`, out) + '</article>';
 };
 
@@ -158,12 +166,12 @@ function fillGrid() {
   const comboList = catFilter === 'all' || catFilter === 'combos'
     ? shuffled(combos.filter((c) => match({ title: c.title, description: `${c.description} ${c.items.map((x) => x.title).join(' ')}` })), (c) => 'c' + c.id) : [];
   const groups = Object.keys(CATS)
-    .filter((c) => catFilter === 'all' || catFilter === c)
-    .map((c) => ({ c, list: shuffledPinned(products.filter((p) => catOf(p) === c && match(p))) }))
+    .filter((c) => catFilter === 'all' || catFilter === 'favs' || catFilter === c)
+    .map((c) => ({ c, list: shuffledPinned(products.filter((p) => catOf(p) === c && match(p) && (catFilter !== 'favs' || favs.has(p.id)))) }))
     .filter((g) => g.list.length);
   el.innerHTML = (comboList.length ? `<h2 class="cat-title">Combos</h2><section class="grid">${comboList.map(comboCard).join('')}</section>` : '')
     + groups.map((g) => `<h2 class="cat-title">${CATS[g.c]}</h2><section class="grid">${g.list.map(productCard).join('')}</section>`).join('')
-    || `<p class="panel glass">${products.length || combos.length ? 'No products match your search.' : 'No products yet.'}</p>`;
+    || `<p class="panel glass">${catFilter === 'favs' ? 'No favorites yet. Tap the heart on a product to save it here.' : products.length || combos.length ? 'No products match your search.' : 'No products yet.'}</p>`;
 }
 
 // What Raven's order cutoff means for an order placed right now.
@@ -186,7 +194,7 @@ function renderShop() {
   $('#app').innerHTML = `<section class="hero"><h2>What are you craving?</h2><p>Fresh drinks and snacks. Pay cash when it is handed to you.</p>
       <input id="search" type="search" placeholder="Search snacks and drinks..." value="${esc(searchText)}" autocomplete="off"></section>
     <div id="banner"></div>
-    <div class="cats">${tile('all', 'All')}${tile('combos', 'Combos')}${Object.entries(CATS).map(([id, label]) => tile(id, label)).join('')}</div>
+    <div class="cats">${tile('all', 'All')}${user ? tile('favs', '\u2665 Favorites') : ''}${tile('combos', 'Combos')}${Object.entries(CATS).map(([id, label]) => tile(id, label)).join('')}</div>
     <div id="grid"></div>`;
   fillBanner();
   fillGrid();
@@ -197,7 +205,7 @@ const productTable = () => `<table>${products.map((p) => {
   const mine = canEdit(p.owner_id);
   return `<tr>
     <td>${mine ? `<input type="checkbox" class="pick" value="${p.id}" ${selected.has(p.id) ? 'checked' : ''}>` : ''}</td>
-    <td>${p.image_url ? `<img class="thumb" src="${esc(p.image_url)}" alt="">` : ''}</td>
+    <td>${p.image_url ? `<img class="thumb" loading="lazy" decoding="async" width="52" height="52" src="${esc(thumb(p.image_url, 160))}" alt="">` : ''}</td>
     <td><b>${esc(p.title)}</b><br>${money(p.price)}${p.discount_percent ? ` (-${p.discount_percent}%)` : ''}${bulkOn(p) ? ` | Bulk: ${p.bulk_min}+ = -${p.bulk_percent}%` : ''} | ${CATS[p.category] || 'Snacks'}${mine && costMap[p.id] != null ? ` | Profit ${money(fin(p) - Number(costMap[p.id]))} each` : ''}${p.stock != null ? ` | Stock: ${p.stock}${p.stock > 0 && p.stock <= LOW_STOCK ? ' (low!)' : ''}` : ''}${p.is_sold_out ? ' - sold out' : ''}${ownerName(p.owner_id) ? ` | by ${esc(ownerName(p.owner_id))}` : ''}</td>
     <td>${mine ? `<div class="actions">
       <button data-act="edit" data-id="${p.id}">Edit</button>
@@ -434,8 +442,30 @@ async function refreshCustomers() {
   if (html !== custHtml) { custHtml = html; el.innerHTML = html; }
 }
 
+// Open orders always come; finished ones come newest first, 30 at a time ("Load more"). While searching or looking at one
+// day, the latest 500 finished orders are loaded so older orders can be found.
+const finishedWanted = () => (ordSearch || ordDay ? Math.max(500, ordLimit) : ordLimit);
+const paintMore = () => {
+  const el = $('#omore'); if (!el) return;
+  el.innerHTML = !ordHasMore ? '' : (ordSearch || ordDay) && finishedWanted() >= 500 && ordLimit < 500
+    ? '<p class="muted">Searching the latest 500 finished orders.</p>'
+    : '<button data-act="omore">Load 30 more finished orders</button>';
+};
+async function refreshAudit(more) {
+  const box = $('#auditbox'); if (!box) return;
+  const rows = await api('/api/admin/audit' + (more && auditLast ? '?before=' + auditLast : ''));
+  if (!more) box.innerHTML = '';
+  if (rows.length) auditLast = rows[rows.length - 1].id;
+  const html = rows.map((r) => `<div class="req"><div class="between"><b>${esc(r.username)}${r.role === 'admin' ? ' (you)' : ''}</b><span class="muted">${new Date(r.at).toLocaleString()}</span></div>
+    <p style="margin:2px 0 0"><b>${esc(r.action)}</b>${r.detail ? `<br><span class="muted">${esc(r.detail)}</span>` : ''}</p></div>`).join('');
+  box.insertAdjacentHTML('beforeend', html);
+  if (!box.children.length) box.innerHTML = '<p>Nothing recorded yet. Changes made from now on will show here.</p>';
+  $('#auditmore').innerHTML = rows.length >= 50 ? '<button data-act="auditmore">Load older</button>' : '';
+}
 async function refreshOrders() {
-  const orders = await api('/api/orders');
+  const want = finishedWanted();
+  const orders = await api('/api/orders?finished=' + want);
+  ordHasMore = orders.filter((o) => o.status !== 'pending' && o.status !== 'packed').length >= want;
   const top = orders.reduce((m, o) => Math.max(m, o.id), 0);
   if (lastOrderId !== null && top > lastOrderId) toast('New order received.');
   lastOrderId = top;
@@ -444,6 +474,7 @@ async function refreshOrders() {
   if (tb) tb.textContent = 'Orders' + (pendingCount ? ` (${pendingCount})` : '');
   ordersCache = orders;
   drawOrders();
+  paintMore();
 }
 
 async function refreshCustom() {
@@ -636,12 +667,12 @@ function renderAdmin() {
   adminHtml = ''; customAdminHtml = '';
   const tab = (id, label, extra = '') =>
     `<button id="tab-${id}" class="${adminTab === id ? 'primary' : ''}" data-act="admintab" data-tab="${id}">${label}${extra}</button>`;
-  const tabs = `<div class="tabs">${tab('products', 'Products')}${tab('orders', 'Orders', pendingCount ? ` (${pendingCount})` : '')}${tab('custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : '')}${tab('cash', 'Cash')}${tab('report', 'Report')}${tab('combos', 'Combos')}${tab('promos', 'Promos')}${tab('customers', 'Customers')}${isRaven() ? tab('sellers', 'Sellers') + tab('backup', 'Backup') : tab('alerts', 'Alerts')}</div>`;
+  const tabs = `<div class="tabs">${tab('products', 'Products')}${tab('orders', 'Orders', pendingCount ? ` (${pendingCount})` : '')}${tab('custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : '')}${tab('cash', 'Cash')}${tab('report', 'Report')}${tab('combos', 'Combos')}${tab('promos', 'Promos')}${tab('customers', 'Customers')}${isRaven() ? tab('sellers', 'Sellers') + tab('audit', 'Activity') + tab('backup', 'Backup') : tab('alerts', 'Alerts')}</div>`;
   const productsView = `
     <section class="panel glass">
       <h2 id="form-title">Add a product</h2>
       <form id="pform">
-        <div class="row"><div><label>Title</label><input name="title" required></div>
+        <div class="row"><div><label>Title</label><input name="title" required maxlength="200"></div>
           <div><label>Price</label><input name="price" type="number" step="0.01" min="0" required></div></div>
         <div id="ownerbox"></div>
         <label>Category</label><select name="category"><option value="drinks">Drinks</option><option value="snacks">Snacks</option></select>
@@ -682,9 +713,19 @@ function renderAdmin() {
       ${isRaven() ? '<label class="pickrow" style="padding:0"><input type="checkbox" id="onlymine"> Print only my items</label>' : ''}
     </div>
     <p class="muted" id="ocount" style="margin:0 0 4px"></p>
-    <div id="olist"><p>Loading...</p></div>`;
+    <div id="olist"><p>Loading...</p></div>
+    <div id="omore" style="text-align:center;margin:14px 0"></div>`;
   const cashView = '<section class="panel glass"><h2>Cash</h2><div id="cashbox"><p>Loading...</p></div></section>';
-  const reportView = '<section class="panel glass table-wrap"><h2>Sales and profit</h2><div id="reportbox"><p>Loading...</p></div></section>';
+  const reportView = `<section class="panel glass">
+      <h2>Export sales (CSV)</h2>
+      <p class="muted">One row per item sold, for Excel or Google Sheets. ${isRaven() ? 'Includes every seller.' : 'Includes only your items.'}</p>
+      <div class="toolbar">
+        <label>From <input type="date" id="csvfrom"></label><label>To <input type="date" id="csvto"></label>
+        <label class="pickrow" style="padding:0"><input type="checkbox" id="csvcancel"> Include cancelled</label>
+      </div>
+      <div class="actions"><button class="primary" data-act="csv">Download CSV</button><button data-act="csvq" data-q="today">Today</button><button data-act="csvq" data-q="month">This month</button><button data-act="csvq" data-q="last">Last month</button></div>
+    </section>
+    <section class="panel glass table-wrap"><h2>Sales and profit</h2><div id="reportbox"><p>Loading...</p></div></section>`;
   const customView = '<section class="panel glass table-wrap"><h2>Custom orders</h2><div id="clist"><p>Loading...</p></div></section>';
   const combosView = `<section class="panel glass">
       <h2>Create a combo</h2>
@@ -757,10 +798,13 @@ function renderAdmin() {
       <input id="bfile" type="file" accept=".json,application/json">
       <button class="danger" data-act="restore">Restore from backup</button>
     </section>`;
+  const auditView = `<section class="panel glass"><h2>Activity</h2>
+      <p class="muted">Who changed what: products, prices, stock, order status, sellers and settings. Newest first; the last 5000 changes are kept. Passwords are never recorded.</p>
+      <div id="auditbox"><p>Loading...</p></div><div id="auditmore" style="text-align:center;margin-top:12px"></div></section>`;
   const customersView = `<h2>Customers</h2>
     <p class="muted">Block people who abuse the shop (fake orders, not showing up). ${isRaven() ? 'Your block covers the whole shop.' : 'Your block stops them ordering your items only.'} The list shows the most cancelled orders first.</p>
     <div id="custlist"><p>Loading...</p></div>`;
-  $('#app').innerHTML = tabs + '<div id="attn"></div><div id="adminnotes"></div>' + (adminTab === 'report' ? reportView : adminTab === 'cash' ? cashView : adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'alerts' && !isRaven() ? alertsView : adminTab === 'combos' ? combosView : adminTab === 'promos' ? promosView : adminTab === 'customers' ? customersView : productsView);
+  $('#app').innerHTML = tabs + '<div id="attn"></div><div id="adminnotes"></div>' + (adminTab === 'report' ? reportView : adminTab === 'cash' ? cashView : adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'audit' && isRaven() ? auditView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'alerts' && !isRaven() ? alertsView : adminTab === 'combos' ? combosView : adminTab === 'promos' ? promosView : adminTab === 'customers' ? customersView : productsView);
   fillProducts();
   comboAdminHtml = ''; refreshAdminCombos().catch(() => {});
   promoAdminHtml = ''; refreshAdminPromos().catch(() => {});
@@ -774,6 +818,7 @@ function renderAdmin() {
   refreshCosts().catch(() => {});
   refreshAttention().catch(() => {});
   if (isRaven() && adminTab === 'backup') refreshBackup().catch(() => {});
+  if (isRaven() && adminTab === 'audit') refreshAudit(false).catch(() => {});
   if (isRaven()) loadBackupInfo();
   if (isRaven()) refreshSellers().catch(() => {}); else loadAlerts().catch(() => {});
 }
@@ -1014,6 +1059,15 @@ function quoteDialog(id) {
 const actions = {
   shop: () => { view = 'shop'; render(); animateApp(); },
   cat: (id, d) => { catFilter = d.cat; renderShop(); },
+  fav: async (id) => {
+    const pid = Number(id);
+    if (!user) return toast('Log in to save favorites.');
+    const on = !favs.has(pid);
+    on ? favs.add(pid) : favs.delete(pid);
+    document.querySelectorAll(`[data-act="fav"][data-id="${pid}"]`).forEach((b) => { b.classList.toggle('on', on); b.textContent = on ? '\u2665' : '\u2661'; b.setAttribute('aria-pressed', on); });
+    try { await api(`/api/favorites/${pid}`, { method: on ? 'POST' : 'DELETE' }); if (catFilter === 'favs') fillGrid(); }
+    catch (e) { on ? favs.delete(pid) : favs.add(pid); fillGrid(); toast('Could not save that. Try again.'); }
+  },
   'cust-block': async (id, d) => {
     const reason = prompt(`Block ${d.name || 'this customer'}? They will not be able to order ${isRaven() ? 'from anyone' : 'your items'}.\nWhy? (optional)`);
     if (reason === null) return;
@@ -1024,6 +1078,7 @@ const actions = {
     await api(`/api/customers/${id}/block`, { method: 'DELETE' });
     custHtml = ''; await refreshCustomers(); toast('Customer unblocked.');
   },
+  omore: async () => { ordLimit += 30; await refreshOrders(); },
   ofilter: (id, d) => { ordStatus = d.st; paintOrderFilters(); drawOrders(); },
   'print-orders': () => printOrders(shownOrders, 'list'),
   'print-order': (id) => { const o = ordersCache.find((x) => x.id == id); if (o) printOrders([o], 'receipt'); },
@@ -1129,6 +1184,26 @@ const actions = {
     setTimeout(() => { app.style.minHeight = ''; }, 900);
   },
   quote: (id) => quoteDialog(id),
+  csvq: (id, d) => {
+    const now = new Date(), ymd = (x) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
+    let a = now, b = now;
+    if (d.q === 'month') a = new Date(now.getFullYear(), now.getMonth(), 1);
+    if (d.q === 'last') { a = new Date(now.getFullYear(), now.getMonth() - 1, 1); b = new Date(now.getFullYear(), now.getMonth(), 0); }
+    $('#csvfrom').value = ymd(a); $('#csvto').value = ymd(b);
+  },
+  csv: async () => {
+    const from = $('#csvfrom').value, to = $('#csvto').value;
+    if (!from || !to) return toast('Pick a start day and an end day, or tap Today / This month / Last month.');
+    const r = await fetch(`/api/admin/sales.csv?from=${from}&to=${to}&cancelled=${$('#csvcancel').checked ? 1 : 0}`, { headers: { Authorization: 'Bearer ' + token } });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Export failed.');
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(await r.blob());
+    link.download = `sales-${from}_to_${to}.csv`;
+    document.body.appendChild(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(link.href), 10000);
+    toast('Sales file downloaded.');
+  },
+  auditmore: () => refreshAudit(true),
   backup: async () => {
     const r = await fetch('/api/admin/export', { headers: { Authorization: 'Bearer ' + token } });
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Backup failed.');
@@ -1320,7 +1395,12 @@ $('#dlg').addEventListener('click', (e) => { if (e.target === $('#dlg') && !forc
 $('#dlg').addEventListener('cancel', (e) => { if (forcePw) e.preventDefault(); });
 $('#dlg').addEventListener('close', () => { delete $('#dlg').dataset.kind; }); // Esc cannot skip the forced password change
 
-document.addEventListener('input', (e) => { if (e.target.id === 'osearch') { ordSearch = e.target.value; drawOrders(); } });
+let searchTimer = 0;
+document.addEventListener('input', (e) => {
+  if (e.target.id !== 'osearch') return;
+  const was = finishedWanted(); ordSearch = e.target.value; drawOrders();
+  if (finishedWanted() !== was) { clearTimeout(searchTimer); searchTimer = setTimeout(() => refreshOrders().catch(() => {}), 350); } // load older orders only when searching needs them
+});
 
 document.addEventListener('change', (e) => {
   if (e.target.id === 'onlymine') {
@@ -1329,7 +1409,7 @@ document.addEventListener('change', (e) => {
     return;
   }
   if (e.target.id === 'orange') { ordRange = e.target.value; ordDay = ''; paintOrderFilters(); drawOrders(); return; }
-  if (e.target.id === 'oday') { ordDay = e.target.value; drawOrders(); return; }
+  if (e.target.id === 'oday') { const was = finishedWanted(); ordDay = e.target.value; drawOrders(); if (finishedWanted() !== was) refreshOrders().catch(() => {}); return; }
   if (e.target.classList.contains('pick')) {
     const id = Number(e.target.value);
     if (e.target.checked) selected.add(id); else selected.delete(id);
@@ -1347,10 +1427,18 @@ document.addEventListener('input', (e) => {
   else if (e.target.closest('#combo-form')) updateComboSum();
 });
 
-/* ---------- Live updates (checks the server every 5 seconds) ---------- */
+/* ---------- Live updates ---------- */
+// Every 5 seconds the phone asks /api/rev, a tiny answer that changes only when something in the shop was changed.
+// The real lists (products, combos, orders...) are downloaded only when it moved, so quiet moments cost almost no data.
+// A full check still happens at least once a minute as a safety net, and whenever /api/rev can't be reached.
+let lastFull = 0;
 async function poll() {
   if (document.hidden) return;
   try {
+    let key = null;
+    try { const r = await fetch('/api/rev'); if (r.ok) { const d = await r.json(); key = d.r + '|' + d.w; } } catch (e) { /* fall back to a full check */ }
+    if (key && key === revSig && Date.now() - lastFull < 60000) return;
+    lastFull = Date.now();
     const [fresh, freshCombos, freshSettings] = await Promise.all([api('/api/products'), api('/api/combos'), api('/api/settings')]);
     const now = JSON.stringify([fresh, freshCombos, freshSettings]);
     if (now !== sig) {
@@ -1362,8 +1450,10 @@ async function poll() {
       if (view === 'orders') await fillMine(); else await loadMine();
       if (view === 'custom') await fillCustomMine(); else await loadCustomMine();
     }
+    if (key) revSig = key;
   } catch (e) { /* ignore network hiccups */ }
 }
+loadFavs();
 setInterval(poll, 5000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
 
