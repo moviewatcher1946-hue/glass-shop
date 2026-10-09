@@ -49,3 +49,22 @@ CREATE TABLE IF NOT EXISTS order_items (
   unit_price NUMERIC(10,2) NOT NULL,
   quantity   INT NOT NULL CHECK (quantity > 0)
 );
+
+-- Who did what (shown to the main admin under Activity). No links to other tables, so a log line survives a deleted seller or product.
+CREATE TABLE IF NOT EXISTS audit_log (
+  id       BIGSERIAL PRIMARY KEY,
+  at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  user_id  INT,
+  username TEXT NOT NULL,
+  role     TEXT,
+  action   TEXT NOT NULL,
+  detail   TEXT
+);
+
+-- Hearts on products, one row per customer per product.
+CREATE TABLE IF NOT EXISTS favorites (
+  user_id    INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  product_id INT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, product_id)
+);
