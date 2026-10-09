@@ -70,7 +70,7 @@ label{font-size:.82rem;font-weight:600;color:var(--muted)}
 .card:hover .img img{transform:scale(1.05)}
 .img:has(.badge:not(.off)) img{filter:grayscale(1) brightness(.8)}
 .card h3{margin:12px 8px 0;font-size:1.02rem;font-weight:700;line-height:1.3}
-.card p{flex:1;margin:2px 8px 0;color:var(--muted);font-size:.9rem;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.card p{flex:1;margin:2px 8px 0;color:var(--muted);font-size:.9rem}
 .card footer{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:12px 8px 0}
 .card footer b{font-size:1.3rem;font-weight:800;letter-spacing:-.02em}
 .add{flex:none;display:grid;place-items:center;width:44px;height:44px;padding:0;font-size:1.6rem;line-height:1;font-weight:400}
@@ -222,15 +222,15 @@ main .panel,main .stat{-webkit-backdrop-filter:none;backdrop-filter:none}
 .cats{display:inline-flex;gap:4px;margin:0 0 22px;padding:5px;max-width:100%;background:var(--glass);border:1px solid var(--edge);border-radius:999px}
 .tile{min-width:0;padding:10px 22px;color:var(--muted);background:transparent;border:0;border-radius:999px;box-shadow:none}
 .tile.on,.tile.on:hover:not(:disabled){color:#fff;background:var(--acc);box-shadow:0 6px 20px rgba(10,132,255,.4)}
-.grid{grid-template-columns:repeat(4,1fr);grid-auto-rows:200px;grid-auto-flow:dense;gap:16px}
+.grid{grid-template-columns:repeat(4,minmax(0,1fr));grid-auto-rows:minmax(200px,auto);grid-auto-flow:dense;gap:16px}
 .grid>.card:first-child{grid-column:span 2;grid-row:span 2}.grid>.card:nth-child(7n+4){grid-column:span 2}
-.card{display:block;padding:0;border-radius:36px;cursor:default}
+.card{display:flex;flex-direction:column;justify-content:flex-end;min-height:200px;padding:0;border-radius:36px;cursor:default}
 .card:hover{transform:scale(1.025)}
 .card .img{position:absolute;inset:0;aspect-ratio:auto;border-radius:0}
 .badge{z-index:2}
-.cap{position:absolute;left:10px;right:10px;bottom:10px;z-index:2;display:flex;align-items:center;gap:10px;padding:10px 10px 10px 18px;color:#fff;background:rgba(12,14,40,.4);border:1px solid rgba(255,255,255,.2);border-radius:26px;-webkit-backdrop-filter:blur(22px);backdrop-filter:blur(22px)}
-.cap>div{flex:1;min-width:0}.cap h3,.card .cap h3{margin:0;font-size:.98rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.cap small{display:block;font-size:.8rem;opacity:.75;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cap{position:relative;margin:10px;z-index:2;display:flex;align-items:center;gap:10px;padding:10px 10px 10px 18px;color:#fff;background:rgba(12,14,40,.4);border:1px solid rgba(255,255,255,.2);border-radius:26px;-webkit-backdrop-filter:blur(22px);backdrop-filter:blur(22px)}
+.cap>div{flex:1;min-width:0}.cap h3,.card .cap h3{margin:0;font-size:.98rem;line-height:1.25;white-space:normal;overflow-wrap:break-word;word-break:normal;hyphens:manual}
+.cap small{display:block;margin-top:2px;font-size:.8rem;line-height:1.3;opacity:.8;white-space:normal;overflow-wrap:break-word}
 .cap .pr b{font-size:1.05rem;font-weight:800}.cap .was{color:rgba(255,255,255,.6)}
 .cap .add{width:40px;height:40px;font-size:1.5rem}
 .grid>.card:first-child .cap h3{font-size:1.3rem}
@@ -260,3 +260,88 @@ main{width:calc(100% - 24px);margin:12px auto 110px;padding:22px 16px;border-rad
 #helpfab{top:calc(14px + env(safe-area-inset-top));bottom:auto;right:20px;width:44px;height:44px;min-height:0;padding:0;font-size:0;border-radius:50%}
 #helpfab::before{content:'?';font-size:1.2rem;font-weight:700}
 }
+
+/* ===== v2: full names, real phone layout, boot status ===== */
+html{overflow-x:hidden}body{min-height:100vh;min-height:100dvh;overflow-x:hidden;overflow-wrap:break-word}
+img{max-width:100%}
+.card h3,.cline>span,.panel b,td b,.pickrow,dialog h2{overflow-wrap:break-word}
+.card .img img{background:transparent}
+.cap .pr{flex:none;display:flex;flex-direction:column;align-items:flex-end;line-height:1.15;text-align:right}
+.cap .pr .was{margin:0;font-size:.74rem}
+/* the legibility scrim: long names stay readable on any picture */
+.card .img::after{content:'';position:absolute;inset:auto 0 0 0;height:75%;background:linear-gradient(to top,rgba(8,10,30,.72),transparent);pointer-events:none}
+.card .cap{background:rgba(12,14,40,.5)}
+/* tablet and phone: two columns, no card ever gets a fixed height, so no word is ever clipped */
+@media(max-width:900px){
+.grid{grid-template-columns:repeat(2,minmax(0,1fr));grid-auto-rows:auto;gap:12px}
+.grid>.card:first-child,.grid>.card:nth-child(7n+4){grid-column:auto;grid-row:auto}
+.card{min-height:0;border-radius:24px}
+.card .img{position:relative;inset:auto;aspect-ratio:4/3;flex:none;border-radius:24px 24px 0 0}
+.card .img::after{display:none}
+.card .cap{margin:0;border:0;border-radius:0 0 24px 24px;flex:1;flex-wrap:wrap;align-items:flex-end;align-content:space-between;gap:6px 8px;padding:10px 10px 10px 12px;color:var(--txt);background:transparent;-webkit-backdrop-filter:none;backdrop-filter:none}
+.card .cap>div{flex:1 1 100%}
+.grid>.card.combo{grid-column:1/-1}
+.grid>.card.combo .img{aspect-ratio:16/7}
+.card .cap .pr{flex:1 1 auto;align-items:flex-start;text-align:left}
+.cap .was{color:var(--muted)}
+.cap h3,.card .cap h3,.grid>.card:first-child .cap h3{font-size:.92rem}
+.cap small{opacity:1;color:var(--muted);font-size:.76rem}
+.cap .pr b{font-size:1rem}
+.card .cap .add{width:38px;height:38px}
+.stat b{font-size:2.4rem}
+main{padding:18px 12px}
+.hero h2{max-width:100%}
+}
+@media(max-width:520px){
+.card .img{aspect-ratio:1/1}
+.card .cap{padding:8px 8px 10px 10px}
+.cap h3,.card .cap h3,.grid>.card:first-child .cap h3{font-size:.86rem}
+.cap small{font-size:.72rem}
+.cap .pr b{font-size:.95rem}
+.card .cap .add{width:36px;height:36px;font-size:1.4rem}
+.badge{top:8px;left:8px;padding:4px 9px;font-size:.68rem}.badge.off{left:auto;right:8px}
+.cat-title{margin:22px 0 12px}
+.hero h2{font-size:clamp(1.9rem,9vw,2.6rem)}
+}
+@media(max-width:310px){
+.grid{grid-template-columns:minmax(0,1fr)}
+}
+@media(max-width:640px){
+h2{font-size:1.4rem}
+.panel{padding:16px}
+.toolbar select,.toolbar input[type=date]{flex:1 1 140px}
+.table-wrap{margin:0 -4px}
+.actions button{padding:9px 14px}
+.cline{gap:8px}
+dialog{padding:20px 16px 28px}
+.tile{padding:10px 18px}
+.cats{max-width:100%;overflow-x:auto}
+.ogrid{grid-template-columns:minmax(0,1fr)}
+.stat{padding:14px 16px}
+.stat b{font-size:2rem}
+.nav{width:calc(100% - 20px)}
+}
+/* keep the fixed dock / sheet away from the iPhone home bar and notch */
+@supports(padding:max(0px)){
+main{padding-left:max(12px,env(safe-area-inset-left));padding-right:max(12px,env(safe-area-inset-right))}
+}
+/* boot screen: also tells people when the free server is still waking up */
+.boot-msg{position:relative;min-height:1.4em;max-width:80vw;margin:0;text-align:center;font-size:.9rem;font-weight:600;color:var(--muted);opacity:0;transition:opacity .4s}
+.boot-msg.on{opacity:1}
+.boot-msg button{margin-top:10px}
+#boot .boot-bar i{animation:bootBar 1.1s var(--ease) .25s backwards}
+#boot.slow .boot-bar i{animation:bootSlide 1.4s ease-in-out infinite;width:40%}
+@keyframes bootSlide{0%{transform:translateX(-100%)}100%{transform:translateX(250%)}}
+#boot.go .boot-logo img{animation:bootLogo .8s var(--spring) backwards,bootBreath 2.4s ease-in-out .9s infinite}
+@keyframes bootBreath{0%,100%{transform:scale(1)}50%{transform:scale(1.06)}}
+/* skeleton cards while the shop loads */
+.sk{min-height:170px;border-radius:24px;background:linear-gradient(100deg,var(--glass) 30%,var(--glass2) 50%,var(--glass) 70%);background-size:300% 100%;animation:skel 1.4s linear infinite;border:1px solid var(--edge)}
+@keyframes skel{from{background-position:100% 0}to{background-position:0 0}}
+
+/* ===== v3: favorites heart, activity log ===== */
+.fav{position:absolute;top:10px;right:10px;z-index:3;width:38px;height:38px;min-height:0;padding:0;border-radius:50%;display:grid;place-items:center;font-size:1.25rem;line-height:1;cursor:pointer;
+  color:var(--txt);background:rgba(255,255,255,.78);border:1px solid var(--edge);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);transition:transform .2s var(--spring),color .2s}
+.fav:active{transform:scale(.88)}
+.fav.on{color:#e0245e;transform:scale(1.05)}
+.card.has-fav .badge.off{right:58px}
+@media(max-width:520px){.fav{top:8px;right:8px;width:34px;height:34px;font-size:1.1rem}.card.has-fav .badge.off{right:50px}}
