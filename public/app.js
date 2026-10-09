@@ -194,7 +194,7 @@ function fillBanner() {
 
 const CAT_IC = { all: '\u2728', combos: '\u{1F381}', drinks: '\u{1F964}', snacks: '\u{1F37F}' };
 function renderShop() {
-  const tile = (id, label) => `<button class="tile${catFilter === id ? ' on' : ''}" data-act="cat" data-cat="${id}"><span class="ic">${CAT_IC[id] || '\u{1F37D}\uFE0F'}</span>${label}</button>`;
+  const tile = (id, label) => `<button class="tile${catFilter === id ? ' on' : ''}" data-act="cat" data-cat="${id}">${label}</button>`;
   $('#app').innerHTML = `<section class="hero"><h2>What are you craving?</h2><p>Fresh drinks and snacks. Pay cash when it is handed to you.</p>
       <input id="search" type="search" placeholder="Search snacks and drinks..." value="${esc(searchText)}" autocomplete="off"></section>
     <div id="banner"></div>
@@ -646,9 +646,8 @@ function drawCash() {
 
 function renderAdmin() {
   adminHtml = ''; customAdminHtml = '';
-  const TAB_IC = { products: '\u{1F6CD}\uFE0F', orders: '\u{1F4E6}', custom: '\u270F\uFE0F', cash: '\u{1F4B5}', report: '\u{1F4C8}', combos: '\u{1F381}', promos: '\u{1F3F7}\uFE0F', customers: '\u{1F465}', sellers: '\u{1F91D}', backup: '\u{1F4BE}', alerts: '\u{1F514}' };
   const tab = (id, label, extra = '') =>
-    `<button id="tab-${id}" class="${adminTab === id ? 'primary' : ''}" data-act="admintab" data-tab="${id}"><span class="ti">${TAB_IC[id] || ''}</span>${label}${extra}</button>`;
+    `<button id="tab-${id}" class="${adminTab === id ? 'primary' : ''}" data-act="admintab" data-tab="${id}">${label}${extra}</button>`;
   const tabs = `<div class="tabs">${tab('products', 'Products')}${tab('orders', 'Orders', pendingCount ? ` (${pendingCount})` : '')}${tab('custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : '')}${tab('cash', 'Cash')}${tab('report', 'Report')}${tab('combos', 'Combos')}${tab('promos', 'Promos')}${tab('customers', 'Customers')}${isRaven() ? tab('sellers', 'Sellers') + tab('backup', 'Backup') : tab('alerts', 'Alerts')}</div>`;
   const productsView = `
     <section class="panel glass">
@@ -762,10 +761,10 @@ function renderAdmin() {
       <h2>Backup and restore</h2>
       <p>Download everything (products with photos, accounts, orders and custom requests) as one file. Keep it private, because it contains customer accounts.</p>
       <button class="primary" data-act="backup">Download backup</button>
-      <hr style="border:0;border-top:1px solid var(--border);margin:22px 0">
+      <hr style="border:0;border-top:3px solid var(--ink);margin:22px 0">
       <p><b>Automatic backups</b> are saved here every 3 days (the newest 5 are kept). They live in the same database as the shop, so still download one by hand now and then and keep it somewhere safe.</p>
       <div id="autobk"><p>Loading...</p></div>
-      <hr style="border:0;border-top:1px solid var(--border);margin:22px 0">
+      <hr style="border:0;border-top:3px solid var(--ink);margin:22px 0">
       <p><b>Restore</b> replaces everything on the site with the contents of a backup file. Use it on a new, empty database.</p>
       <input id="bfile" type="file" accept=".json,application/json">
       <button class="danger" data-act="restore">Restore from backup</button>
@@ -886,7 +885,7 @@ function renderCustom() {
   $('#app').innerHTML = `<h2>Custom order</h2>
     <section class="panel glass">
       <p style="margin-top:0">Can't find what you're looking for? Tell us what you want and we'll reply with a price, or let you know if we can't provide it.</p>
-      <p style="padding:10px 14px;border-radius:12px;border:1px dashed var(--acc2);background:rgba(124,58,237,.08);font-size:.92rem">
+      <p style="padding:10px 14px;border-radius:8px;border:3px dashed var(--ink);background:var(--yellow);color:#000;font-size:.92rem">
         <b>Please note:</b> external charges may apply to custom orders. The price we send back is the one that counts, and you can accept or decline it.</p>
       ${form}
     </section>
