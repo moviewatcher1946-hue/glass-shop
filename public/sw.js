@@ -1,7 +1,7 @@
 // Snack Shop service worker: makes the shop installable on Android Chrome.
 // Pages and files are fetched from the network first (so a new deploy shows up right away) and kept as a fallback for when the signal drops.
 // Live data (/api/...) is never stored.
-const CACHE = 'shop-v3glass';
+const CACHE = 'shop-v4glass';
 const IMG = 'shop-img-v1'; // product pictures: kept on the device, shown instantly, never re-downloaded
 const SHELL = ['/', '/style.css', '/app.js', '/tour.js', '/manifest.json', '/icon-192.png', '/icon-512.png'];
 
