@@ -51,7 +51,8 @@
 </head>
 <body>
   <div id="boot" role="status" aria-live="polite">
-    <div class="boot-logo"><img src="icon-192.png" alt="" width="96" height="96"></div>
+    <svg width="0" height="0" aria-hidden="true" style="position:absolute"><filter id="goo"><feGaussianBlur in="SourceGraphic" stdDeviation="9" result="b"/><feColorMatrix in="b" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 22 -9"/></filter></svg>
+    <div class="boot-logo"><div class="boot-orbs" aria-hidden="true"><i style="--x:-130px;--y:-50px;background:#0a84ff"></i><i style="--x:125px;--y:-70px;background:#bf5af2"></i><i style="--x:10px;--y:130px;background:#5e5ce6"></i></div><img src="icon-192.png" alt="" width="96" height="96"></div>
     <div class="boot-title" aria-label="Snack Shop"><span style="--i:0">S</span><span style="--i:1">n</span><span style="--i:2">a</span><span style="--i:3">c</span><span style="--i:4">k</span><span style="--i:5">&nbsp;</span><span style="--i:6">S</span><span style="--i:7">h</span><span style="--i:8">o</span><span style="--i:9">p</span></div>
     <div class="boot-bar"><i></i></div>
     <p class="boot-msg" id="boot-msg"></p>
@@ -78,7 +79,7 @@
       // Start the clock only after the browser has painted the first frame, so a slow phone doesn't lose the first half second.
       requestAnimationFrame(function () { requestAnimationFrame(function () {
         b.classList.add('go');
-        setTimeout(function () { minDone = true; check(); }, seen ? 800 : 1400);
+        setTimeout(function () { minDone = true; check(); }, seen ? 1300 : 2200);
         setTimeout(function () { if (!shown && !ready) { b.classList.add('slow'); say('Waking the shop up. The server sleeps when it is quiet, so this can take up to a minute the first time.'); } }, 3500);
       }); });
       (window.__pre || Promise.resolve()).then(function () { return window.__preReady; }).then(function () { ready = true; check(); }, function () {
