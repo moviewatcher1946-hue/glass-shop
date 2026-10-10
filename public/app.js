@@ -124,12 +124,12 @@ async function loadFavs() {
   try { favs = new Set(await api('/api/favorites')); if (view === 'shop') fillGrid(); } catch (e) { /* hearts just stay empty */ }
 }
 const heartBtn = (id) => `<button class="fav${favs.has(id) ? ' on' : ''}" data-act="fav" data-id="${id}" aria-pressed="${favs.has(id)}" aria-label="Favorite">${favs.has(id) ? '\u2665' : '\u2661'}</button>`;
-const capHtml = (title, sub, price, attrs, dis) => `<div class="cap"><div><h3>${title}</h3>${sub ? `<small>${sub}</small>` : ''}</div><span class="pr">${price}</span><button class="primary add" ${attrs} aria-label="Add ${title} to cart" ${dis ? 'disabled' : ''}>+</button></div>`;
+const capHtml = (title, sub, price, attrs, dis, desc = '') => `<div class="cap"><div><h3>${title}</h3>${sub ? `<small>${sub}</small>` : ''}${desc ? `<small class="desc">${desc}</small>` : ''}</div><span class="pr">${price}</span><button class="primary add" ${attrs} aria-label="Add ${title} to cart" ${dis ? 'disabled' : ''}>+</button></div>`;
 const productCard = (p) => {
   const off = Number(p.discount_percent) || 0;
-  const note = bulkOn(p) ? `Buy ${p.bulk_min}+ and save ${p.bulk_percent}%` : (!p.is_sold_out && p.stock != null && p.stock <= LOW_STOCK ? `Only ${p.stock} left` : esc(p.description));
-  return `<article class="card t has-fav"><div class="img">${heartBtn(p.id)}${p.image_url ? `<img loading="lazy" decoding="async" src="${esc(thumb(p.image_url, 480))}" srcset="${esc(thumb(p.image_url, 240))} 240w, ${esc(thumb(p.image_url, 480))} 480w, ${esc(thumb(p.image_url, 800))} 800w" sizes="(max-width:380px) 100vw, (max-width:900px) 50vw, 25vw" alt="${esc(p.title)}">` : ''}${p.is_sold_out ? '<span class="badge">Sold out</span>' : ''}${off ? `<span class="badge off">-${off}% OFF</span>` : ''}</div>` +
-    capHtml(esc(p.title), note, `${off ? `<span class="was">${money(p.price)}</span> ` : ''}<b>${money(fin(p))}</b>`, `data-act="add" data-id="${p.id}"`, p.is_sold_out) + '</article>';
+  const note = bulkOn(p) ? `Buy ${p.bulk_min}+ and save ${p.bulk_percent}%` : (!p.is_sold_out && p.stock != null && p.stock <= LOW_STOCK ? `Only ${p.stock} left` : '');
+  return `<article class="card t has-fav"><div class="img">${heartBtn(p.id)}${p.image_url ? `<img loading="lazy" decoding="async" src="${esc(thumb(p.image_url, 480))}" srcset="${esc(thumb(p.image_url, 240))} 240w, ${esc(thumb(p.image_url, 480))} 480w, ${esc(thumb(p.image_url, 800))} 800w" sizes="(max-width:380px) 100vw, (max-width:900px) 50vw, 25vw" alt="${esc(p.title)}">` : ''}${p.hidden ? '<span class="badge">Hidden from shop</span>' : p.is_sold_out ? '<span class="badge">Sold out</span>' : ''}${off ? `<span class="badge off">-${off}% OFF</span>` : ''}</div>` +
+    capHtml(esc(p.title), note, `${off ? `<span class="was">${money(p.price)}</span> ` : ''}<b>${money(fin(p))}</b>`, `data-act="add" data-id="${p.id}"`, p.is_sold_out, esc(p.description)) + '</article>';
 };
 const comboCard = (c) => {
   const out = c.items.some((x) => x.is_sold_out);
@@ -138,7 +138,7 @@ const comboCard = (c) => {
   const withPic = c.items.filter((x) => x.image_url).slice(0, 4);
   const imgs = withPic.map((x) => `<img loading="lazy" decoding="async" src="${esc(thumb(x.image_url, withPic.length === 1 ? 480 : 240))}" alt="">`).join('');
   return `<article class="card t combo"><div class="img"><div class="combo-imgs">${imgs}</div>${out ? '<span class="badge">Sold out</span>' : save > 0 ? `<span class="badge off">Save ${money(save)}</span>` : ''}</div>` +
-    capHtml(esc(c.title), c.items.map((x) => `${x.quantity}x ${esc(x.title)}`).join(', '), `${save > 0 ? `<span class="was">${money(regular)}</span> ` : ''}<b>${money(c.price)}</b>`, `data-act="addcombo" data-id="${c.id}"`, out) + '</article>';
+    capHtml(esc(c.title), '', `${save > 0 ? `<span class="was">${money(regular)}</span> ` : ''}<b>${money(c.price)}</b>`, `data-act="addcombo" data-id="${c.id}"`, out, c.items.map((x) => `${x.quantity}x ${esc(x.title)}`).join(', ')) + '</article>';
 };
 
 // Redraws only the product list, so the search box keeps focus while typing.
@@ -570,8 +570,8 @@ async function loadAlerts() {
 async function refreshSellers() {
   sellers = await api('/api/admin/sellers');
   const el = $('#sellerlist');
-  if (el) el.innerHTML = sellers.length ? `<table>${sellers.map((x) => `<tr><td><b>${esc(x.username)}</b></td>
-    <td><div class="actions"><button data-act="seller-rename" data-id="${x.id}">Rename</button><button data-act="seller-pw" data-id="${x.id}">New password</button>
+  if (el) el.innerHTML = sellers.length ? `<table>${sellers.map((x) => `<tr><td><b>${esc(x.username)}</b>${x.products_hidden ? ' <span class="pill st-cancelled">Hidden from shop</span>' : ''}</td>
+    <td><div class="actions"><button data-act="seller-hide" data-id="${x.id}" data-hidden="${x.products_hidden ? 1 : 0}" class="${x.products_hidden ? 'primary' : ''}">${x.products_hidden ? 'Show products' : 'Hide products'}</button><button data-act="seller-rename" data-id="${x.id}">Rename</button><button data-act="seller-pw" data-id="${x.id}">New password</button>
     <button class="danger" data-act="seller-del" data-id="${x.id}">Remove</button><button class="danger" data-act="seller-split" data-id="${x.id}" data-name="${esc(x.username)}">Split off</button></div></td></tr>`).join('')}</table>` : '<p>No sellers yet.</p>';
   const ob = $('#ownerbox');
   if (ob) {
@@ -710,6 +710,7 @@ function renderAdmin() {
         <option value="yesterday">Yesterday</option><option value="week">Last 7 days</option></select>
       <input type="date" id="oday" aria-label="Pick a day">
       <button class="primary" data-act="print-orders">Print packing list</button>
+        <button data-act="guest-order">New order for a customer</button>
       ${isRaven() ? '<label class="pickrow" style="padding:0"><input type="checkbox" id="onlymine"> Print only my items</label>' : ''}
     </div>
     <p class="muted" id="ocount" style="margin:0 0 4px"></p>
@@ -1110,6 +1111,21 @@ const actions = {
     if (!added) return toast('Those items are not available right now.');
     saveCart(); cartDialog();
   },
+  'seller-hide': async (id, d) => {
+    const hide = d.hidden !== '1';
+    await api(`/api/admin/sellers/${id}/hidden`, { method: 'PATCH', json: { hidden: hide } });
+    await refreshSellers(); await loadProducts(); toast(hide ? 'Hidden from the shop until you turn it back on.' : 'Visible in the shop again.');
+  },
+  'guest-order': () => {
+    const list = myProducts().filter((p) => !p.is_sold_out && !p.hidden);
+    $('#dlg').innerHTML = `<h2>New order for a customer</h2><p class="muted">For someone who cannot log in. It appears in Orders under their name, like any other order.</p><form data-form="guestorder">
+      <label>Customer name</label><input name="customer_name" required minlength="2" maxlength="30" autocomplete="off">
+      <label>How they message you (optional)</label><input name="contact" maxlength="120" autocomplete="off" placeholder="Messenger, phone...">
+      <label>Items: set how many</label><div class="picks">${list.map((p) => `<label class="pickrow">${esc(p.title)} (${money(fin(p))})<input type="number" name="q_${p.id}" min="0" max="99" value="0" inputmode="numeric"></label>`).join('') || '<p>No products available.</p>'}</div>
+      <label>Note (optional)</label><input name="note" maxlength="200" autocomplete="off">
+      <button class="primary">Place order</button><button type="button" data-act="close">Cancel</button></form>`;
+    $('#dlg').showModal();
+  },
   'seller-rename': async (id) => {
     const cur = (sellers.find((x) => x.id == id) || {}).username || '';
     const name = prompt('New username for this seller (3-30 letters, numbers or _):', cur);
@@ -1337,6 +1353,12 @@ document.addEventListener('submit', async (e) => {
     } else if (e.target.dataset.form === 'changepw') {
       const d = await api('/api/auth/change-password', { method: 'POST', json: Object.fromEntries(new FormData(e.target)) });
       setSession(d.token, d.user); forcePw = false; $('#dlg').close(); render(); toast('Password changed.');
+    } else if (e.target.dataset.form === 'guestorder') {
+      const fd = Object.fromEntries(new FormData(e.target));
+      const items = Object.keys(fd).filter((k) => k.startsWith('q_') && parseInt(fd[k]) > 0).map((k) => ({ product_id: +k.slice(2), quantity: parseInt(fd[k]) }));
+      if (!items.length) throw new Error('Set a quantity for at least one item.');
+      const o = await api('/api/staff/orders', { method: 'POST', json: { customer_name: fd.customer_name, contact: fd.contact, note: fd.note, items } });
+      $('#dlg').close(); await Promise.all([refreshOrders(), loadProductsQuiet()]); toast(`Order #${o.id} placed for ${fd.customer_name}.`);
     } else if (e.target.dataset.form === 'split') {
       const d = await api(`/api/admin/sellers/${e.target.dataset.id}/split-off`, { method: 'POST', json: Object.fromEntries(new FormData(e.target)) });
       $('#dlg').close(); await refreshSellers(); await loadProducts();
@@ -1520,3 +1542,9 @@ if ('serviceWorker' in navigator) {
 window.addEventListener('bootdone', animateApp); // replay the page entrance once the startup animation lifts
 
 loadProducts().catch((e) => toast(e.message));
+
+// Tap a product tile to read its description (it stays out of the way until then).
+document.addEventListener('click', (e) => {
+  const c = e.target.closest && e.target.closest('.card.t');
+  if (c && !e.target.closest('button, a, input, select')) c.classList.toggle('open');
+});
