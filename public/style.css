@@ -514,3 +514,27 @@ tbody tr{transition:background .25s}tbody tr:hover{background:var(--glass)}
 /* category switch wraps instead of cutting a tab off */
 .cats{flex-wrap:wrap;overflow:visible;max-width:100%}.tile{flex:1 1 auto;text-align:center}
 @media(min-width:901px){.tile{flex:0 1 auto}}
+/* ===== grouped admin tabs ===== */
+.subtabs{display:inline-flex;flex-wrap:wrap;gap:4px;margin:0 0 16px;padding:5px;max-width:100%;background:var(--glass);border:1px solid var(--edge);border-radius:999px;animation:fxIn .45s var(--ease) backwards}
+.subtabs button{padding:9px 18px;font-size:.85rem;color:var(--muted);background:transparent;border-color:transparent;box-shadow:none}
+.subtabs button.primary{color:#fff;background:var(--acc);box-shadow:0 6px 18px rgba(10,132,255,.35)}
+/* ===== new logo animation: glass drops merge, the logo pops out, a shine passes over it ===== */
+#boot .boot-bar{display:none}#boot.slow .boot-bar{display:block}
+#boot .boot-logo{width:180px;height:180px}
+#boot .boot-orbs{position:absolute;inset:0;filter:url(#goo)}
+#boot .boot-orbs i{position:absolute;left:50%;top:50%;width:64px;height:64px;margin:-32px;border-radius:50%;animation:lgOrb 1.05s cubic-bezier(.65,0,.35,1) .1s both}
+#boot .boot-logo::before{content:'';position:absolute;inset:46px;border:2px solid rgba(255,255,255,.7);border-radius:28%;opacity:0;animation:lgRing 1.2s var(--ease) 1s backwards}
+#boot .boot-logo::after{content:'';position:absolute;inset:46px;z-index:3;border-radius:28%;pointer-events:none;background:linear-gradient(115deg,transparent 30%,rgba(255,255,255,.8) 50%,transparent 70%) 160% 0/260% 100% no-repeat;mix-blend-mode:overlay;-webkit-backdrop-filter:none;backdrop-filter:none;border:0;box-shadow:none;animation:lgSweep 2.6s ease-in-out 1.35s infinite}
+#boot .boot-logo img,#boot.go .boot-logo img{position:relative;z-index:2;width:88px;height:88px;animation:lgPop .85s var(--spring) .8s backwards,lgFloat 3.2s ease-in-out 1.8s infinite}
+#boot::after{content:'';position:absolute;width:460px;height:460px;max-width:120vw;border-radius:50%;pointer-events:none;background:radial-gradient(circle,rgba(125,107,255,.38),transparent 65%);animation:lgGlow 1.8s var(--ease) .5s backwards}
+#boot .boot-title{animation:none}
+#boot .boot-title span{background:linear-gradient(120deg,var(--txt) 10%,#7aa7ff 55%,#c07cff);-webkit-background-clip:text;background-clip:text;color:transparent;animation:bsLetter .7s var(--ease) backwards;animation-delay:calc(1.05s + var(--i)*.05s)}
+#boot .boot-orbs i,#boot .boot-logo::before,#boot .boot-logo::after,#boot::after{animation-play-state:paused}
+#boot.go .boot-orbs i,#boot.go .boot-logo::before,#boot.go .boot-logo::after,#boot.go::after{animation-play-state:running}
+@keyframes lgOrb{from{transform:translate(var(--x),var(--y)) scale(.55)}55%{transform:translate(0,0) scale(1.15)}100%{transform:translate(0,0) scale(0)}}
+@keyframes lgPop{from{opacity:0;transform:scale(.35) rotate(-14deg);filter:blur(12px)}to{opacity:1;transform:none;filter:blur(0)}}
+@keyframes lgFloat{50%{transform:translateY(-6px)}}
+@keyframes lgSweep{0%,35%{background-position:160% 0}100%{background-position:-60% 0}}
+@keyframes lgRing{0%{transform:scale(1);opacity:0}12%{opacity:.9}100%{transform:scale(2.7);opacity:0}}
+@keyframes lgGlow{from{opacity:0;transform:scale(.4)}to{opacity:1;transform:none}}
+.subtabs{display:flex;width:fit-content}
