@@ -126,7 +126,7 @@ async function squeeze(f) {
   } catch (e) { return f; }
 }
 const wrap = (fn) => (req, res, next) => fn(req, res, next).catch(next);
-const COLS = 'id,title,description,price,is_sold_out,category,discount_percent,bulk_min,bulk_percent,image_url,created_at,owner_id,stock';
+const COLS = 'id,title,description,price,is_sold_out,category,discount_percent,bulk_min,bulk_percent,image_url,created_at,owner_id,stock,pinned,sort_order';
 const LOW_STOCK = 5; // warn at this many left or fewer
 const CATEGORIES = ['drinks', 'snacks'];
 // Price after the product's % discount. The server always works the price out itself.
@@ -295,6 +295,13 @@ const ensureShop = () => pool.query(`
   );
 `);
 
+// Shop layout: Raven can pin products to the top and drag them into any order (safe to run every start).
+// sort_order is NULL until a product has been arranged; arranged products keep their place, the rest are shuffled by the shop page.
+const ensureMerch = () => pool.query(`
+  ALTER TABLE products ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT false;
+  ALTER TABLE products ADD COLUMN IF NOT EXISTS sort_order INT;
+`);
+
 // Seller accounts and ownership (safe to run every start). Existing rows become the main admin's.
 const ensureOwners = () => pool.query(`
   ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
@@ -429,7 +436,7 @@ app.get('/api/auth/me', auth, (req, res) => res.json({ user: req.user }));
 /* ---------- Products (public read) ---------- */
 app.get('/api/products', softAuth, wrap(async (req, res) => {
   const hidden = 'COALESCE((SELECT products_hidden FROM users WHERE users.id=products.owner_id), false) AS hidden';
-  res.json((await pool.query(`SELECT ${COLS}, ${hidden} FROM products ${isStaffReq(req) ? '' : `WHERE ${HIDE_PROD}`} ORDER BY created_at DESC`)).rows);
+  res.json((await pool.query(`SELECT ${COLS}, ${hidden} FROM products ${isStaffReq(req) ? '' : `WHERE ${HIDE_PROD}`} ORDER BY pinned DESC, sort_order ASC NULLS LAST, created_at DESC`)).rows);
 }));
 
 app.get('/api/products/:id', wrap(async (req, res) => {
@@ -597,6 +604,27 @@ app.patch('/api/products/:id/sold-out', auth, staff, wrap(async (req, res) => {
     `UPDATE products SET is_sold_out = NOT is_sold_out WHERE id=$1 RETURNING ${COLS}`, [req.params.id]);
   if (!p) throw bad('Product not found.', 404);
   res.json(p);
+}));
+
+// Shop layout is Raven's call (main admin only): pin to the top, and set the order customers see.
+app.patch('/api/products/:id/pin', auth, admin, wrap(async (req, res) => {
+  const on = req.body && req.body.pinned !== undefined ? !!req.body.pinned : null; // no value = toggle
+  const { rows: [p] } = await pool.query(
+    `UPDATE products SET pinned = COALESCE($2::boolean, NOT pinned),
+       sort_order = CASE WHEN COALESCE($2::boolean, NOT pinned) THEN COALESCE((SELECT MIN(sort_order) FROM products WHERE pinned), 0) - 1 ELSE sort_order END
+     WHERE id=$1 RETURNING ${COLS}`, [req.params.id, on]);
+  if (!p) throw bad('Product not found.', 404);
+  res.json(p);
+}));
+
+// Saves a drag-and-drop order: ids in the order they should appear. Anything not listed keeps its place.
+app.patch('/api/products/reorder', auth, admin, wrap(async (req, res) => {
+  const raw = Array.isArray(req.body && req.body.ids) ? req.body.ids : [];
+  const ids = [...new Set(raw.map(Number).filter((n) => Number.isInteger(n) && n > 0))].slice(0, 2000);
+  if (!ids.length) throw bad('Nothing to reorder.');
+  const { rowCount } = await pool.query(
+    'UPDATE products p SET sort_order = v.ord::int FROM unnest($1::int[]) WITH ORDINALITY AS v(id, ord) WHERE p.id = v.id', [ids]);
+  res.json({ updated: rowCount });
 }));
 
 // Move several products to a category at once.
@@ -1676,6 +1704,7 @@ init()
   .then(ensureCombos)
   .then(ensureShop)
   .then(ensureOwners)
+  .then(ensureMerch)
   .then(() => pool.query(`
     ALTER TABLE promo_codes ADD COLUMN IF NOT EXISTS product_ids INT[];
     ALTER TABLE promo_codes ADD COLUMN IF NOT EXISTS shop_wide BOOLEAN NOT NULL DEFAULT false;
