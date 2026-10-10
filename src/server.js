@@ -436,7 +436,7 @@ app.get('/api/auth/me', auth, (req, res) => res.json({ user: req.user }));
 /* ---------- Products (public read) ---------- */
 app.get('/api/products', softAuth, wrap(async (req, res) => {
   const hidden = 'COALESCE((SELECT products_hidden FROM users WHERE users.id=products.owner_id), false) AS hidden';
-  res.json((await pool.query(`SELECT ${COLS}, ${hidden} FROM products ${isStaffReq(req) ? '' : `WHERE ${HIDE_PROD}`} ORDER BY pinned DESC, sort_order ASC NULLS LAST, created_at DESC`)).rows);
+  res.json((await pool.query(`SELECT ${COLS}, ${req.user && req.user.role === 'admin' ? hidden : 'false AS hidden'} FROM products ${isStaffReq(req) ? '' : `WHERE ${HIDE_PROD}`} ORDER BY pinned DESC, sort_order ASC NULLS LAST, created_at DESC`)).rows);
 }));
 
 app.get('/api/products/:id', wrap(async (req, res) => {
@@ -661,7 +661,7 @@ app.post('/api/orders/reprice', auth, staff, wrap(async (req, res) => {
 /* ---------- Combos ---------- */
 app.get('/api/combos', softAuth, wrap(async (req, res) => {
   const { rows } = await pool.query(`${COMBO_SQL} WHERE ${COMBO_LIVE}${isStaffReq(req) ? '' : ` AND ${HIDE_COMBO}`} ORDER BY c.created_at DESC`);
-  if (isStaffReq(req)) { // staff still get hidden combos (to manage them), marked so the shop page can leave them out
+  if (req.user && req.user.role === 'admin') { // only the main admin is told which combos are hidden (sellers must not be able to tell)
     const hid = new Set((await pool.query(`SELECT c.id FROM combos c WHERE NOT (${HIDE_COMBO})`)).rows.map((r) => r.id));
     rows.forEach((c) => { c.hidden = hid.has(c.id); });
   }
