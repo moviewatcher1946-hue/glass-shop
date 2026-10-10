@@ -126,6 +126,21 @@ async function loadFavs() {
   if (!token) return;
   try { favs = new Set(await api('/api/favorites')); if (view === 'shop') fillGrid(); } catch (e) { /* hearts just stay empty */ }
 }
+// "New" for 3 days after a product is added; "Best seller" from the server. Neither shows on sold-out items.
+const tagFor = (p) => (p.is_sold_out || p.hidden ? '' : p.hot ? '<span class="tag hot">Best seller</span>' : Date.now() - new Date(p.created_at) < 3 * 864e5 ? '<span class="tag new">New</span>' : '');
+const dealOn = (p) => !p.hidden && !p.is_sold_out && (Number(p.discount_percent) > 0 || bulkOn(p));
+const EMPTY_ART = '<svg viewBox="0 0 160 130" aria-hidden="true"><defs><linearGradient id="eg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0a84ff"/><stop offset="1" stop-color="#bf5af2"/></linearGradient></defs><path d="M38 52h84l-8 56a10 10 0 0 1-10 9H56a10 10 0 0 1-10-9z" fill="url(#eg)" opacity=".9"/><path d="M60 52c0-16 8-26 20-26s20 10 20 26" fill="none" stroke="url(#eg)" stroke-width="7" stroke-linecap="round"/><circle cx="30" cy="30" r="5" fill="#ff9f0a"/><circle cx="132" cy="22" r="4" fill="#30d158"/><path d="M130 62l3 8 8 3-8 3-3 8-3-8-8-3 8-3z" fill="#ff375f"/><path d="M26 74l2 5 5 2-5 2-2 5-2-5-5-2 5-2z" fill="#64d2ff"/></svg>';
+// a short burst of confetti (skipped for people who turned animations off)
+function burst() {
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const colors = ['#0a84ff', '#bf5af2', '#ff375f', '#ff9f0a', '#30d158', '#64d2ff'], frag = document.createDocumentFragment();
+  for (let i = 0; i < 42; i++) {
+    const c = document.createElement('i'); c.className = 'cf';
+    c.style.cssText = `--x:${Math.random() * 100}vw;--dx:${(Math.random() - .5) * 220}px;--r:${Math.random() * 900 - 450}deg;--t:${1.3 + Math.random() * 1.1}s;--c:${colors[i % colors.length]};animation-delay:${Math.random() * .25}s`;
+    frag.appendChild(c); setTimeout(() => c.remove(), 2900);
+  }
+  document.body.appendChild(frag);
+}
 const heartBtn = (id) => `<button class="fav${favs.has(id) ? ' on' : ''}" data-act="fav" data-id="${id}" aria-pressed="${favs.has(id)}" aria-label="Favorite">${favs.has(id) ? '\u2665' : '\u2661'}</button>`;
 const capHtml = (title, sub, price, attrs, dis, desc = '') => `<div class="cap"><div><h3>${title}</h3>${sub ? `<small>${sub}</small>` : ''}${desc ? `<small class="desc">${desc}</small>` : ''}</div><span class="pr">${price}</span><button class="primary add" ${attrs} aria-label="Add ${title} to cart" ${dis ? 'disabled' : ''}>+</button></div>`;
 const GRIP_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>';
@@ -136,7 +151,7 @@ const arrangeCtl = (p) => `<div class="arr-ctl"><span class="grip" data-grip rol
 const productCard = (p) => {
   const off = Number(p.discount_percent) || 0;
   const note = bulkOn(p) ? `Buy ${p.bulk_min}+ and save ${p.bulk_percent}%` : (!p.is_sold_out && p.stock != null && p.stock <= LOW_STOCK ? `Only ${p.stock} left` : '');
-  return `<article class="card t has-fav${p.pinned ? ' pinned' : ''}" data-sid="${p.id}"><div class="img">${heartBtn(p.id)}${p.pinned ? PINMARK : ''}${arrange && isRaven() ? arrangeCtl(p) : ''}${p.image_url ? `<img loading="lazy" decoding="async" src="${esc(thumb(p.image_url, 480))}" srcset="${esc(thumb(p.image_url, 240))} 240w, ${esc(thumb(p.image_url, 480))} 480w, ${esc(thumb(p.image_url, 800))} 800w" sizes="(max-width:380px) 100vw, (max-width:900px) 60vw, 40vw" alt="${esc(p.title)}">` : ''}${p.hidden ? '<span class="badge">Hidden from shop</span>' : p.is_sold_out ? '<span class="badge">Sold out</span>' : ''}${off ? `<span class="badge off">-${off}% OFF</span>` : ''}</div>` +
+  return `<article class="card t has-fav${p.pinned ? ' pinned' : ''}" data-sid="${p.id}"><div class="img">${heartBtn(p.id)}${tagFor(p)}${p.pinned ? PINMARK : ''}${arrange && isRaven() ? arrangeCtl(p) : ''}${p.image_url ? `<img loading="lazy" decoding="async" src="${esc(thumb(p.image_url, 480))}" srcset="${esc(thumb(p.image_url, 240))} 240w, ${esc(thumb(p.image_url, 480))} 480w, ${esc(thumb(p.image_url, 800))} 800w" sizes="(max-width:380px) 100vw, (max-width:900px) 60vw, 40vw" alt="${esc(p.title)}">` : ''}${p.hidden ? '<span class="badge">Hidden from shop</span>' : p.is_sold_out ? '<span class="badge">Sold out</span>' : ''}${off ? `<span class="badge off">-${off}% OFF</span>` : ''}</div>` +
     capHtml(esc(p.title), note, `${off ? `<span class="was">${money(p.price)}</span> ` : ''}<b>${money(fin(p))}</b>`, `data-act="add" data-id="${p.id}"`, p.is_sold_out, esc(p.description)) + '</article>';
 };
 const comboCard = (c) => {
@@ -189,18 +204,18 @@ function drawGrid() {
   const arranging = arrange && isRaven(); // while arranging, every product of a section is shown (no search / favorites), so the saved order is complete
   el.classList.toggle('arrange', arranging);
   const text = arranging ? '' : searchText.trim().toLowerCase();
-  const filter = arranging && (catFilter === 'favs' || catFilter === 'combos') ? 'all' : catFilter;
+  const filter = arranging && (catFilter === 'favs' || catFilter === 'combos' || catFilter === 'deals') ? 'all' : catFilter;
   const match = (p) => !text || `${p.title} ${p.description}`.toLowerCase().includes(text);
   const catOf = (p) => (CATS[p.category] ? p.category : 'snacks');
   const comboList = !arranging && (filter === 'all' || filter === 'combos')
     ? shuffled(combos.filter((c) => !c.hidden && match({ title: c.title, description: `${c.description} ${c.items.map((x) => x.title).join(' ')}` })), (c) => 'c' + c.id) : [];
   const groups = Object.keys(CATS)
-    .filter((c) => filter === 'all' || filter === 'favs' || filter === c)
-    .map((c) => ({ c, list: shuffledPinned(products.filter((p) => !p.hidden && catOf(p) === c && match(p) && (filter !== 'favs' || favs.has(p.id)))) }))
+    .filter((c) => filter === 'all' || filter === 'favs' || filter === 'deals' || filter === c)
+    .map((c) => ({ c, list: shuffledPinned(products.filter((p) => !p.hidden && catOf(p) === c && match(p) && (filter !== 'favs' || favs.has(p.id)) && (filter !== 'deals' || dealOn(p)))) }))
     .filter((g) => g.list.length);
   el.innerHTML = (comboList.length ? `<h2 class="cat-title">Combos</h2><section class="grid">${comboList.map(comboCard).join('')}</section>` : '')
     + groups.map((g) => `<h2 class="cat-title">${CATS[g.c]}</h2><section class="grid" data-sortlist="shop">${g.list.map(productCard).join('')}</section>`).join('')
-    || `<p class="panel glass">${filter === 'favs' ? 'No favorites yet. Tap the heart on a product to save it here.' : products.length || combos.length ? 'No products match your search.' : 'No products yet.'}</p>`;
+    || `<div class="panel glass empty">${EMPTY_ART}<p>${filter === 'favs' ? 'No favorites yet. Tap the heart on a product to save it here.' : filter === 'deals' ? 'No deals right now. Check back soon!' : products.length || combos.length ? 'No products match your search.' : 'No products yet.'}</p></div>`;
 }
 
 // What Raven's order cutoff means for an order placed right now.
@@ -225,8 +240,10 @@ function renderShop() {
   const tile = (id, label) => `<button class="tile${catFilter === id ? ' on' : ''}" data-act="cat" data-cat="${id}">${label}</button>`;
   $('#app').innerHTML = `<section class="hero"><h2>What are you craving?</h2><p>Fresh drinks and snacks. Pay cash when it is handed to you.</p>
       <div id="herochips"></div><input id="search" type="search" placeholder="Search snacks and drinks..." value="${esc(searchText)}" autocomplete="off"><div id="heropics" aria-hidden="true"></div></section>
+    ${(() => { const msgs = ['Fresh drinks and snacks', 'Pay cash on delivery', 'New picks added often', 'Tap the heart to save your favorites', orderNote()].filter(Boolean), one = msgs.map((m) => `<span>\u2726 ${esc(m)}</span>`).join('');
+      return `<div class="ticker" aria-hidden="true"><div class="ticker-track">${one}${one}</div></div>`; })()}
     <div id="banner"></div>
-    <div class="cats">${tile('all', 'All')}${user ? tile('favs', '\u2665 Favorites') : ''}${tile('combos', 'Combos')}${Object.entries(CATS).map(([id, label]) => tile(id, label)).join('')}</div>
+    <div class="cats">${tile('all', 'All')}${user ? tile('favs', '\u2665 Favorites') : ''}${products.some(dealOn) ? tile('deals', '\uD83D\uDD25 Deals') : ''}${tile('combos', 'Combos')}${Object.entries(CATS).map(([id, label]) => tile(id, label)).join('')}</div>
     ${isRaven() ? arrBar() : ''}<div id="grid"></div>`;
   fillBanner();
   fillGrid();
@@ -843,6 +860,11 @@ function renderAdmin() {
       <p><b>Restore</b> replaces everything on the site with the contents of a backup file. Use it on a new, empty database.</p>
       <input id="bfile" type="file" accept=".json,application/json">
       <button class="danger" data-act="restore">Restore from backup</button>
+      <hr style="border:0;border-top:3px solid var(--ink);margin:22px 0">
+      <p><b>Reset sales</b> starts the sales numbers from zero: it deletes finished orders (history, reports, customer stamps), cash settlements between sellers and the promo "times used" counters. Products, accounts, combos and promo codes stay. A full safety backup is saved first (see Automatic backups above).</p>
+      <label class="pickrow" style="padding:0"><input type="checkbox" id="rskeep" checked> Keep orders that are still to pack or packed</label>
+      <input id="rsconfirm" placeholder="Type RESET to confirm" autocomplete="off" style="max-width:260px">
+      <button class="danger" data-act="salesreset">Reset sales</button>
     </section>`;
   const auditView = `<section class="panel glass"><h2>Activity</h2>
       <p class="muted">Who changed what: products, prices, stock, order status, sellers and settings. Newest first; the last 5000 changes are kept. Passwords are never recorded.</p>
@@ -1266,6 +1288,14 @@ const actions = {
     setTimeout(() => { app.style.minHeight = ''; }, 900);
   },
   quote: (id) => quoteDialog(id),
+  salesreset: async () => {
+    if (($('#rsconfirm').value || '').trim() !== 'RESET') return toast('Type RESET in the box first.');
+    if (!confirm('Delete the sales history now? A safety backup is saved first.')) return;
+    const r = await api('/api/admin/sales-reset', { method: 'POST', json: { confirm: 'RESET', keepOpen: $('#rskeep').checked } });
+    $('#rsconfirm').value = '';
+    await refreshOrders().catch(() => {}); refreshBackup().catch(() => {});
+    toast(`Sales reset: ${r.removed} order${r.removed === 1 ? '' : 's'} removed. A backup was saved first.`);
+  },
   csvq: (id, d) => {
     const now = new Date(), ymd = (x) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
     let a = now, b = now;
@@ -1396,7 +1426,7 @@ const actions = {
     if (!user) { authDialog(); return toast('Log in to place your order.'); }
     const items = cartLines().map((l) => (l.key[0] === 'c' ? { combo_id: l.key.slice(1), quantity: l.q } : { product_id: l.key, quantity: l.q }));
     const o = await api('/api/orders', { method: 'POST', json: { items, promo: promo ? promo.code : '', note: cartNote } });
-    cart = {}; promo = null; cartNote = ''; saveCart(); $('#dlg').close(); toast(`Order #${o.id} placed.`); view = 'orders'; render();
+    cart = {}; promo = null; cartNote = ''; saveCart(); $('#dlg').close(); toast(`Order #${o.id} placed.`); burst(); view = 'orders'; render();
   },
   toggle: async (id) => { await api(`/api/products/${id}/sold-out`, { method: 'PATCH' }); await loadProducts(); },
   delete: async (id) => { if (confirm('Delete this product?')) { await api(`/api/products/${id}`, { method: 'DELETE' }); await loadProducts(); toast('Deleted.'); } },
