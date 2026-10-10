@@ -130,16 +130,11 @@ async function loadFavs() {
 const tagFor = (p) => (p.is_sold_out || p.hidden ? '' : p.hot ? '<span class="tag hot">Best seller</span>' : Date.now() - new Date(p.created_at) < 3 * 864e5 ? '<span class="tag new">New</span>' : '');
 const dealOn = (p) => !p.hidden && !p.is_sold_out && (Number(p.discount_percent) > 0 || bulkOn(p));
 const EMPTY_ART = '<svg viewBox="0 0 160 130" aria-hidden="true"><defs><linearGradient id="eg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0a84ff"/><stop offset="1" stop-color="#bf5af2"/></linearGradient></defs><path d="M38 52h84l-8 56a10 10 0 0 1-10 9H56a10 10 0 0 1-10-9z" fill="url(#eg)" opacity=".9"/><path d="M60 52c0-16 8-26 20-26s20 10 20 26" fill="none" stroke="url(#eg)" stroke-width="7" stroke-linecap="round"/><circle cx="30" cy="30" r="5" fill="#ff9f0a"/><circle cx="132" cy="22" r="4" fill="#30d158"/><path d="M130 62l3 8 8 3-8 3-3 8-3-8-8-3 8-3z" fill="#ff375f"/><path d="M26 74l2 5 5 2-5 2-2 5-2-5-5-2 5-2z" fill="#64d2ff"/></svg>';
-// a short burst of confetti (skipped for people who turned animations off)
+// a soft glow that blooms across the screen and fades when an order is placed (skipped if animations are turned off)
 function burst() {
   if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-  const colors = ['#0a84ff', '#bf5af2', '#ff375f', '#ff9f0a', '#30d158', '#64d2ff'], frag = document.createDocumentFragment();
-  for (let i = 0; i < 42; i++) {
-    const c = document.createElement('i'); c.className = 'cf';
-    c.style.cssText = `--x:${Math.random() * 100}vw;--dx:${(Math.random() - .5) * 220}px;--r:${Math.random() * 900 - 450}deg;--t:${1.3 + Math.random() * 1.1}s;--c:${colors[i % colors.length]};animation-delay:${Math.random() * .25}s`;
-    frag.appendChild(c); setTimeout(() => c.remove(), 2900);
-  }
-  document.body.appendChild(frag);
+  const g = document.createElement('div'); g.className = 'glow-burst'; g.setAttribute('aria-hidden', 'true');
+  document.body.appendChild(g); setTimeout(() => g.remove(), 1800);
 }
 const heartBtn = (id) => `<button class="fav${favs.has(id) ? ' on' : ''}" data-act="fav" data-id="${id}" aria-pressed="${favs.has(id)}" aria-label="Favorite">${favs.has(id) ? '\u2665' : '\u2661'}</button>`;
 const capHtml = (title, sub, price, attrs, dis, desc = '') => `<div class="cap"><div><h3>${title}</h3>${sub ? `<small>${sub}</small>` : ''}${desc ? `<small class="desc">${desc}</small>` : ''}</div><span class="pr">${price}</span><button class="primary add" ${attrs} aria-label="Add ${title} to cart" ${dis ? 'disabled' : ''}>+</button></div>`;
