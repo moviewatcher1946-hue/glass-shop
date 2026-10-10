@@ -661,6 +661,10 @@ app.post('/api/orders/reprice', auth, staff, wrap(async (req, res) => {
 /* ---------- Combos ---------- */
 app.get('/api/combos', softAuth, wrap(async (req, res) => {
   const { rows } = await pool.query(`${COMBO_SQL} WHERE ${COMBO_LIVE}${isStaffReq(req) ? '' : ` AND ${HIDE_COMBO}`} ORDER BY c.created_at DESC`);
+  if (isStaffReq(req)) { // staff still get hidden combos (to manage them), marked so the shop page can leave them out
+    const hid = new Set((await pool.query(`SELECT c.id FROM combos c WHERE NOT (${HIDE_COMBO})`)).rows.map((r) => r.id));
+    rows.forEach((c) => { c.hidden = hid.has(c.id); });
+  }
   res.json(rows.filter((c) => c.items.length));
 }));
 
