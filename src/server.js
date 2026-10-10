@@ -1660,6 +1660,20 @@ const csvCell = (v) => {
   if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; // a name that starts with = or + must not run as a formula in a spreadsheet
   return /[",\n\r]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
 };
+// Every account (customers, guests, sellers, you) with its details. Passwords are only stored scrambled (bcrypt), so the file has the
+// scrambled version: it cannot be turned back into the real password. Main admin only.
+app.get('/api/admin/accounts.csv', auth, admin, wrap(async (req, res) => {
+  const { rows } = await pool.query(`SELECT u.id, u.username, u.role, u.created_at, u.guest_contact, u.signup_ip, u.device_id, u.must_change, u.temp_expires, u.products_hidden, u.password_hash,
+      (SELECT count(*) FROM orders o WHERE o.user_id=u.id) AS orders,
+      (SELECT COALESCE(sum(o.total),0) FROM orders o WHERE o.user_id=u.id AND o.status='completed') AS spent,
+      (SELECT max(o.created_at) FROM orders o WHERE o.user_id=u.id) AS last_order
+    FROM users u ORDER BY CASE u.role WHEN 'admin' THEN 0 WHEN 'seller' THEN 1 ELSE 2 END, u.id`);
+  const head = ['ID', 'Username', 'Role', 'Account created', 'Guest customer contact', 'Signup IP', 'Device', 'Orders', 'Completed spend', 'Last order', 'Must change password', 'Temp password expires', 'Products hidden (sellers)', 'Password (scrambled; the real one is not stored)'];
+  const lines = [head.join(',')].concat(rows.map((r) => [r.id, r.username, r.role + (r.guest_contact !== null && r.role === 'customer' ? ' (guest)' : ''), r.created_at && r.created_at.toISOString(), r.guest_contact, r.signup_ip, r.device_id,
+    r.orders, Number(r.spent).toFixed(2), r.last_order && r.last_order.toISOString(), r.must_change ? 'yes' : '', r.temp_expires && r.temp_expires.toISOString(), r.role === 'seller' ? (r.products_hidden ? 'yes' : 'no') : '', r.password_hash].map(csvCell).join(',')));
+  res.set({ 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="accounts-${new Date().toISOString().slice(0, 10)}.csv"` }).send('\ufeff' + lines.join('\r\n') + '\r\n');
+}));
+
 app.get('/api/admin/sales.csv', auth, staff, wrap(async (req, res) => {
   const ok = /^\d{4}-\d{2}-\d{2}$/, from = String(req.query.from || ''), to = String(req.query.to || '');
   if (!ok.test(from) || !ok.test(to) || from > to) throw bad('Pick a start day and an end day (start first).');
