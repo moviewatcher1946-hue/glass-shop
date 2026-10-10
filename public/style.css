@@ -547,3 +547,41 @@ tbody tr{transition:background .25s}tbody tr:hover{background:var(--glass)}
 .lq.squish{animation:squish .6s var(--ease)}
 .subtabs button.primary,.tabs>button.primary,.cats .tile.on,.cats .tile.on:hover:not(:disabled),.chips>button.primary{background:transparent;border-color:transparent;box-shadow:none;color:#fff}
 .subtabs button.primary:hover:not(:disabled),.tabs>button.primary:hover:not(:disabled),.chips>button.primary:hover:not(:disabled){background:transparent;filter:none}
+
+
+/* ===== v19: calmer boot (no logo, no square), animations stay inside their boxes, marketing visuals ===== */
+#boot .boot-bar{display:block;width:190px}
+#boot .boot-title{font-size:2.4rem}
+/* a click ripple never leaves the button it started in */
+button:has(> .rip){overflow:hidden}
+/* the sliding pill squeezes only a little, so it never stretches over its neighbours */
+@keyframes squish{0%{scale:1}35%{scale:1.05 .94}70%{scale:.98 1.03}100%{scale:1}}
+@keyframes heartPop{0%{transform:scale(1);box-shadow:0 0 0 0 rgba(224,36,94,.5)}30%{transform:scale(1.22)}60%{transform:scale(.95)}100%{transform:scale(1.05);box-shadow:0 0 0 7px rgba(224,36,94,0)}}
+@media(hover:hover) and (pointer:fine){.grid>.card:hover{transform:perspective(900px) rotateX(var(--rx,0deg)) rotateY(var(--ry,0deg)) scale(1.012)}}
+.card .img{contain:paint}
+
+/* "New" and "Best seller" tags */
+.tag{position:absolute;top:10px;left:10px;z-index:3;padding:5px 11px;border-radius:999px;font-size:.72rem;font-weight:800;letter-spacing:.03em;color:#fff;box-shadow:0 6px 16px rgba(0,0,0,.25);pointer-events:none}
+.tag.hot{background:linear-gradient(135deg,#ff9f0a,#ff375f)}
+.tag.new{background:linear-gradient(135deg,#0a84ff,#5e5ce6)}
+.card.pinned .tag{top:52px}
+@media(max-width:520px){.tag{top:8px;left:8px;padding:4px 9px;font-size:.66rem}.card.pinned .tag{top:46px}}
+
+/* scrolling announcement strip: the words slide inside the strip and never leave it */
+.ticker{overflow:hidden;margin:0 0 22px;padding:11px 0;border-radius:999px;background:var(--glass);border:1px solid var(--edge);box-shadow:var(--sh2);
+  -webkit-mask-image:linear-gradient(90deg,transparent,#000 6%,#000 94%,transparent);mask-image:linear-gradient(90deg,transparent,#000 6%,#000 94%,transparent)}
+.ticker-track{display:flex;gap:34px;width:max-content;animation:tick 32s linear infinite}
+.ticker-track span{white-space:nowrap;font-weight:700;font-size:.9rem;color:var(--txt)}
+.ticker-track span::first-letter{color:var(--a1)}
+.ticker:hover .ticker-track{animation-play-state:paused}
+@keyframes tick{to{transform:translateX(calc(-50% - 17px))}}
+@media(prefers-reduced-motion:reduce){.ticker-track{animation:none;flex-wrap:wrap;width:auto;justify-content:center;gap:8px 22px}}
+
+/* confetti when an order is placed */
+.cf{position:fixed;top:-14px;left:var(--x);width:9px;height:14px;border-radius:2px;background:var(--c);z-index:400;pointer-events:none;animation:cfFall var(--t) cubic-bezier(.2,.6,.4,1) forwards}
+@keyframes cfFall{to{transform:translate(var(--dx),108vh) rotate(var(--r))}}
+
+/* friendly picture when a list is empty */
+.empty{display:grid;justify-items:center;gap:8px;text-align:center;padding:34px 18px}
+.empty svg{width:140px;height:auto;animation:floaty 3.4s ease-in-out infinite}
+.empty p{margin:0;font-weight:600;color:var(--muted)}
