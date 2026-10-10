@@ -191,10 +191,10 @@ function drawGrid() {
   const match = (p) => !text || `${p.title} ${p.description}`.toLowerCase().includes(text);
   const catOf = (p) => (CATS[p.category] ? p.category : 'snacks');
   const comboList = !arranging && (filter === 'all' || filter === 'combos')
-    ? shuffled(combos.filter((c) => match({ title: c.title, description: `${c.description} ${c.items.map((x) => x.title).join(' ')}` })), (c) => 'c' + c.id) : [];
+    ? shuffled(combos.filter((c) => !c.hidden && match({ title: c.title, description: `${c.description} ${c.items.map((x) => x.title).join(' ')}` })), (c) => 'c' + c.id) : [];
   const groups = Object.keys(CATS)
     .filter((c) => filter === 'all' || filter === 'favs' || filter === c)
-    .map((c) => ({ c, list: shuffledPinned(products.filter((p) => catOf(p) === c && match(p) && (filter !== 'favs' || favs.has(p.id)))) }))
+    .map((c) => ({ c, list: shuffledPinned(products.filter((p) => !p.hidden && catOf(p) === c && match(p) && (filter !== 'favs' || favs.has(p.id)))) }))
     .filter((g) => g.list.length);
   el.innerHTML = (comboList.length ? `<h2 class="cat-title">Combos</h2><section class="grid">${comboList.map(comboCard).join('')}</section>` : '')
     + groups.map((g) => `<h2 class="cat-title">${CATS[g.c]}</h2><section class="grid" data-sortlist="shop">${g.list.map(productCard).join('')}</section>`).join('')
