@@ -660,3 +660,47 @@ button:has(> .rip){overflow:hidden}
 
 :root{--acc:linear-gradient(135deg,#0070e0,#6a5cf0 55%,#a63fe0)} /* white text on the brand gradient now clears 4.5:1 */
 @media(max-width:700px){.slide::after{background:rgba(7,10,28,.68)}}
+
+/* ===== phones / Android: one-row bars, no overlaps, steady cart sheet, calm touch behaviour ===== */
+html:has(dialog[open]),body:has(dialog[open]){overflow:hidden}
+dialog{overscroll-behavior:contain}
+body:has(dialog[open]) #cartbar{display:none}
+.sl-dots button{position:relative}.sl-dots button::after{content:'';position:absolute;inset:-14px -6px}
+html.theme-anim *,html.theme-anim *::before,html.theme-anim *::after{transition:background-color .7s ease,color .7s ease,border-color .7s ease,box-shadow .7s ease,fill .7s ease,stroke .7s ease!important}
+html.theme-anim body::before{animation:auroraIn .9s ease both}
+html.theme-anim #theme svg{animation:themeSpin .8s var(--ease)}
+@keyframes auroraIn{from{opacity:0}to{opacity:1}}
+@keyframes themeSpin{from{transform:rotate(-200deg) scale(.4)}to{transform:none}}
+@media(hover:none){
+  button:hover:not(:disabled),.nav button:hover:not(:disabled){transform:none}
+  .panel:hover,.kpi:hover,.stat:hover{transform:none;box-shadow:var(--sh2),inset 0 1px 0 var(--edge)}
+}
+@media(max-width:900px){
+  header.nav,header.nav .tools,header.nav nav{flex-wrap:nowrap}
+  header.nav{width:auto;max-width:calc(100% - 16px)}
+  header.nav button,header.nav .pill{flex:1 1 40px;min-width:34px;max-width:48px;height:44px}
+  #helpfab{display:none!important}
+  #tour-btn{display:grid!important}
+  dialog[open],dialog[data-kind=cart][open]{max-height:92dvh}
+  .subrow{flex-wrap:nowrap;overflow-x:auto;max-width:100%;scrollbar-width:none}.subrow::-webkit-scrollbar{display:none}
+  .subtabs{flex:none;flex-wrap:nowrap}
+  .subtabs button,.subrow>button{flex:none;white-space:nowrap}
+  #app>.tabs{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}#app>.tabs::-webkit-scrollbar{display:none}#app>.tabs>button{flex:none;white-space:nowrap}
+  .stat{padding:14px}.stat b{white-space:normal;overflow-wrap:anywhere;font-size:clamp(1.25rem,5.6vw,1.9rem)}
+  .kpi b{font-size:clamp(1.4rem,7vw,2rem)}
+}
+/* ===== phone tap sizes and wrapping text in buttons ===== */
+@media(max-width:900px){
+  main button,dialog button{white-space:normal;overflow-wrap:anywhere;min-height:40px}
+  .subtabs button,.subrow>button,#app>.tabs>button,.cats>button{white-space:nowrap}
+  .qty button{min-width:42px;min-height:42px;padding:6px 12px}
+  .qty b{min-width:2ch}
+  .sl-dots button{min-height:0}
+}
+/* ===== admin group tabs share the row equally (no cut-off words); the sub-buttons never wrap ===== */
+@media(max-width:900px){
+  #app>.tabs{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:2px;padding:5px;overflow:visible}
+  #app>.tabs>button{min-width:0;padding:10px 2px;min-height:40px;font-size:clamp(.66rem,3vw,.84rem);text-align:center;overflow:hidden;text-overflow:clip}
+  .subrow{flex-wrap:wrap;overflow:visible}
+  .subtabs{max-width:100%;overflow-x:auto;scrollbar-width:none}.subtabs::-webkit-scrollbar{display:none}
+}
