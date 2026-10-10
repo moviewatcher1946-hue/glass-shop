@@ -451,7 +451,7 @@ const THUMB_WIDTHS = [160, 240, 480, 800], THUMB_BUDGET = 48 * 1024 * 1024;
 const thumbs = new Map(); let thumbBytes = 0;
 const thumbPending = new Map();
 async function thumbFor(id, ver, w, data) {
-  if (!ver) return sharp(data).rotate().resize({ width: w, withoutEnlargement: true }).webp({ quality: 72 }).toBuffer(); // no version = no way to know when it goes stale
+  if (!ver) return sharp(data).rotate().resize({ width: w, withoutEnlargement: true }).webp({ quality: 82 }).toBuffer(); // no version = no way to know when it goes stale
   const key = `${id}:${ver}:${w}`, hit = thumbs.get(key);
   if (hit) { thumbs.delete(key); thumbs.set(key, hit); return hit; }
   if (thumbPending.has(key)) return thumbPending.get(key);
