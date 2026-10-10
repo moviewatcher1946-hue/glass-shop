@@ -23,6 +23,16 @@ async function currentUser(id) {
   return u || null;
 }
 
+// Like `auth`, but never rejects: if a valid token is sent it sets req.user, otherwise the person is just a visitor.
+const softAuth = async (req, res, next) => {
+  try {
+    const claims = jwt.verify((req.headers.authorization || '').replace(/^Bearer /, ''), SECRET);
+    const u = await currentUser(claims.id);
+    if (u) req.user = { id: u.id, username: u.username, role: u.role };
+  } catch (e) { /* a visitor */ }
+  next();
+};
+
 // Requires a valid "Authorization: Bearer <token>" header.
 const auth = async (req, res, next) => {
   let claims;
@@ -51,4 +61,4 @@ const admin = (req, res, next) =>
 const staff = (req, res, next) =>
   ['admin', 'seller'].includes(req.user.role) ? next() : res.status(403).json({ error: 'Staff only.' });
 
-module.exports = { sign, auth, admin, staff, invalidateUser };
+module.exports = { sign, auth, softAuth, admin, staff, invalidateUser };
