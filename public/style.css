@@ -538,3 +538,12 @@ tbody tr{transition:background .25s}tbody tr:hover{background:var(--glass)}
 @keyframes lgRing{0%{transform:scale(1);opacity:0}12%{opacity:.9}100%{transform:scale(2.7);opacity:0}}
 @keyframes lgGlow{from{opacity:0;transform:scale(.4)}to{opacity:1;transform:none}}
 .subtabs{display:flex;width:fit-content}
+/* ===== liquid pills for tab bars + the accounts download ===== */
+.subrow{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:0 0 16px}.subrow .subtabs{margin:0}
+.subtabs,#app .cats,#app .chips{position:relative}
+@media(max-width:900px){#app>.tabs{position:relative}}
+.subtabs>button,.tabs>button,.cats>button,.chips>button{position:relative;z-index:1}
+.lq{position:absolute;left:0;top:0;z-index:0;opacity:0;pointer-events:none;background:var(--acc);box-shadow:inset 0 1px 0 rgba(255,255,255,.55),inset 0 -6px 12px rgba(255,255,255,.12),0 8px 22px rgba(10,132,255,.38);transition:transform .6s var(--spring),width .6s var(--spring),height .6s var(--spring),opacity .3s}
+.lq.squish{animation:squish .6s var(--ease)}
+.subtabs button.primary,.tabs>button.primary,.cats .tile.on,.cats .tile.on:hover:not(:disabled),.chips>button.primary{background:transparent;border-color:transparent;box-shadow:none;color:#fff}
+.subtabs button.primary:hover:not(:disabled),.tabs>button.primary:hover:not(:disabled),.chips>button.primary:hover:not(:disabled){background:transparent;filter:none}
