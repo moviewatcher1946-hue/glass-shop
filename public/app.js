@@ -26,7 +26,7 @@ let combos = [], comboAdminHtml = '';
 let ordLimit = 30, ordHasMore = false, favs = new Set(), auditLast = null, ordersCache = [], shownOrders = [], ordStatus = 'active', ordRange = 'all', ordDay = '', custHtml = '';
 let installEvt = null; // Chrome's "install app" offer, kept until the person taps Install
 let promo = null, cartNote = '', settings = { banner: '', stamp_reward: 'a free snack' }, promoAdminHtml = '', myOrders = [];
-let sig = '', lastOrderId = null, mineHtml = '', adminHtml = '', statusMap = null, adminTab = 'products', pendingCount = 0;
+let sig = '', lastOrderId = null, mineHtml = '', adminHtml = '', statusMap = null, adminTab = 'dashboard', pendingCount = 0;
 let ordSearch = '', costMap = {}, repData = null, revSig = '';
 let customHtml = '', customAdminHtml = '', crMap = null, crList = [], lastCrId = null, pendingCustom = 0;
 let arrange = false, dragBusy = false; // arrange = Raven's drag-and-pin mode on the shop page; dragBusy pauses live refresh while a card is held
@@ -134,7 +134,7 @@ const arrangeCtl = (p) => `<div class="arr-ctl"><span class="grip" data-grip rol
 const productCard = (p) => {
   const off = Number(p.discount_percent) || 0;
   const note = bulkOn(p) ? `Buy ${p.bulk_min}+ and save ${p.bulk_percent}%` : (!p.is_sold_out && p.stock != null && p.stock <= LOW_STOCK ? `Only ${p.stock} left` : '');
-  return `<article class="card t has-fav${p.pinned ? ' pinned' : ''}" data-sid="${p.id}"><div class="img">${heartBtn(p.id)}${p.pinned ? PINMARK : ''}${arrange && isRaven() ? arrangeCtl(p) : ''}${p.image_url ? `<img loading="lazy" decoding="async" src="${esc(thumb(p.image_url, 480))}" srcset="${esc(thumb(p.image_url, 240))} 240w, ${esc(thumb(p.image_url, 480))} 480w, ${esc(thumb(p.image_url, 800))} 800w" sizes="(max-width:380px) 100vw, (max-width:900px) 50vw, 25vw" alt="${esc(p.title)}">` : ''}${p.hidden ? '<span class="badge">Hidden from shop</span>' : p.is_sold_out ? '<span class="badge">Sold out</span>' : ''}${off ? `<span class="badge off">-${off}% OFF</span>` : ''}</div>` +
+  return `<article class="card t has-fav${p.pinned ? ' pinned' : ''}" data-sid="${p.id}"><div class="img">${heartBtn(p.id)}${p.pinned ? PINMARK : ''}${arrange && isRaven() ? arrangeCtl(p) : ''}${p.image_url ? `<img loading="lazy" decoding="async" src="${esc(thumb(p.image_url, 480))}" srcset="${esc(thumb(p.image_url, 240))} 240w, ${esc(thumb(p.image_url, 480))} 480w, ${esc(thumb(p.image_url, 800))} 800w" sizes="(max-width:380px) 100vw, (max-width:900px) 60vw, 40vw" alt="${esc(p.title)}">` : ''}${p.hidden ? '<span class="badge">Hidden from shop</span>' : p.is_sold_out ? '<span class="badge">Sold out</span>' : ''}${off ? `<span class="badge off">-${off}% OFF</span>` : ''}</div>` +
     capHtml(esc(p.title), note, `${off ? `<span class="was">${money(p.price)}</span> ` : ''}<b>${money(fin(p))}</b>`, `data-act="add" data-id="${p.id}"`, p.is_sold_out, esc(p.description)) + '</article>';
 };
 const comboCard = (c) => {
@@ -170,7 +170,17 @@ const shuffledPinned = (list) => {
   }
   return [...pinned, ...arranged, ...shuffled(list.filter((p) => !p.pinned && p.sort_order == null), (p) => 'p' + p.id)];
 };
-function fillGrid() { const el = $('#grid'); if (el) flipRender(el, drawGrid); }
+function fillHero() {
+  const chips = $('#herochips'), pics = $('#heropics'); if (!chips || !pics) return;
+  const w = settings.order_window, n = products.filter((p) => !p.hidden && !p.is_sold_out).length;
+  chips.innerHTML = ['Pay cash on delivery', n ? `${n} items in stock` : '', w && w.cutoff && !w.closed ? `Order before ${fmtTime(w.cutoff)} for same-day delivery` : ''].filter(Boolean).map((t) => `<span class="gchip">${esc(t)}</span>`).join('');
+  const withPic = products.filter((p) => p.image_url && !p.hidden && !p.is_sold_out);
+  const pick = [...withPic.filter((p) => p.pinned), ...withPic.filter((p) => !p.pinned)].slice(0, 3);
+  pics.innerHTML = pick.map((p, i) => `<figure class="hp hp${i + 1}"><img decoding="async" src="${esc(thumb(p.image_url, 480))}" srcset="${esc(thumb(p.image_url, 480))} 480w, ${esc(thumb(p.image_url, 800))} 800w" sizes="260px" alt=""><figcaption><b>${esc(p.title)}</b><span>${money(fin(p))}</span></figcaption></figure>`).join('');
+  pics.classList.toggle('empty', !pick.length);
+}
+function fillGrid() {
+  fillHero(); const el = $('#grid'); if (el) flipRender(el, drawGrid); }
 function drawGrid() {
   const el = $('#grid');
   if (!el) return;
@@ -212,7 +222,7 @@ const CAT_IC = { all: '\u2728', combos: '\u{1F381}', drinks: '\u{1F964}', snacks
 function renderShop() {
   const tile = (id, label) => `<button class="tile${catFilter === id ? ' on' : ''}" data-act="cat" data-cat="${id}">${label}</button>`;
   $('#app').innerHTML = `<section class="hero"><h2>What are you craving?</h2><p>Fresh drinks and snacks. Pay cash when it is handed to you.</p>
-      <input id="search" type="search" placeholder="Search snacks and drinks..." value="${esc(searchText)}" autocomplete="off"></section>
+      <div id="herochips"></div><input id="search" type="search" placeholder="Search snacks and drinks..." value="${esc(searchText)}" autocomplete="off"><div id="heropics" aria-hidden="true"></div></section>
     <div id="banner"></div>
     <div class="cats">${tile('all', 'All')}${user ? tile('favs', '\u2665 Favorites') : ''}${tile('combos', 'Combos')}${Object.entries(CATS).map(([id, label]) => tile(id, label)).join('')}</div>
     ${isRaven() ? arrBar() : ''}<div id="grid"></div>`;
@@ -621,7 +631,7 @@ function drawAttention() {
   if (el.dataset.h !== html) { el.dataset.h = html; el.innerHTML = html; } // only redraw on a change, so the pop-in doesn't replay every refresh
 }
 async function refreshCosts() { costMap = await api('/api/admin/costs'); fillProducts(); }
-async function refreshReport() { repData = await api('/api/admin/report?days=30'); drawReport(); }
+async function refreshReport() { repData = await api('/api/admin/report?days=30'); drawReport(); drawDash(); }
 function drawReport() {
   const el = $('#reportbox'); if (!el || !repData) return;
   const t = repData.days.find((d) => d.day === repData.today) || { orders: 0, revenue: 0, profit: 0 };
@@ -689,7 +699,7 @@ function renderAdmin() {
   adminHtml = ''; customAdminHtml = '';
   const tab = (id, label, extra = '') =>
     `<button id="tab-${id}" class="${adminTab === id ? 'primary' : ''}" data-act="admintab" data-tab="${id}">${label}${extra}</button>`;
-  const tabs = `<div class="tabs">${tab('products', 'Products')}${tab('orders', 'Orders', pendingCount ? ` (${pendingCount})` : '')}${tab('custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : '')}${tab('cash', 'Cash')}${tab('report', 'Report')}${tab('combos', 'Combos')}${tab('promos', 'Promos')}${tab('customers', 'Customers')}${isRaven() ? tab('sellers', 'Sellers') + tab('audit', 'Activity') + tab('backup', 'Backup') : tab('alerts', 'Alerts')}</div>`;
+  const tabs = `<div class="tabs">${tab('dashboard', 'Dashboard')}${tab('products', 'Products')}${tab('orders', 'Orders', pendingCount ? ` (${pendingCount})` : '')}${tab('custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : '')}${tab('cash', 'Cash')}${tab('report', 'Report')}${tab('combos', 'Combos')}${tab('promos', 'Promos')}${tab('customers', 'Customers')}${isRaven() ? tab('sellers', 'Sellers') + tab('audit', 'Activity') + tab('backup', 'Backup') : tab('alerts', 'Alerts')}</div>`;
   const productsView = `
     <section class="panel glass">
       <h2 id="form-title">Add a product</h2>
@@ -827,7 +837,7 @@ function renderAdmin() {
   const customersView = `<h2>Customers</h2>
     <p class="muted">Block people who abuse the shop (fake orders, not showing up). ${isRaven() ? 'Your block covers the whole shop.' : 'Your block stops them ordering your items only.'} The list shows the most cancelled orders first.</p>
     <div id="custlist"><p>Loading...</p></div>`;
-  $('#app').innerHTML = tabs + '<div id="attn"></div><div id="adminnotes"></div>' + (adminTab === 'report' ? reportView : adminTab === 'cash' ? cashView : adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'audit' && isRaven() ? auditView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'alerts' && !isRaven() ? alertsView : adminTab === 'combos' ? combosView : adminTab === 'promos' ? promosView : adminTab === 'customers' ? customersView : productsView);
+  $('#app').innerHTML = tabs + '<div id="attn"></div><div id="adminnotes"></div>' + (adminTab === 'dashboard' ? '<section class="dash" id="dashbox"><p class="panel glass muted">Loading your numbers...</p></section>' : adminTab === 'report' ? reportView : adminTab === 'cash' ? cashView : adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'audit' && isRaven() ? auditView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'alerts' && !isRaven() ? alertsView : adminTab === 'combos' ? combosView : adminTab === 'promos' ? promosView : adminTab === 'customers' ? customersView : productsView);
   fillProducts();
   comboAdminHtml = ''; refreshAdminCombos().catch(() => {});
   promoAdminHtml = ''; refreshAdminPromos().catch(() => {});
@@ -837,7 +847,7 @@ function renderAdmin() {
   refreshCustom().catch(() => {});
   refreshTeam().catch(() => {});
   if (adminTab === 'cash') refreshCash().catch(() => {});
-  if (adminTab === 'report') refreshReport().catch(() => {});
+  if (adminTab === 'report' || adminTab === 'dashboard') refreshReport().catch(() => {});
   refreshCosts().catch(() => {});
   refreshAttention().catch(() => {});
   if (isRaven() && adminTab === 'backup') refreshBackup().catch(() => {});
@@ -1772,3 +1782,89 @@ document.addEventListener('pointerout', (e) => {
   const c = e.target.closest && e.target.closest('.grid>.card');
   if (c && !c.contains(e.relatedTarget)) { c.classList.remove('tilting'); c.style.removeProperty('--rx'); c.style.removeProperty('--ry'); if (tiltEl === c) tiltEl = null; }
 });
+
+/* ===== Dashboard: KPI cards and charts drawn as inline SVG (no libraries) ===== */
+const PALETTE = ['#0a84ff', '#bf5af2', '#5e5ce6', '#64d2ff', '#ff7ab6', '#8e93b8'];
+const short = (v) => (v >= 1000 ? (v / 1000).toFixed(v % 1000 ? 1 : 0) + 'k' : String(Math.round(v)));
+const niceMax = (v) => { const p = 10 ** Math.floor(Math.log10(Math.max(v, 1))); return Math.max(1, Math.ceil((v / p) * 2) / 2 * p); };
+function lastDays(n, today) {
+  const out = [], d = new Date(today + 'T00:00:00');
+  for (let i = n - 1; i >= 0; i--) { const x = new Date(d); x.setDate(d.getDate() - i); out.push(`${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`); }
+  return out;
+}
+function lineChart(labels, series, w = 640, h = 290) {
+  const pad = { l: 46, r: 14, t: 14, b: 28 }, iw = w - pad.l - pad.r, ih = h - pad.t - pad.b;
+  const top = niceMax(Math.max(1, ...series.flatMap((s) => s.vals))), X = (i) => pad.l + (labels.length > 1 ? (i * iw) / (labels.length - 1) : iw / 2), Y = (v) => pad.t + ih - (v / top) * ih;
+  const grid = [0, 1, 2, 3, 4].map((g) => `<line x1="${pad.l}" x2="${w - pad.r}" y1="${Y((top * g) / 4)}" y2="${Y((top * g) / 4)}" class="gl"/><text x="${pad.l - 8}" y="${Y((top * g) / 4) + 4}" class="ax" text-anchor="end">${short((top * g) / 4)}</text>`).join('');
+  const xl = [0, Math.floor((labels.length - 1) / 2), labels.length - 1].map((i) => `<text x="${X(i)}" y="${h - 8}" class="ax" text-anchor="${i === 0 ? 'start' : i === labels.length - 1 ? 'end' : 'middle'}">${labels[i].slice(5)}</text>`).join('');
+  const paths = series.map((s, k) => {
+    const pts = s.vals.map((v, i) => `${i ? 'L' : 'M'}${X(i).toFixed(1)} ${Y(v).toFixed(1)}`).join('');
+    const area = k === 0 ? `<path d="${pts}L${X(labels.length - 1)} ${Y(0)}L${X(0)} ${Y(0)}Z" fill="url(#ga${k})" class="area"/>` : '';
+    const dots = s.vals.map((v, i) => `<circle cx="${X(i)}" cy="${Y(v)}" r="9" fill="transparent"><title>${labels[i]}: ${money(v)} (${s.name})</title></circle>`).join('');
+    return `<defs><linearGradient id="ga${k}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${s.color}" stop-opacity=".35"/><stop offset="1" stop-color="${s.color}" stop-opacity="0"/></linearGradient></defs>${area}<path d="${pts}" class="ln" pathLength="1" style="stroke:${s.color};animation-delay:${k * 0.25}s"/>${dots}`;
+  }).join('');
+  return `<svg viewBox="0 0 ${w} ${h}" class="chart" role="img">${grid}${xl}${paths}</svg>`;
+}
+function barChart(labels, vals, w = 640, h = 200) {
+  const pad = { l: 34, r: 8, t: 10, b: 26 }, iw = w - pad.l - pad.r, ih = h - pad.t - pad.b, top = niceMax(Math.max(1, ...vals)), bw = iw / vals.length;
+  const grid = [0, 2, 4].map((g) => `<line x1="${pad.l}" x2="${w - pad.r}" y1="${pad.t + ih - (ih * g) / 4}" y2="${pad.t + ih - (ih * g) / 4}" class="gl"/><text x="${pad.l - 6}" y="${pad.t + ih - (ih * g) / 4 + 4}" class="ax" text-anchor="end">${Math.round((top * g) / 4)}</text>`).join('');
+  const bars = vals.map((v, i) => `<rect x="${pad.l + i * bw + bw * 0.18}" width="${bw * 0.64}" y="${pad.t + ih - (v / top) * ih}" height="${Math.max(v ? 2 : 0, (v / top) * ih)}" rx="${Math.min(6, bw * 0.3)}" class="bar" style="--i:${i}"><title>${labels[i]}: ${v} order${v === 1 ? '' : 's'}</title></rect>`).join('');
+  return `<svg viewBox="0 0 ${w} ${h}" class="chart" role="img">${grid}${bars}<text x="${pad.l}" y="${h - 8}" class="ax">${labels[0].slice(5)}</text><text x="${w - pad.r}" y="${h - 8}" class="ax" text-anchor="end">${labels[labels.length - 1].slice(5)}</text></svg>`;
+}
+const hBars = (rows) => { const mx = Math.max(1, ...rows.map((r) => r.v)); return rows.length ? `<div class="hbars">${rows.map((r, i) => `<div class="hb" style="--i:${i}"><span class="hl">${esc(r.label)}</span><span class="ht"><i style="width:${(r.v / mx) * 100}%;background:${PALETTE[i % PALETTE.length]}"></i></span><b>${money(r.v)}</b></div>`).join('')}</div>` : '<p class="muted">Nothing yet.</p>'; };
+function donut(rows) {
+  const total = rows.reduce((a, r) => a + r.v, 0); if (!total) return '<p class="muted">Nothing yet.</p>';
+  let off = 0; const R = 54, C = 2 * Math.PI * R;
+  const arcs = rows.map((r, i) => { const len = (r.v / total) * C, el = `<circle r="${R}" cx="70" cy="70" fill="none" stroke="${PALETTE[i % PALETTE.length]}" stroke-width="20" stroke-dasharray="${len} ${C - len}" stroke-dashoffset="${-off}" class="arc" style="--i:${i}"><title>${esc(r.label)}: ${Math.round((r.v / total) * 100)}%</title></circle>`; off += len; return el; }).join('');
+  return `<div class="donutbox"><svg viewBox="0 0 140 140" class="donut" role="img"><g transform="rotate(-90 70 70)">${arcs}</g><text x="70" y="72" text-anchor="middle" class="dt">${short(total)}</text><text x="70" y="90" text-anchor="middle" class="ax">sales</text></svg><ul class="legend">${rows.map((r, i) => `<li><i style="background:${PALETTE[i % PALETTE.length]}"></i>${esc(r.label)} <b>${Math.round((r.v / total) * 100)}%</b></li>`).join('')}</ul></div>`;
+}
+function countUp(el) {
+  const to = parseFloat(el.dataset.to), money_ = el.dataset.money === '1', t0 = performance.now();
+  const step = (t) => { const k = Math.min(1, (t - t0) / 800), v = to * (1 - (1 - k) ** 3); el.textContent = money_ ? money(v) : Math.round(v); if (k < 1) requestAnimationFrame(step); };
+  requestAnimationFrame(step);
+}
+let dashShown = false;
+function drawDash() {
+  const el = $('#dashbox'); if (!el || !repData) return;
+  const days = lastDays(30, repData.today), by = Object.fromEntries(repData.days.map((d) => [d.day, d]));
+  const rev = days.map((d) => (by[d] ? by[d].revenue : 0)), prof = days.map((d) => (by[d] ? by[d].profit : 0)), ord = days.map((d) => (by[d] ? by[d].orders : 0));
+  const sum = (a) => a.reduce((x, y) => x + y, 0), S = sum(rev), P = sum(prof), O = sum(ord), td = by[repData.today] || { revenue: 0, orders: 0 };
+  const items = [...repData.items].sort((a, b) => b.revenue - a.revenue), top5 = items.slice(0, 5).map((i) => ({ label: i.title, v: i.revenue })), rest = sum(items.slice(5).map((i) => i.revenue));
+  const kpi = (label, val, isMoney, sub = '') => `<div class="kpi glass"><span>${label}</span><b data-to="${val}" data-money="${isMoney ? 1 : 0}">${isMoney ? money(val) : val}</b><small>${sub}</small></div>`;
+  const people = (repData.people || []).filter((x) => x.gross > 0).map((x) => ({ label: x.username, v: x.gross }));
+  el.innerHTML = `<div class="kpis">${kpi('Sales, last 30 days', S, true, `${O} completed order${O === 1 ? '' : 's'}`)}${kpi('Profit, last 30 days', P, true, S ? `${Math.round((P / S) * 100)}% margin` : '')}${kpi('Today', td.revenue, true, `${td.orders} completed order${td.orders === 1 ? '' : 's'}`)}${kpi('Average order', O ? S / O : 0, true, 'last 30 days')}</div>
+    <div class="dgrid"><section class="panel glass"><h3>Sales and profit</h3><p class="legendline"><i style="background:${PALETTE[0]}"></i>Sales <i style="background:${PALETTE[1]}"></i>Profit</p>${lineChart(days, [{ name: 'Sales', color: PALETTE[0], vals: rev }, { name: 'Profit', color: PALETTE[1], vals: prof }])}</section>
+      <section class="panel glass"><h3>Where the sales come from</h3>${donut(rest > 0 ? [...top5, { label: 'Everything else', v: rest }] : top5)}</section>
+      <section class="panel glass"><h3>Orders per day</h3>${barChart(days, ord)}</section>
+      <section class="panel glass"><h3>Best sellers</h3>${hBars(items.slice(0, 6).map((i) => ({ label: `${i.title} (${i.qty})`, v: i.revenue })))}${isRaven() && people.length ? `<h3 class="sub">Income per seller</h3>${hBars(people)}` : ''}</section></div>
+    <p class="muted dnote">Completed orders only. Profit needs a cost price on each product.</p>`;
+  el.querySelectorAll('.kpi b').forEach((b) => (dashShown ? 0 : countUp(b)));
+  dashShown = true;
+}
+
+/* ===== Liquid glass: a sliding blob behind the active dock button, plus a ripple on every press ===== */
+function placeLiquid() {
+  const nav = document.querySelector('header.nav'); if (!nav) return;
+  let b = nav.querySelector('.liquid'); if (!b) { b = document.createElement('span'); b.className = 'liquid'; b.setAttribute('aria-hidden', 'true'); nav.prepend(b); }
+  const on = nav.querySelector('button.on:not(.primary)'); if (!on) { b.style.opacity = 0; return; }
+  const nr = nav.getBoundingClientRect(), r = on.getBoundingClientRect(), x = r.left - nr.left, y = r.top - nr.top, moved = b.dataset.x !== String(Math.round(x)) || b.dataset.y !== String(Math.round(y));
+  b.style.opacity = 1; b.style.width = r.width + 'px'; b.style.height = r.height + 'px'; b.style.transform = `translate(${x}px,${y}px)`;
+  if (moved && b.dataset.x !== undefined) { b.classList.remove('squish'); void b.offsetWidth; b.classList.add('squish'); }
+  b.dataset.x = Math.round(x); b.dataset.y = Math.round(y);
+}
+const _renderNav = renderNav; renderNav = function () { _renderNav(); requestAnimationFrame(placeLiquid); };
+addEventListener('resize', placeLiquid); addEventListener('load', placeLiquid);
+document.addEventListener('pointerdown', (e) => {
+  const btn = e.target.closest && e.target.closest('button'); if (!btn || btn.disabled || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const r = btn.getBoundingClientRect(), s = Math.max(r.width, r.height) * 2.2, d = document.createElement('span');
+  d.className = 'rip'; d.style.cssText = `width:${s}px;height:${s}px;left:${e.clientX - r.left - s / 2}px;top:${e.clientY - r.top - s / 2}px`;
+  btn.appendChild(d); d.addEventListener('animationend', () => d.remove());
+});
+
+/* ===== Everything slides in as you scroll to it (only right after you open a screen) ===== */
+const rvIO = 'IntersectionObserver' in window ? new IntersectionObserver((es) => es.forEach((en) => { if (en.isIntersecting) { en.target.classList.add('rv-in'); rvIO.unobserve(en.target); } }), { rootMargin: '0px 0px -6% 0px' }) : null;
+new MutationObserver(() => {
+  const app = $('#app'); if (!rvIO || !app || !app.classList.contains('fx')) return;
+  app.querySelectorAll('.panel:not([data-rv]), .stat:not([data-rv]), .kpi:not([data-rv]), .cat-title:not([data-rv]), .req:not([data-rv])').forEach((n, i) => { n.dataset.rv = '1'; n.style.setProperty('--rd', (i % 6) * 55 + 'ms'); rvIO.observe(n); });
+  setTimeout(() => app.querySelectorAll('[data-rv]:not(.rv-in)').forEach((n) => n.classList.add('rv-in')), 1500);
+}).observe(document.body, { childList: true, subtree: true });
