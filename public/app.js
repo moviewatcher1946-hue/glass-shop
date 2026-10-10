@@ -76,6 +76,8 @@ const clearSession = () => { token = ''; user = null; favs = new Set(); if (catF
 const isAdmin = () => user && (user.role === 'admin' || user.role === 'seller');
 const isRaven = () => user && user.role === 'admin';
 let sellers = [], team = [];
+const vis = (l) => (isRaven() ? l.filter((x) => !x.hidden) : l); // hidden items vanish from every tab for the main admin (sellers are never told, so they never get the flag)
+let pSearch = '';
 const myProducts = () => (isRaven() ? products : products.filter((p) => p.owner_id === user.id));
 const ownerName = (id) => (!user || id === user.id ? '' : (team.find((x) => x.id === id) || {}).username || '');
 const canEdit = (ownerId) => isRaven() || (user && ownerId === user.id); // everyone on staff can look; only owners (and raven) can change
@@ -231,8 +233,8 @@ function renderShop() {
   updateCartBar();
 }
 
-const adminRows = () => { const ix = (p) => Object.keys(CATS).indexOf(CATS[p.category] ? p.category : 'snacks'); return isRaven() ? [...products].sort((a, b) => ix(a) - ix(b)) : products; }; // owner's list is grouped by section so rows can be dragged within it
-const productTable = () => `<table${isRaven() ? ' data-sortlist="admin"' : ''}>${adminRows().map((p) => {
+const adminRows = () => { const ix = (p) => Object.keys(CATS).indexOf(CATS[p.category] ? p.category : 'snacks'); const q = pSearch.trim().toLowerCase(), hit = (p) => !q || [p.title, p.description, p.category, ownerName(p.owner_id)].join(' ').toLowerCase().includes(q); return (isRaven() ? [...products].sort((a, b) => ix(a) - ix(b)) : products).filter(hit); }; // owner's list is grouped by section so rows can be dragged within it
+const productTable = () => `<table${isRaven() && !pSearch.trim() ? ' data-sortlist="admin"' : ''}>${adminRows().map((p) => {
   const mine = canEdit(p.owner_id);
   return `<tr data-sid="${p.id}" data-cat="${CATS[p.category] ? p.category : 'snacks'}">
     ${isRaven() ? `<td><span class="grip" data-grip role="button" tabindex="0" aria-label="Move ${esc(p.title)}: drag, or use the arrow keys">${GRIP_SVG}</span></td>` : ''}
@@ -699,7 +701,17 @@ function renderAdmin() {
   adminHtml = ''; customAdminHtml = '';
   const tab = (id, label, extra = '') =>
     `<button id="tab-${id}" class="${adminTab === id ? 'primary' : ''}" data-act="admintab" data-tab="${id}">${label}${extra}</button>`;
-  const tabs = `<div class="tabs">${tab('dashboard', 'Dashboard')}${tab('products', 'Products')}${tab('orders', 'Orders', pendingCount ? ` (${pendingCount})` : '')}${tab('custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : '')}${tab('cash', 'Cash')}${tab('report', 'Report')}${tab('combos', 'Combos')}${tab('promos', 'Promos')}${tab('customers', 'Customers')}${isRaven() ? tab('sellers', 'Sellers') + tab('audit', 'Activity') + tab('backup', 'Backup') : tab('alerts', 'Alerts')}</div>`;
+  const GROUPS = [
+    ['dashboard', 'Dashboard', [['dashboard', 'Overview'], ['report', 'Report']]],
+    ['orders', 'Orders', [['orders', 'Orders', pendingCount ? ` (${pendingCount})` : ''], ['custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : ''], ['cash', 'Cash']]],
+    ['products', 'Catalog', [['products', 'Products'], ['combos', 'Combos'], ['promos', 'Promos']]],
+    ['customers', 'People', isRaven() ? [['customers', 'Customers'], ['sellers', 'Sellers']] : [['customers', 'Customers'], ['alerts', 'Alerts']]],
+    ...(isRaven() ? [['backup', 'System', [['backup', 'Backup'], ['audit', 'Activity']]]] : []),
+  ];
+  const cur = GROUPS.find((g) => g[2].some((x) => x[0] === adminTab)) || GROUPS[0];
+  const badge = (g) => { const n = g[0] === 'orders' ? pendingCount + pendingCustom : 0; return n ? ` (${n})` : ''; };
+  const tabs = `<div class="tabs">${GROUPS.map((g) => `<button class="${g === cur ? 'primary' : ''}" data-act="admintab" data-tab="${g === cur ? adminTab : g[2][0][0]}">${g[1]}${badge(g)}</button>`).join('')}</div>`;
+  const subtabs = cur[2].length > 1 ? `<div class="subtabs">${cur[2].map((x) => tab(x[0], x[1], x[2] || '')).join('')}</div>` : '';
   const productsView = `
     <section class="panel glass">
       <h2 id="form-title">Add a product</h2>
@@ -730,6 +742,7 @@ function renderAdmin() {
         <button data-act="bulkdisc">Apply discount</button>
         <button data-act="reprice">Update open orders to current prices</button>
       </div>
+      <input id="psearch" type="search" placeholder="Search products by name, description, section or seller..." autocomplete="off" value="${esc(pSearch)}" style="margin:0 0 12px">
       <div id="plist"></div></section>`;
   const ordersView = `<h2>Orders</h2>
     <div class="toolbar" id="ofilters">
@@ -837,7 +850,7 @@ function renderAdmin() {
   const customersView = `<h2>Customers</h2>
     <p class="muted">Block people who abuse the shop (fake orders, not showing up). ${isRaven() ? 'Your block covers the whole shop.' : 'Your block stops them ordering your items only.'} The list shows the most cancelled orders first.</p>
     <div id="custlist"><p>Loading...</p></div>`;
-  $('#app').innerHTML = tabs + '<div id="attn"></div><div id="adminnotes"></div>' + (adminTab === 'dashboard' ? '<section class="dash" id="dashbox"><p class="panel glass muted">Loading your numbers...</p></section>' : adminTab === 'report' ? reportView : adminTab === 'cash' ? cashView : adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'audit' && isRaven() ? auditView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'alerts' && !isRaven() ? alertsView : adminTab === 'combos' ? combosView : adminTab === 'promos' ? promosView : adminTab === 'customers' ? customersView : productsView);
+  $('#app').innerHTML = tabs + subtabs + '<div id="attn"></div><div id="adminnotes"></div>' + (adminTab === 'dashboard' ? '<section class="dash" id="dashbox"><p class="panel glass muted">Loading your numbers...</p></section>' : adminTab === 'report' ? reportView : adminTab === 'cash' ? cashView : adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'audit' && isRaven() ? auditView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'alerts' && !isRaven() ? alertsView : adminTab === 'combos' ? combosView : adminTab === 'promos' ? promosView : adminTab === 'customers' ? customersView : productsView);
   fillProducts();
   comboAdminHtml = ''; refreshAdminCombos().catch(() => {});
   promoAdminHtml = ''; refreshAdminPromos().catch(() => {});
@@ -1518,7 +1531,7 @@ async function poll() {
     const [fresh, freshCombos, freshSettings] = await Promise.all([api('/api/products'), api('/api/combos'), api('/api/settings')]);
     const now = JSON.stringify([fresh, freshCombos, freshSettings]);
     if (now !== sig) {
-      sig = now; products = fresh; combos = freshCombos; settings = freshSettings;
+      sig = now; products = vis(fresh); combos = vis(freshCombos); settings = freshSettings;
       if (view === 'shop') { fillBanner(); fillGrid(); } else if (view === 'admin') { fillProducts(); refreshAttention().catch(() => {}); }
     }
     if (isAdmin()) { await refreshOrders(); await refreshCustom(); }
@@ -1645,7 +1658,7 @@ function flipMove(els, mutate) {
 
 async function syncProducts() { // fetch the saved list and remember it, so the live refresh sees "nothing changed" and does not redraw
   const fresh = await api('/api/products');
-  products = fresh; sig = JSON.stringify([fresh, combos, settings]);
+  products = vis(fresh); sig = JSON.stringify([fresh, combos, settings]);
 }
 
 // Saves the order after a drop. Pinned products always stay in front of the others within their section.
@@ -1868,3 +1881,6 @@ new MutationObserver(() => {
   app.querySelectorAll('.panel:not([data-rv]), .stat:not([data-rv]), .kpi:not([data-rv]), .cat-title:not([data-rv]), .req:not([data-rv])').forEach((n, i) => { n.dataset.rv = '1'; n.style.setProperty('--rd', (i % 6) * 55 + 'ms'); rvIO.observe(n); });
   setTimeout(() => app.querySelectorAll('[data-rv]:not(.rv-in)').forEach((n) => n.classList.add('rv-in')), 1500);
 }).observe(document.body, { childList: true, subtree: true });
+
+// Search box in Admin > Products.
+document.addEventListener('input', (e) => { if (e.target.id === 'psearch') { pSearch = e.target.value; fillProducts(); } });
