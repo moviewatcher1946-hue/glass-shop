@@ -7,7 +7,7 @@ const { promisify } = require('util');
 const zlib = require('zlib');
 const gzip = promisify(zlib.gzip), gunzip = promisify(zlib.gunzip);
 const { pool, init } = require('./db');
-const { sign, auth, admin, staff, invalidateUser } = require('./auth');
+const { sign, auth, softAuth, admin, staff, invalidateUser } = require('./auth');
 
 const app = express();
 const compression = require('compression');
@@ -64,6 +64,8 @@ const AUDIT_RULES = [
   { m: 'PATCH', re: /^\/orders\/(\d+)\/status$/, snap: 'order', f: (b, o, id) => [`Order #${id} status`, `${o ? o.status : '?'} -> ${b.status}`] },
   { m: 'PATCH', re: /^\/orders\/(\d+)\/paid$/, f: (b, o, id) => [`Order #${id} payment`, b.paid ? 'marked paid' : 'paid tick removed'] },
   { m: 'POST', re: /^\/orders\/reprice$/, f: () => ['Re-priced open orders', ''] },
+  { m: 'PATCH', re: /^\/admin\/sellers\/(\d+)\/hidden$/, snap: 'user', f: (b, o) => [b.hidden ? "Hid a seller's products" : "Showed a seller's products", o ? o.username : ''] },
+  { m: 'POST', re: /^\/staff\/orders$/, f: (b) => ['Placed an order for a customer', b.customer_name] },
   { m: 'POST', re: /^\/admin\/sellers$/, f: (b) => ['Created a seller', b.username] },
   { m: 'PATCH', re: /^\/admin\/sellers\/(\d+)$/, snap: 'user', f: (b, o) => ['Renamed a seller', `${o ? o.username : ''} -> ${b.username}`] },
   { m: 'PATCH', re: /^\/admin\/sellers\/(\d+)\/password$/, snap: 'user', f: (b, o) => ['Reset a seller password', o ? o.username : ''] },
@@ -153,6 +155,12 @@ const COMBO_SQL = `SELECT c.id,c.title,c.description,c.price,c.is_active,c.creat
     FROM combo_approvals a JOIN users au ON au.id=a.owner_id WHERE a.combo_id=c.id), '[]'::json) AS approvals
   FROM combos c`;
 // A combo with other sellers' products goes live only when every one of them has approved it.
+// The main admin can hide all of one seller's products from the shop (users.products_hidden). Visitors and customers never see them;
+// the main admin and sellers still do (marked "Hidden"), and nobody can order them while they are hidden.
+const HIDE_PROD = 'NOT COALESCE((SELECT products_hidden FROM users WHERE users.id=products.owner_id), false)';
+const HIDE_COMBO = `NOT COALESCE((SELECT products_hidden FROM users WHERE users.id=c.owner_id), false)
+  AND NOT EXISTS (SELECT 1 FROM combo_items hi JOIN products hp ON hp.id=hi.product_id JOIN users hu ON hu.id=hp.owner_id WHERE hi.combo_id=c.id AND hu.products_hidden)`;
+const isStaffReq = (req) => !!req.user && ['admin', 'seller'].includes(req.user.role);
 const COMBO_LIVE = "c.is_active AND NOT EXISTS (SELECT 1 FROM combo_approvals a WHERE a.combo_id=c.id AND a.status <> 'approved')";
 // Puts back the stock an order took (combo parts too). Safe to call twice.
 const restoreStock = (db, id) => db.query(`WITH m AS (DELETE FROM order_stock WHERE order_id=$1 RETURNING product_id, qty)
@@ -246,6 +254,8 @@ const ensureCombos = () => pool.query(`
   ALTER TABLE products ADD COLUMN IF NOT EXISTS discount_percent INT NOT NULL DEFAULT 0 CHECK (discount_percent BETWEEN 0 AND 90);
   ALTER TABLE products ADD COLUMN IF NOT EXISTS bulk_min INT CHECK (bulk_min IS NULL OR bulk_min BETWEEN 2 AND 999);
   ALTER TABLE products ADD COLUMN IF NOT EXISTS bulk_percent INT NOT NULL DEFAULT 0 CHECK (bulk_percent BETWEEN 0 AND 90);
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS products_hidden BOOLEAN NOT NULL DEFAULT false;
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS guest_contact TEXT;
   CREATE TABLE IF NOT EXISTS combos (
     id          SERIAL PRIMARY KEY,
     title       VARCHAR(120) NOT NULL,
@@ -417,8 +427,9 @@ app.post('/api/auth/change-password', auth, wrap(async (req, res) => {
 app.get('/api/auth/me', auth, (req, res) => res.json({ user: req.user }));
 
 /* ---------- Products (public read) ---------- */
-app.get('/api/products', wrap(async (req, res) => {
-  res.json((await pool.query(`SELECT ${COLS} FROM products ORDER BY created_at DESC`)).rows);
+app.get('/api/products', softAuth, wrap(async (req, res) => {
+  const hidden = 'COALESCE((SELECT products_hidden FROM users WHERE users.id=products.owner_id), false) AS hidden';
+  res.json((await pool.query(`SELECT ${COLS}, ${hidden} FROM products ${isStaffReq(req) ? '' : `WHERE ${HIDE_PROD}`} ORDER BY created_at DESC`)).rows);
 }));
 
 app.get('/api/products/:id', wrap(async (req, res) => {
@@ -620,8 +631,8 @@ app.post('/api/orders/reprice', auth, staff, wrap(async (req, res) => {
 }));
 
 /* ---------- Combos ---------- */
-app.get('/api/combos', wrap(async (req, res) => {
-  const { rows } = await pool.query(`${COMBO_SQL} WHERE ${COMBO_LIVE} ORDER BY c.created_at DESC`);
+app.get('/api/combos', softAuth, wrap(async (req, res) => {
+  const { rows } = await pool.query(`${COMBO_SQL} WHERE ${COMBO_LIVE}${isStaffReq(req) ? '' : ` AND ${HIDE_COMBO}`} ORDER BY c.created_at DESC`);
   res.json(rows.filter((c) => c.items.length));
 }));
 
@@ -708,7 +719,7 @@ app.delete('/api/products/:id', auth, staff, wrap(async (req, res) => {
 }));
 
 /* ---------- Orders ---------- */
-app.post('/api/orders', auth, wrap(async (req, res) => {
+const createOrder = wrap(async (req, res) => {
   if (!Array.isArray(req.body.items) || req.body.items.length > 100) throw bad('Your cart is empty.');
   const items = req.body.items.filter((i) => i && typeof i === 'object' && parseInt(i.quantity) > 0);
   if (!items.length) throw bad('Your cart is empty.');
@@ -719,9 +730,9 @@ app.post('/api/orders', auth, wrap(async (req, res) => {
   const c = await pool.connect();
   try {
     await c.query('BEGIN');
-    const { rows: prods } = await c.query('SELECT id,title,price,discount_percent,bulk_min,bulk_percent,is_sold_out,owner_id FROM products WHERE id = ANY($1)', [prodIds]);
+    const { rows: prods } = await c.query('SELECT id,title,price,discount_percent,bulk_min,bulk_percent,is_sold_out,owner_id FROM products WHERE id = ANY($1) AND ' + HIDE_PROD, [prodIds]);
     const byId = new Map(prods.map((r) => [r.id, r]));
-    const { rows: combos } = await c.query(`${COMBO_SQL} WHERE c.id = ANY($1) AND ${COMBO_LIVE}`, [comboIds]);
+    const { rows: combos } = await c.query(`${COMBO_SQL} WHERE c.id = ANY($1) AND ${COMBO_LIVE} AND ${HIDE_COMBO}`, [comboIds]);
     const comboById = new Map(combos.map((r) => [r.id, r]));
     const allIds = [...new Set([...prodIds, ...combos.flatMap((cb) => cb.items.map((x) => x.product_id))])];
     const costOf = new Map((await c.query('SELECT id,cost FROM products WHERE id = ANY($1)', [allIds])).rows.map((r) => [r.id, r.cost == null ? null : Number(r.cost)]));
@@ -816,6 +827,27 @@ app.post('/api/orders', auth, wrap(async (req, res) => {
   } finally {
     c.release();
   }
+});
+app.post('/api/orders', auth, createOrder);
+
+// Staff place an order for a customer who cannot log in (they message you instead). The order is made under a "guest" customer with that
+// name; the guest has a random password nobody knows, so it can never be logged into. It then shows up in Orders like any other order.
+app.post('/api/staff/orders', auth, staff, wrap(async (req, res, next) => {
+  const b = req.body || {};
+  const name = String(b.customer_name || '').trim().replace(/\s+/g, ' ');
+  const contact = String(b.contact || '').trim().slice(0, 120);
+  if (name.length < 2 || name.length > 30) throw bad('Customer name: 2-30 characters.');
+  const uname = `${name} (guest)`;
+  let { rows: [g] } = await pool.query("SELECT id,username FROM users WHERE lower(username)=lower($1) AND role='customer' AND guest_contact IS NOT NULL", [uname]);
+  if (!g) {
+    try {
+      g = (await pool.query("INSERT INTO users (username, password_hash, role, guest_contact) VALUES ($1,$2,'customer',$3) RETURNING id,username", [uname, await bcrypt.hash(crypto.randomBytes(24).toString('hex'), 10), contact])).rows[0];
+    } catch (e) { if (e.code === '23505') throw bad('A real customer already uses that name. Add something to it, for example the last name.', 409); throw e; }
+  } else if (contact) await pool.query('UPDATE users SET guest_contact=$1 WHERE id=$2', [contact, g.id]);
+  const extra = String(b.note || '').trim();
+  req.body = { items: b.items, promo: b.promo, note: [contact && `Contact: ${contact}`, `Placed by ${req.user.username}`, extra].filter(Boolean).join(' | ') };
+  req.user = { id: g.id, username: g.username, role: 'customer' };
+  return createOrder(req, res, next);
 }));
 
 const ORDER_SQL = `SELECT o.id,o.user_id,o.total,o.status,o.note,o.promo_code,o.discount,o.created_at,o.paid_by,o.paid_at,to_char(o.deliver_for,'YYYY-MM-DD') AS deliver_for,(SELECT username FROM users WHERE id=o.paid_by) AS paid_name,u.username,
@@ -1188,7 +1220,7 @@ app.put('/api/staff/alerts', auth, sellerOnly, wrap(async (req, res) => {
 
 /* ---------- Seller accounts (main admin only) ---------- */
 app.get('/api/admin/sellers', auth, admin, wrap(async (req, res) => {
-  res.json((await pool.query("SELECT id,username,created_at FROM users WHERE role='seller' ORDER BY id")).rows);
+  res.json((await pool.query("SELECT id,username,created_at,products_hidden FROM users WHERE role='seller' ORDER BY id")).rows);
 }));
 
 app.post('/api/admin/sellers', auth, admin, wrap(async (req, res) => {
@@ -1219,6 +1251,12 @@ app.patch('/api/admin/sellers/:id', auth, admin, wrap(async (req, res) => {
     if (e.code === '23505') throw bad('That username is taken.', 409);
     throw e;
   }
+}));
+
+app.patch('/api/admin/sellers/:id/hidden', auth, admin, wrap(async (req, res) => {
+  const { rows: [u] } = await pool.query("UPDATE users SET products_hidden=$1 WHERE id=$2 AND role='seller' RETURNING id,username,products_hidden", [!!(req.body || {}).hidden, req.params.id]);
+  if (!u) throw bad('Seller not found.', 404);
+  res.json(u);
 }));
 
 app.patch('/api/admin/sellers/:id/password', auth, admin, wrap(async (req, res) => {
