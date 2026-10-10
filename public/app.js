@@ -711,7 +711,7 @@ function renderAdmin() {
   const cur = GROUPS.find((g) => g[2].some((x) => x[0] === adminTab)) || GROUPS[0];
   const badge = (g) => { const n = g[0] === 'orders' ? pendingCount + pendingCustom : 0; return n ? ` (${n})` : ''; };
   const tabs = `<div class="tabs">${GROUPS.map((g) => `<button class="${g === cur ? 'primary' : ''}" data-act="admintab" data-tab="${g === cur ? adminTab : g[2][0][0]}">${g[1]}${badge(g)}</button>`).join('')}</div>`;
-  const subtabs = cur[2].length > 1 ? `<div class="subtabs">${cur[2].map((x) => tab(x[0], x[1], x[2] || '')).join('')}</div>` : '';
+  const subtabs = cur[2].length > 1 ? `<div class="subrow"><div class="subtabs">${cur[2].map((x) => tab(x[0], x[1], x[2] || '')).join('')}</div>${cur[0] === 'customers' && isRaven() ? '<button data-act="accounts-csv">Download all accounts</button>' : ''}</div>` : '';
   const productsView = `
     <section class="panel glass">
       <h2 id="form-title">Add a product</h2>
@@ -1284,6 +1284,17 @@ const actions = {
     document.body.appendChild(link); link.click(); link.remove();
     setTimeout(() => URL.revokeObjectURL(link.href), 10000);
     toast('Sales file downloaded.');
+  },
+  'accounts-csv': async () => {
+    if (!confirm('This file lists every account (customers, sellers and you) with their details and their passwords in scrambled form. Keep it private. Download it?')) return;
+    const r = await fetch('/api/admin/accounts.csv', { headers: { Authorization: 'Bearer ' + token } });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Download failed.');
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(await r.blob());
+    link.download = `accounts-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(link.href), 10000);
+    toast('Accounts file downloaded.');
   },
   auditmore: () => refreshAudit(true),
   backup: async () => {
@@ -1884,3 +1895,26 @@ new MutationObserver(() => {
 
 // Search box in Admin > Products.
 document.addEventListener('input', (e) => { if (e.target.id === 'psearch') { pSearch = e.target.value; fillProducts(); } });
+
+/* ===== Liquid pills: one glass pill slides (and squishes) between the buttons of a tab bar, even when the screen is redrawn ===== */
+const pillMemo = {};
+function placePills() {
+  document.querySelectorAll('.subtabs, #app > .tabs, #app .cats, #app .chips').forEach((bar) => {
+    const key = bar.classList.contains('subtabs') ? 'sub' : bar.classList.contains('cats') ? 'cats' : bar.classList.contains('chips') ? 'chips' : 'tabs';
+    const on = bar.querySelector(':scope > button.primary, :scope > button.on'); let pill = bar.querySelector(':scope > .lq');
+    if (!on) { if (pill) pill.style.opacity = 0; return; }
+    if (!pill) { pill = document.createElement('span'); pill.className = 'lq'; pill.setAttribute('aria-hidden', 'true'); bar.prepend(pill); }
+    const to = { x: on.offsetLeft, y: on.offsetTop, w: on.offsetWidth, h: on.offsetHeight, r: getComputedStyle(on).borderRadius };
+    const put = (p) => { pill.style.width = p.w + 'px'; pill.style.height = p.h + 'px'; pill.style.transform = `translate(${p.x}px,${p.y}px)`; pill.style.borderRadius = p.r; };
+    const from = pillMemo[key];
+    if (!pill.dataset.on) { pill.style.transition = 'none'; put(from || to); pill.style.opacity = 1; void pill.offsetWidth; pill.style.transition = ''; } // new bar: start where the pill was
+    const moved = from && (from.x !== to.x || from.y !== to.y || from.w !== to.w);
+    put(to); pill.style.opacity = 1; pill.dataset.on = '1';
+    if (moved) { pill.classList.remove('squish'); void pill.offsetWidth; pill.classList.add('squish'); }
+    pillMemo[key] = to;
+  });
+}
+let pillRaf = 0;
+const queuePills = () => { cancelAnimationFrame(pillRaf); pillRaf = requestAnimationFrame(placePills); };
+new MutationObserver((ms) => { if (!ms.every((m) => m.target.classList && m.target.classList.contains('lq'))) queuePills(); }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+addEventListener('resize', queuePills); addEventListener('load', queuePills); if (document.fonts && document.fonts.ready) document.fonts.ready.then(queuePills);
