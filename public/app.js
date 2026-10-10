@@ -2009,6 +2009,8 @@ function placePills() {
     put(to); pill.style.opacity = 1; pill.dataset.on = '1';
     if (moved) { pill.classList.remove('squish'); void pill.offsetWidth; pill.classList.add('squish'); }
     pillMemo[key] = to;
+    const sc = bar.scrollWidth > bar.clientWidth + 2 ? bar : (bar.parentElement && bar.parentElement.classList.contains('subrow') && bar.parentElement.scrollWidth > bar.parentElement.clientWidth + 2 ? bar.parentElement : null);
+    if (sc && (moved || !from)) sc.scrollTo({ left: Math.max(0, (sc === bar ? 0 : bar.offsetLeft) + on.offsetLeft - (sc.clientWidth - on.offsetWidth) / 2), behavior: 'smooth' });
   });
 }
 let pillRaf = 0;
