@@ -72,6 +72,7 @@ const AUDIT_RULES = [
   { m: 'DELETE', re: /^\/admin\/sellers\/(\d+)$/, snap: 'user', f: (b, o) => ['Removed a seller', o ? o.username : ''] },
   { m: 'POST', re: /^\/admin\/sellers\/(\d+)\/split-off$/, snap: 'user', f: (b, o) => ['Split off a seller', o ? o.username : ''] },
   { m: 'PUT', re: /^\/admin\/settings$/, f: (b) => ['Changed shop settings', brief(b)] },
+  { m: 'POST', re: /^\/admin\/sales-reset$/, f: (b) => ['Reset sales', b.keepOpen === false ? 'every order removed' : 'finished orders removed, open orders kept'] },
   { m: 'POST', re: /^\/admin\/import$/, f: () => ['Restored a backup', ''] },
   { m: 'POST', re: /^\/promos$/, f: (b) => ['Created a promo code', brief({ code: b.code, percent: b.percent, amount: b.amount })] },
   { m: 'PATCH', re: /^\/promos\/(\d+)\/active$/, snap: 'promo', f: (b, o) => ['Turned a promo on/off', o ? o.code : ''] },
@@ -434,9 +435,22 @@ app.post('/api/auth/change-password', auth, wrap(async (req, res) => {
 app.get('/api/auth/me', auth, (req, res) => res.json({ user: req.user }));
 
 /* ---------- Products (public read) ---------- */
+// "Best seller" badge: the 3 products that sold the most in the last 14 days (at least 3 sold). Worked out once every 5 minutes.
+let hotCache = { t: 0, ids: [] };
+async function hotIds() {
+  if (Date.now() - hotCache.t < 300e3) return hotCache.ids;
+  try {
+    const { rows } = await pool.query(`SELECT oi.product_id FROM order_items oi JOIN orders o ON o.id=oi.order_id
+      WHERE o.status <> 'cancelled' AND o.created_at > now() - interval '14 days' AND oi.product_id IS NOT NULL
+      GROUP BY oi.product_id HAVING SUM(oi.quantity) >= 3 ORDER BY SUM(oi.quantity) DESC LIMIT 3`);
+    hotCache = { t: Date.now(), ids: rows.map((r) => r.product_id) };
+  } catch (e) { hotCache.t = Date.now(); }
+  return hotCache.ids;
+}
 app.get('/api/products', softAuth, wrap(async (req, res) => {
   const hidden = 'COALESCE((SELECT products_hidden FROM users WHERE users.id=products.owner_id), false) AS hidden';
-  res.json((await pool.query(`SELECT ${COLS}, ${req.user && req.user.role === 'admin' ? hidden : 'false AS hidden'} FROM products ${isStaffReq(req) ? '' : `WHERE ${HIDE_PROD}`} ORDER BY pinned DESC, sort_order ASC NULLS LAST, created_at DESC`)).rows);
+  const hot = await hotIds();
+  res.json((await pool.query(`SELECT ${COLS}, ${req.user && req.user.role === 'admin' ? hidden : 'false AS hidden'}, (id = ANY($1::int[])) AS hot FROM products ${isStaffReq(req) ? '' : `WHERE ${HIDE_PROD}`} ORDER BY pinned DESC, sort_order ASC NULLS LAST, created_at DESC`, [hot])).rows);
 }));
 
 app.get('/api/products/:id', wrap(async (req, res) => {
@@ -1705,6 +1719,37 @@ app.post('/api/favorites/:id', auth, wrap(async (req, res) => {
 app.delete('/api/favorites/:id', auth, wrap(async (req, res) => {
   await pool.query('DELETE FROM favorites WHERE user_id=$1 AND product_id=$2', [req.user.id, parseInt(req.params.id) || 0]);
   res.sendStatus(204);
+}));
+
+/* ---------- Sales reset (raven only) ---------- */
+// Removes the sales history: finished orders (and, if asked, open ones too), the cash settlements between sellers, and the promo
+// "times used" counters. Products, accounts, combos and promo codes stay. A full safety backup is saved first (Backup > Automatic backups).
+app.post('/api/admin/sales-reset', auth, admin, wrap(async (req, res) => {
+  const b = req.body || {};
+  if (String(b.confirm || '').trim() !== 'RESET') throw bad('Type RESET to confirm.');
+  const keepOpen = b.keepOpen !== false;
+  const zipped = await gzip(Buffer.from(await buildBackup()));
+  await pool.query('INSERT INTO backups (size, data) VALUES ($1,$2)', [zipped.length, zipped]);
+  const c = await pool.connect();
+  try {
+    await c.query('BEGIN');
+    const ids = (await c.query(`SELECT id FROM orders ${keepOpen ? "WHERE status NOT IN ('pending','packed')" : ''}`)).rows.map((r) => r.id);
+    if (ids.length) {
+      await c.query('DELETE FROM order_approvals WHERE order_id = ANY($1)', [ids]);
+      await c.query('DELETE FROM order_stock WHERE order_id = ANY($1)', [ids]);
+      await c.query('DELETE FROM order_items WHERE order_id = ANY($1)', [ids]);
+      await c.query('DELETE FROM orders WHERE id = ANY($1)', [ids]);
+    }
+    await c.query('DELETE FROM settlements');
+    await c.query('UPDATE promo_codes SET used_count = 0');
+    await c.query('COMMIT');
+    res.json({ ok: true, removed: ids.length });
+  } catch (e) {
+    await c.query('ROLLBACK');
+    throw e;
+  } finally {
+    c.release();
+  }
 }));
 
 /* ---------- Errors & boot ---------- */
