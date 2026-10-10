@@ -29,7 +29,9 @@ let promo = null, cartNote = '', settings = { banner: '', stamp_reward: 'a free 
 let sig = '', lastOrderId = null, mineHtml = '', adminHtml = '', statusMap = null, adminTab = 'dashboard', pendingCount = 0;
 let ordSearch = '', costMap = {}, repData = null, revSig = '';
 let customHtml = '', customAdminHtml = '', crMap = null, crList = [], lastCrId = null, pendingCustom = 0;
-let arrange = false, dragBusy = false; // arrange = Raven's drag-and-pin mode on the shop page; dragBusy pauses live refresh while a card is held
+let arrange = false, dragBusy = false;
+let sellerFilter = null, pubSellers = null, paidFlash = 0, slidesHtml = '', spotHtml = '', recentHtml = '', slideTimer = 0, holdUntil = 0;
+const recent = (() => { try { return JSON.parse(localStorage.recent || '[]'); } catch (e) { return []; } })(); // product ids the customer tapped, newest first // arrange = Raven's drag-and-pin mode on the shop page; dragBusy pauses live refresh while a card is held
 
 // A random ID this browser keeps, so the server can limit how many accounts one device makes.
 const deviceId = () => {
@@ -79,6 +81,7 @@ let sellers = [], team = [];
 const vis = (l) => (isRaven() ? l.filter((x) => !x.hidden) : l); // hidden items vanish from every tab for the main admin (sellers are never told, so they never get the flag)
 let pSearch = '';
 const myProducts = () => (isRaven() ? products : products.filter((p) => p.owner_id === user.id));
+const sTag = (id) => { const n = ownerName(id); return n ? `<span class="stag" style="--h:${(id * 67) % 360}">${esc(n)}</span>` : ''; }; // each seller keeps one colour
 const ownerName = (id) => (!user || id === user.id ? '' : (team.find((x) => x.id === id) || {}).username || '');
 const canEdit = (ownerId) => isRaven() || (user && ownerId === user.id); // everyone on staff can look; only owners (and raven) can change
 
@@ -128,6 +131,7 @@ async function loadFavs() {
 }
 // "New" for 3 days after a product is added; "Best seller" from the server. Neither shows on sold-out items.
 const tagFor = (p) => (p.is_sold_out || p.hidden ? '' : p.hot ? '<span class="tag hot">Best seller</span>' : Date.now() - new Date(p.created_at) < 3 * 864e5 ? '<span class="tag new">New</span>' : '');
+const lowBadge = (p) => (!p.is_sold_out && !p.hidden && p.stock != null && p.stock <= LOW_STOCK ? `<span class="badge low${tagFor(p) || p.pinned ? ' stack' : ''}">Low stock</span>` : '');
 const dealOn = (p) => !p.hidden && !p.is_sold_out && (Number(p.discount_percent) > 0 || bulkOn(p));
 const EMPTY_ART = '<svg viewBox="0 0 160 130" aria-hidden="true"><defs><linearGradient id="eg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0a84ff"/><stop offset="1" stop-color="#bf5af2"/></linearGradient></defs><path d="M38 52h84l-8 56a10 10 0 0 1-10 9H56a10 10 0 0 1-10-9z" fill="url(#eg)" opacity=".9"/><path d="M60 52c0-16 8-26 20-26s20 10 20 26" fill="none" stroke="url(#eg)" stroke-width="7" stroke-linecap="round"/><circle cx="30" cy="30" r="5" fill="#ff9f0a"/><circle cx="132" cy="22" r="4" fill="#30d158"/><path d="M130 62l3 8 8 3-8 3-3 8-3-8-8-3 8-3z" fill="#ff375f"/><path d="M26 74l2 5 5 2-5 2-2 5-2-5-5-2 5-2z" fill="#64d2ff"/></svg>';
 // a soft glow that blooms across the screen and fades when an order is placed (skipped if animations are turned off)
@@ -146,7 +150,7 @@ const arrangeCtl = (p) => `<div class="arr-ctl"><span class="grip" data-grip rol
 const productCard = (p) => {
   const off = Number(p.discount_percent) || 0;
   const note = bulkOn(p) ? `Buy ${p.bulk_min}+ and save ${p.bulk_percent}%` : (!p.is_sold_out && p.stock != null && p.stock <= LOW_STOCK ? `Only ${p.stock} left` : '');
-  return `<article class="card t has-fav${p.pinned ? ' pinned' : ''}" data-sid="${p.id}"><div class="img">${heartBtn(p.id)}${tagFor(p)}${p.pinned ? PINMARK : ''}${arrange && isRaven() ? arrangeCtl(p) : ''}${p.image_url ? `<img loading="lazy" decoding="async" src="${esc(thumb(p.image_url, 480))}" srcset="${esc(thumb(p.image_url, 240))} 240w, ${esc(thumb(p.image_url, 480))} 480w, ${esc(thumb(p.image_url, 800))} 800w" sizes="(max-width:380px) 100vw, (max-width:900px) 60vw, 40vw" alt="${esc(p.title)}">` : ''}${p.hidden ? '<span class="badge">Hidden from shop</span>' : p.is_sold_out ? '<span class="badge">Sold out</span>' : ''}${off ? `<span class="badge off">-${off}% OFF</span>` : ''}</div>` +
+  return `<article class="card t has-fav${p.pinned ? ' pinned' : ''}" data-sid="${p.id}"><div class="img">${heartBtn(p.id)}${tagFor(p)}${lowBadge(p)}${p.pinned ? PINMARK : ''}${arrange && isRaven() ? arrangeCtl(p) : ''}${p.image_url ? `<img loading="lazy" decoding="async" src="${esc(thumb(p.image_url, 480))}" srcset="${esc(thumb(p.image_url, 240))} 240w, ${esc(thumb(p.image_url, 480))} 480w, ${esc(thumb(p.image_url, 800))} 800w" sizes="(max-width:380px) 100vw, (max-width:900px) 60vw, 40vw" alt="${esc(p.title)}">` : ''}${p.hidden ? '<span class="badge">Hidden from shop</span>' : p.is_sold_out ? '<span class="badge">Sold out</span>' : ''}${off ? `<span class="badge off chip" tabindex="0" aria-label="${off}% off, now ${money(fin(p))}"><i>-${off}% OFF</i><u>Now ${money(fin(p))}</u></span>` : ''}</div>` +
     capHtml(esc(p.title), note, `${off ? `<span class="was">${money(p.price)}</span> ` : ''}<b>${money(fin(p))}</b>`, `data-act="add" data-id="${p.id}"`, p.is_sold_out, esc(p.description)) + '</article>';
 };
 const comboCard = (c) => {
@@ -190,6 +194,7 @@ function fillHero() {
   const pick = [...withPic.filter((p) => p.pinned), ...withPic.filter((p) => !p.pinned)].slice(0, 3);
   pics.innerHTML = pick.map((p, i) => `<figure class="hp hp${i + 1}"><img decoding="async" src="${esc(thumb(p.image_url, 480))}" srcset="${esc(thumb(p.image_url, 480))} 480w, ${esc(thumb(p.image_url, 800))} 800w" sizes="260px" alt=""><figcaption><b>${esc(p.title)}</b><span>${money(fin(p))}</span></figcaption></figure>`).join('');
   pics.classList.toggle('empty', !pick.length);
+  fillSlides(); fillSpot(); fillRecent();
 }
 function fillGrid() {
   fillHero(); const el = $('#grid'); if (el) flipRender(el, drawGrid); }
@@ -200,15 +205,16 @@ function drawGrid() {
   el.classList.toggle('arrange', arranging);
   const text = arranging ? '' : searchText.trim().toLowerCase();
   const filter = arranging && (catFilter === 'favs' || catFilter === 'combos' || catFilter === 'deals') ? 'all' : catFilter;
-  const match = (p) => !text || `${p.title} ${p.description}`.toLowerCase().includes(text);
+  const match = (p) => (sellerFilter == null || p.owner_id === sellerFilter) && (!text || `${p.title} ${p.description}`.toLowerCase().includes(text));
   const catOf = (p) => (CATS[p.category] ? p.category : 'snacks');
-  const comboList = !arranging && (filter === 'all' || filter === 'combos')
+  const comboList = !arranging && sellerFilter == null && (filter === 'all' || filter === 'combos')
     ? shuffled(combos.filter((c) => !c.hidden && match({ title: c.title, description: `${c.description} ${c.items.map((x) => x.title).join(' ')}` })), (c) => 'c' + c.id) : [];
   const groups = Object.keys(CATS)
     .filter((c) => filter === 'all' || filter === 'favs' || filter === 'deals' || filter === c)
     .map((c) => ({ c, list: shuffledPinned(products.filter((p) => !p.hidden && catOf(p) === c && match(p) && (filter !== 'favs' || favs.has(p.id)) && (filter !== 'deals' || dealOn(p)))) }))
     .filter((g) => g.list.length);
-  el.innerHTML = (comboList.length ? `<h2 class="cat-title">Combos</h2><section class="grid">${comboList.map(comboCard).join('')}</section>` : '')
+  const who = sellerFilter != null && (pubSellers || []).find((x) => x.id === sellerFilter);
+  el.innerHTML = (sellerFilter != null ? `<div class="sfilter glass"><span>Showing items from <b>${esc(who ? who.username : 'this seller')}</b></span><button type="button" class="sq" data-act="seller-clear">Show everyone</button></div>` : '') + (comboList.length ? `<h2 class="cat-title">Combos</h2><section class="grid">${comboList.map(comboCard).join('')}</section>` : '')
     + groups.map((g) => `<h2 class="cat-title">${CATS[g.c]}</h2><section class="grid" data-sortlist="shop">${g.list.map(productCard).join('')}</section>`).join('')
     || `<div class="panel glass empty">${EMPTY_ART}<p>${filter === 'favs' ? 'No favorites yet. Tap the heart on a product to save it here.' : filter === 'deals' ? 'No deals right now. Check back soon!' : products.length || combos.length ? 'No products match your search.' : 'No products yet.'}</p></div>`;
 }
@@ -227,6 +233,62 @@ function fillBanner() {
   el.innerHTML = (settings.banner ? `<div class="banner glass">${esc(settings.banner)}</div>` : '') + (n ? `<div class="banner glass">${esc(n)}</div>` : '');
 }
 
+/* ---------- Highlights carousel, seller spotlight, recently viewed ---------- */
+function slideData() {
+  const ok = products.filter((p) => !p.hidden && !p.is_sold_out && p.image_url), out = [], used = new Set();
+  const take = (p) => { used.add(p.id); return p; };
+  if (settings.banner && ok.length) { const p = take(ok.find((x) => x.pinned) || ok[0]); out.push({ kind: 'Announcement', title: settings.banner, sub: 'Straight from the shop.', p, btn: 'Browse the shop', act: 'cat', cat: 'all' }); }
+  const deal = ok.filter((x) => dealOn(x) && !used.has(x.id)).sort((a, b) => (Number(b.discount_percent) || 0) - (Number(a.discount_percent) || 0))[0];
+  if (deal) { take(deal); out.push({ kind: 'Promo', title: Number(deal.discount_percent) > 0 ? `${deal.title} is ${deal.discount_percent}% off` : `Buy ${deal.bulk_min}+ ${deal.title} and save ${deal.bulk_percent}%`, sub: 'More deals are waiting in the Deals tab.', p: deal, btn: 'See all deals', act: 'cat', cat: 'deals' }); }
+  const fresh = [...ok].filter((x) => !used.has(x.id)).sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
+  if (fresh) { take(fresh); out.push({ kind: 'New arrival', title: fresh.title, sub: fresh.description || 'Just added to the shop.', p: fresh, btn: 'Add to cart', act: 'add' }); }
+  const best = ok.find((x) => x.hot && !used.has(x.id));
+  if (best) out.push({ kind: 'Best seller', title: best.title, sub: best.description || 'Customers keep coming back for this one.', p: best, btn: 'Add to cart', act: 'add' });
+  return out;
+}
+function fillSlides() {
+  const el = $('#slides'); if (!el) return;
+  const list = slideData();
+  const html = list.length ? `<div class="slides glass" role="region" aria-roledescription="carousel" aria-label="Highlights"><div class="sl-track">${list.map((x, i) => `<article class="slide" aria-label="${i + 1} of ${list.length}"><img decoding="async" src="${esc(thumb(x.p.image_url, 800))}" alt=""><div class="sl-txt"><span class="sl-k">${x.kind}</span><h3>${esc(x.title)}</h3><p>${esc(x.sub)}</p><button type="button" class="primary sq" data-act="${x.act}" ${x.act === 'cat' ? `data-cat="${x.cat}"` : `data-id="${x.p.id}"`}>${x.btn}</button></div></article>`).join('')}</div>${list.length > 1 ? `<div class="sl-dots">${list.map((_, i) => `<button type="button" class="${i ? '' : 'on'}" data-act="slide-go" data-i="${i}" aria-label="Show slide ${i + 1}"></button>`).join('')}</div>` : ''}</div>` : '';
+  if (html === slidesHtml) return;
+  slidesHtml = html; el.innerHTML = html; clearInterval(slideTimer);
+  const tr = el.querySelector('.sl-track'); if (!tr || list.length < 2) return;
+  const pause = (ms) => () => { holdUntil = Date.now() + ms; };
+  el.addEventListener('pointerenter', pause(9000)); el.addEventListener('pointerdown', pause(9000)); el.addEventListener('focusin', pause(9000)); el.addEventListener('pointerleave', pause(1200));
+  tr.addEventListener('scroll', () => { const i = Math.round(tr.scrollLeft / tr.clientWidth); el.querySelectorAll('.sl-dots button').forEach((d, k) => d.classList.toggle('on', k === i)); }, { passive: true });
+  if (!RM) slideTimer = setInterval(() => {
+    if (!document.body.contains(tr)) return clearInterval(slideTimer);
+    if (document.hidden || Date.now() < holdUntil) return;
+    tr.scrollTo({ left: ((Math.round(tr.scrollLeft / tr.clientWidth) + 1) % list.length) * tr.clientWidth, behavior: 'smooth' });
+  }, 5500);
+}
+async function loadPubSellers() { try { pubSellers = await api('/api/sellers/public'); } catch (e) { pubSellers = []; } fillSpot(); }
+function fillSpot() {
+  const el = $('#spot'); if (!el) return;
+  if (pubSellers == null) { pubSellers = []; loadPubSellers(); return; }
+  const cards = pubSellers.map((s) => {
+    const mine = products.filter((p) => p.owner_id === s.id && !p.hidden && !p.is_sold_out);
+    const best = mine.find((p) => p.hot && p.image_url) || mine.find((p) => p.pinned && p.image_url) || mine.find((p) => p.image_url);
+    return best ? { s, n: mine.length, best } : null;
+  }).filter(Boolean);
+  const html = cards.length > 1 ? `<h2 class="cat-title">Meet the sellers</h2><div class="spot">${cards.map(({ s, n, best }) => `<article class="sp glass"><img loading="lazy" decoding="async" src="${esc(thumb(best.image_url, 240))}" alt=""><div><b>${esc(s.username)}</b><small>${n} item${n === 1 ? '' : 's'}. Best pick: ${esc(best.title)}</small><button type="button" class="sq" data-act="seller" data-id="${s.id}">Shop their items</button></div></article>`).join('')}</div>` : '';
+  if (html !== spotHtml) { spotHtml = html; el.innerHTML = html; }
+}
+function markRecent(id) {
+  id = Number(id); const i = recent.indexOf(id); if (i >= 0) recent.splice(i, 1);
+  recent.unshift(id); recent.length = Math.min(recent.length, 10);
+  try { localStorage.recent = JSON.stringify(recent); } catch (e) { /* private mode */ }
+  fillRecent();
+}
+function fillRecent() {
+  const el = $('#recent'); if (!el) return;
+  const list = recent.map((id) => products.find((p) => p.id == id)).filter((p) => p && !p.hidden).slice(0, 8);
+  const html = list.length ? `<h2 class="cat-title">Recently viewed</h2><div class="rv">${list.map((p) => `<article class="rv-card">${p.image_url ? `<img loading="lazy" decoding="async" src="${esc(thumb(p.image_url, 240))}" alt="">` : '<div class="ph"></div>'}<div class="rv-b"><b>${esc(p.title)}</b><span>${money(fin(p))}</span></div><button type="button" class="primary add" data-act="add" data-id="${p.id}" aria-label="Add ${esc(p.title)} to cart" ${p.is_sold_out ? 'disabled' : ''}>+</button></article>`).join('')}</div>` : '';
+  if (html !== recentHtml) { recentHtml = html; el.innerHTML = html; }
+}
+const SKEL = '<div class="skel" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>';
+const CHECK = '<svg class="chk" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M7 12.5l3.2 3.2L17 9"/></svg>';
+const ring = (have, need) => { const k = Math.min(1, have / need), c = 2 * Math.PI * 9; return `<svg class="ring" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle class="v" cx="12" cy="12" r="9" stroke-dasharray="${(k * c).toFixed(1)} ${c.toFixed(1)}"/>${k >= 1 ? '<path d="M8 12.5l3 3 5-6"/>' : ''}</svg>`; };
 const arrBar = () => (arrange
   ? '<div class="arr-bar glass"><div><b>Arrange mode</b><span class="muted">Drag the handle on a card to move it, or focus it and use the arrow keys. The pin features a product at the top. It saves by itself and customers see it live.</span></div><button type="button" class="primary sq" data-act="arrange">Done</button></div>'
   : '<div class="arr-open"><button type="button" class="sq" data-act="arrange">Arrange shop</button></div>');
@@ -235,11 +297,13 @@ function renderShop() {
   const tile = (id, label) => `<button class="tile${catFilter === id ? ' on' : ''}" data-act="cat" data-cat="${id}">${label}</button>`;
   $('#app').innerHTML = `<section class="hero"><h2>What are you craving?</h2><p>Fresh drinks and snacks. Pay cash when it is handed to you.</p>
       <div id="herochips"></div><input id="search" type="search" placeholder="Search snacks and drinks..." value="${esc(searchText)}" autocomplete="off"><div id="heropics" aria-hidden="true"></div></section>
+    <div class="divider" aria-hidden="true"></div>
     ${(() => { const msgs = ['Fresh drinks and snacks', 'Pay cash on delivery', 'New picks added often', 'Tap the heart to save your favorites', orderNote()].filter(Boolean), one = msgs.map((m) => `<span>\u2726 ${esc(m)}</span>`).join('');
       return `<div class="ticker" aria-hidden="true"><div class="ticker-track">${one}${one}</div></div>`; })()}
-    <div id="banner"></div>
+    <div id="slides"></div><div id="spot"></div><div id="banner"></div>
     <div class="cats">${tile('all', 'All')}${user ? tile('favs', '\u2665 Favorites') : ''}${products.some(dealOn) ? tile('deals', '\uD83D\uDD25 Deals') : ''}${tile('combos', 'Combos')}${Object.entries(CATS).map(([id, label]) => tile(id, label)).join('')}</div>
-    ${isRaven() ? arrBar() : ''}<div id="grid"></div>`;
+    ${isRaven() ? arrBar() : ''}<div id="grid"></div><div id="recent"></div>`;
+  slidesHtml = spotHtml = recentHtml = ''; sellerFilter = null;
   fillBanner();
   fillGrid();
   updateCartBar();
@@ -252,7 +316,7 @@ const productTable = () => `<table${isRaven() && !pSearch.trim() ? ' data-sortli
     ${isRaven() ? `<td><span class="grip" data-grip role="button" tabindex="0" aria-label="Move ${esc(p.title)}: drag, or use the arrow keys">${GRIP_SVG}</span></td>` : ''}
     <td>${mine ? `<input type="checkbox" class="pick" value="${p.id}" ${selected.has(p.id) ? 'checked' : ''}>` : ''}</td>
     <td>${p.image_url ? `<img class="thumb" loading="lazy" decoding="async" width="52" height="52" src="${esc(thumb(p.image_url, 160))}" alt="">` : ''}</td>
-    <td><b>${esc(p.title)}</b>${p.pinned ? ' <span class="pill st-packed">Pinned</span>' : ''}<br>${money(p.price)}${p.discount_percent ? ` (-${p.discount_percent}%)` : ''}${bulkOn(p) ? ` | Bulk: ${p.bulk_min}+ = -${p.bulk_percent}%` : ''} | ${CATS[p.category] || 'Snacks'}${mine && costMap[p.id] != null ? ` | Profit ${money(fin(p) - Number(costMap[p.id]))} each` : ''}${p.stock != null ? ` | Stock: ${p.stock}${p.stock > 0 && p.stock <= LOW_STOCK ? ' (low!)' : ''}` : ''}${p.is_sold_out ? ' - sold out' : ''}${ownerName(p.owner_id) ? ` | by ${esc(ownerName(p.owner_id))}` : ''}</td>
+    <td><b>${esc(p.title)}</b>${p.pinned ? ' <span class="pill st-packed">Pinned</span>' : ''}<br>${money(p.price)}${p.discount_percent ? ` (-${p.discount_percent}%)` : ''}${bulkOn(p) ? ` | Bulk: ${p.bulk_min}+ = -${p.bulk_percent}%` : ''} | ${CATS[p.category] || 'Snacks'}${mine && costMap[p.id] != null ? ` | Profit ${money(fin(p) - Number(costMap[p.id]))} each` : ''}${p.stock != null ? ` | Stock: ${p.stock}${p.stock > 0 && p.stock <= LOW_STOCK ? ' (low!)' : ''}` : ''}${p.is_sold_out ? ' - sold out' : ''}${ownerName(p.owner_id) ? ` | by ${sTag(p.owner_id)}` : ''}</td>
     <td>${mine ? `<div class="actions">
       ${isRaven() ? `<button data-act="pin" data-id="${p.id}">${p.pinned ? 'Unpin' : 'Pin to top'}</button>` : ''}<button data-act="edit" data-id="${p.id}">Edit</button>
       <button data-act="toggle" data-id="${p.id}">${p.is_sold_out ? 'Mark available' : 'Mark sold out'}</button>
@@ -307,7 +371,7 @@ const forTag = (o) => {
   if (!t || !o.deliver_for || !['pending', 'packed'].includes(statusOf(o))) return '';
   return `<span class="pill">${o.deliver_for === t ? 'For today' : o.deliver_for > t ? 'For tomorrow' : 'Late: was ' + esc(o.deliver_for)}</span>`;
 };
-const paidTag = (o) => (o.paid_by ? `<span class="pill st-packed">Paid - ${esc(o.paid_name || '')}</span>`
+const paidTag = (o) => (o.paid_by ? `<span class="pill st-packed">${o.id === paidFlash ? CHECK : ''}Paid - ${esc(o.paid_name || '')}</span>`
   : ['packed', 'completed'].includes(o.status) ? `<span class="pill st-cancelled">Not paid yet</span>` : '');
 const paidBtn = (o) => (!['packed', 'completed'].includes(o.status) ? ''
   : !o.paid_by ? `<button class="primary" data-act="paid" data-id="${o.id}" data-paid="1">Mark paid (cash in hand)</button>`
@@ -338,6 +402,7 @@ const hourLabel = (d) => {
 function paintOrderFilters() {
   document.querySelectorAll('#ofilters [data-st]').forEach((b) => b.classList.toggle('primary', b.dataset.st === ordStatus));
   if ($('#orange')) $('#orange').value = ordRange;
+  document.querySelectorAll('#ojump [data-r]').forEach((b) => b.classList.toggle('primary', b.dataset.r === ordRange && !ordDay));
   if ($('#oday')) $('#oday').value = ordDay;
   if ($('#onlymine')) $('#onlymine').checked = mineOnly();
   if ($('#osearch')) $('#osearch').value = ordSearch;
@@ -564,7 +629,7 @@ async function refreshAdminCombos() {
   const html = list.length ? `<table>${list.map((c) => {
     const my = (c.approvals || []).find((x) => x.owner_id === user.id);
     return `<tr>
-      <td><b>${esc(c.title)}</b><br><span class="muted">${c.items.map((x) => `${x.quantity}x ${esc(x.title)}`).join(', ')}${ownerName(c.owner_id) ? ` | made by ${esc(ownerName(c.owner_id))}` : ''}</span></td>
+      <td><b>${esc(c.title)}</b><br><span class="muted">${c.items.map((x) => `${x.quantity}x ${esc(x.title)}`).join(', ')}${ownerName(c.owner_id) ? ` | made by ${sTag(c.owner_id)}` : ''}</span></td>
       <td>${money(c.price)}</td><td><span class="pill">${comboState(c)}</span></td>
       <td><div class="actions">
         ${my && my.status !== 'approved' ? `<button class="primary" data-act="combo-approve" data-id="${c.id}" data-yes="1">Approve</button>` : ''}
@@ -755,9 +820,10 @@ function renderAdmin() {
         <button data-act="reprice">Update open orders to current prices</button>
       </div>
       <input id="psearch" type="search" placeholder="Search products by name, description, section or seller..." autocomplete="off" value="${esc(pSearch)}" style="margin:0 0 12px">
-      <div id="plist"></div></section>`;
+      <div id="plist">${SKEL}</div></section>`;
   const ordersView = `<h2>Orders</h2>
     <div class="toolbar" id="ofilters">
+      <div class="chips quick" id="ojump"><button type="button" data-act="ojump" data-r="today">Today</button><button type="button" data-act="ojump" data-r="week">This week</button><button type="button" data-act="ojump" data-r="all">All time</button></div>
       <input type="search" id="osearch" placeholder="Search customer or order #" autocomplete="off" style="max-width:240px">
       <div class="chips">
         <button data-act="ofilter" data-st="active">Active</button><button data-act="ofilter" data-st="pending">To pack</button><button data-act="ofilter" data-st="packed">Packed</button>
@@ -771,7 +837,7 @@ function renderAdmin() {
       ${isRaven() ? '<label class="pickrow" style="padding:0"><input type="checkbox" id="onlymine"> Print only my items</label>' : ''}
     </div>
     <p class="muted" id="ocount" style="margin:0 0 4px"></p>
-    <div id="olist"><p>Loading...</p></div>
+    <div id="olist">${SKEL}</div>
     <div id="omore" style="text-align:center;margin:14px 0"></div>`;
   const cashView = '<section class="panel glass"><h2>Cash</h2><div id="cashbox"><p>Loading...</p></div></section>';
   const reportView = `<section class="panel glass">
@@ -793,7 +859,7 @@ function renderAdmin() {
         <label>Combo price</label><input name="price" type="number" step="0.01" min="0" required>
         <label>Tick the products and how many of each</label>
         <p class="muted" style="margin:0 0 8px">You can add other sellers' products too. They must approve before the combo goes live, and each seller approves her own part of every order.</p>
-        <div class="picks">${products.map((p) => `<label class="pickrow"><input type="checkbox" name="pid" value="${p.id}"> ${esc(p.title)} (${money(fin(p))})${ownerName(p.owner_id) ? ` - by ${esc(ownerName(p.owner_id))}` : ''}
+        <div class="picks">${products.map((p) => `<label class="pickrow"><input type="checkbox" name="pid" value="${p.id}"> ${esc(p.title)} (${money(fin(p))})${ownerName(p.owner_id) ? ` - by ${sTag(p.owner_id)}` : ''}
           <input type="number" min="1" max="20" value="1" data-qty="${p.id}"></label>`).join('') || '<p>Add products first.</p>'}</div>
         <p class="muted" id="combo-sum"></p>
         <button class="primary" type="submit">Create combo</button>
@@ -1074,7 +1140,7 @@ function cartLines() {
     const p = products.find((x) => x.id == key);
     if (!p) return null;
     const hit = bulkOn(p) && q >= Number(p.bulk_min);
-    const note = hit ? ` <small class="muted">(bulk price, ${p.bulk_percent}% off)</small>` : bulkOn(p) ? ` <small class="muted">(buy ${p.bulk_min}+ for ${p.bulk_percent}% off)</small>` : '';
+    const note = hit ? ` <small class="muted bulk">${ring(q, Number(p.bulk_min))} bulk price, ${p.bulk_percent}% off</small>` : bulkOn(p) ? ` <small class="muted bulk">${ring(q, Number(p.bulk_min))} add ${Number(p.bulk_min) - q} more to save ${p.bulk_percent}%</small>` : '';
     return { key, title: p.title, price: unitFor(p, q), q, owner: p.owner_id, note };
   }).filter(Boolean);
 }
@@ -1089,7 +1155,7 @@ function cartDialog() {
     return ok ? s + l.price * l.q : s;
   }, 0);
   const off = promo ? Math.round(base * promo.percent) / 100 : 0;
-  $('#dlg').innerHTML = `<h2>Your cart</h2>${lines.map((l) => `<div class="cline"><span>${esc(l.title)}${l.note || ''}</span><div class="qty"><button data-act="cart-step" data-id="${l.key}" data-d="-1">-</button><b>${l.q}</b><button data-act="cart-step" data-id="${l.key}" data-d="1">+</button></div><b>${money(l.price * l.q)}</b><button data-act="remove" data-id="${l.key}">Remove</button></div>`).join('') || '<p>Your cart is empty.</p>'}
+  $('#dlg').innerHTML = `<h2>Your cart</h2>${lines.length ? '' : `<div class="empty">${EMPTY_ART}<p>Your cart is empty.<br><span class="muted">Tap + on anything you like.</span></p></div>`}${lines.map((l) => `<div class="cline"><span>${esc(l.title)}${l.note || ''}</span><div class="qty"><button data-act="cart-step" data-id="${l.key}" data-d="-1">-</button><b>${l.q}</b><button data-act="cart-step" data-id="${l.key}" data-d="1">+</button></div><b>${money(l.price * l.q)}</b><button data-act="remove" data-id="${l.key}">Remove</button></div>`).join('') || '<p>Your cart is empty.</p>'}
     ${lines.length ? `<label>Promo code (optional)</label>
       <div class="actions"><input id="promoin" value="${esc(promo ? promo.code : '')}" placeholder="Enter code" style="flex:1;margin:0"><button data-act="applypromo">Apply</button></div>
       <label style="display:block;margin-top:12px">Note for the seller (your name, seat, anything helpful)</label>
@@ -1163,6 +1229,10 @@ const actions = {
     custHtml = ''; await refreshCustomers(); toast('Customer unblocked.');
   },
   omore: async () => { ordLimit += 30; await refreshOrders(); },
+  ojump: (id, d) => { ordRange = d.r; ordDay = ''; paintOrderFilters(); drawOrders(); },
+  'slide-go': (id, d) => { const tr = $('.sl-track'); if (tr) { holdUntil = Date.now() + 9000; tr.scrollTo({ left: Number(d.i) * tr.clientWidth, behavior: 'smooth' }); } },
+  seller: (id) => { sellerFilter = Number(id); catFilter = 'all'; document.querySelectorAll('.cats .tile').forEach((t) => t.classList.toggle('on', t.dataset.cat === 'all')); fillGrid(); const g = $('#grid'); if (g) g.scrollIntoView({ behavior: 'smooth', block: 'start' }); },
+  'seller-clear': () => { sellerFilter = null; fillGrid(); },
   ofilter: (id, d) => { ordStatus = d.st; paintOrderFilters(); drawOrders(); },
   'print-orders': () => printOrders(shownOrders, 'list'),
   'print-order': (id) => { const o = ordersCache.find((x) => x.id == id); if (o) printOrders([o], 'receipt'); },
@@ -1366,6 +1436,7 @@ const actions = {
   },
   paid: async (id, d) => {
     await api(`/api/orders/${id}/paid`, { method: 'PATCH', json: { paid: d.paid === '1' } });
+    if (d.paid === '1') { paidFlash = Number(id); setTimeout(() => { paidFlash = 0; }, 1800); }
     refreshAttention(true).catch(() => {});
     await refreshOrders(); if (adminTab === 'cash') await refreshCash(); toast(d.paid === '1' ? 'Marked paid.' : 'Paid tick removed.');
   },
@@ -1791,6 +1862,7 @@ function quickAdd(key, title, stock) {
   toast(`${title} added. In your cart: ${have + 1}.`);
 }
 function flyToCart(key) {
+  try { navigator.vibrate && navigator.vibrate(12); } catch (e) { /* not supported (iPhone) */ } // tiny tap on phones that allow it
   if (RM) return;
   const id = String(key), card = document.querySelector(id.startsWith('c') ? `.card[data-cid="${id.slice(1)}"]` : `.card[data-sid="${id}"]`);
   if (!card) return;
@@ -1943,3 +2015,23 @@ let pillRaf = 0;
 const queuePills = () => { cancelAnimationFrame(pillRaf); pillRaf = requestAnimationFrame(placePills); };
 new MutationObserver((ms) => { if (!ms.every((m) => m.target.classList && m.target.classList.contains('lq'))) queuePills(); }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
 addEventListener('resize', queuePills); addEventListener('load', queuePills); if (document.fonts && document.fonts.ready) document.fonts.ready.then(queuePills);
+
+
+/* ---------- Heart tooltip and "recently viewed" tracking ---------- */
+let tipEl = null;
+const hideTip = () => tipEl && tipEl.classList.remove('on');
+function showTip(b) {
+  if (!tipEl) { tipEl = document.createElement('div'); tipEl.className = 'tip'; tipEl.setAttribute('role', 'tooltip'); document.body.appendChild(tipEl); }
+  tipEl.textContent = token ? 'Saved to your account, so your favorites sync across your devices.' : 'Log in and your favorites will sync across your devices.';
+  const r = b.getBoundingClientRect();
+  tipEl.style.left = Math.min(innerWidth - 120, Math.max(120, r.left + r.width / 2)) + 'px'; tipEl.style.top = r.top - 10 + 'px';
+  tipEl.classList.add('on');
+}
+document.addEventListener('pointerover', (e) => { if (e.pointerType === 'touch') return; const b = e.target.closest && e.target.closest('.fav'); b ? showTip(b) : hideTip(); });
+document.addEventListener('focusin', (e) => { const b = e.target.closest && e.target.closest('.fav'); b ? showTip(b) : hideTip(); });
+document.addEventListener('focusout', hideTip);
+document.addEventListener('scroll', hideTip, { passive: true });
+document.addEventListener('click', (e) => { // tapping a product counts as viewing it
+  const c = e.target.closest && e.target.closest('.grid>.card[data-sid]');
+  if (c && !arrange && !e.target.closest('[data-grip],.pinbtn')) markRecent(c.dataset.sid);
+});
