@@ -29,6 +29,7 @@ let promo = null, cartNote = '', settings = { banner: '', stamp_reward: 'a free 
 let sig = '', lastOrderId = null, mineHtml = '', adminHtml = '', statusMap = null, adminTab = 'products', pendingCount = 0;
 let ordSearch = '', costMap = {}, repData = null, revSig = '';
 let customHtml = '', customAdminHtml = '', crMap = null, crList = [], lastCrId = null, pendingCustom = 0;
+let arrange = false, dragBusy = false; // arrange = Raven's drag-and-pin mode on the shop page; dragBusy pauses live refresh while a card is held
 
 // A random ID this browser keeps, so the server can limit how many accounts one device makes.
 const deviceId = () => {
@@ -125,10 +126,15 @@ async function loadFavs() {
 }
 const heartBtn = (id) => `<button class="fav${favs.has(id) ? ' on' : ''}" data-act="fav" data-id="${id}" aria-pressed="${favs.has(id)}" aria-label="Favorite">${favs.has(id) ? '\u2665' : '\u2661'}</button>`;
 const capHtml = (title, sub, price, attrs, dis, desc = '') => `<div class="cap"><div><h3>${title}</h3>${sub ? `<small>${sub}</small>` : ''}${desc ? `<small class="desc">${desc}</small>` : ''}</div><span class="pr">${price}</span><button class="primary add" ${attrs} aria-label="Add ${title} to cart" ${dis ? 'disabled' : ''}>+</button></div>`;
+const GRIP_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>';
+const PIN_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 17v5M9 3h6l-1 6 3 4H7l3-4z"/></svg>';
+const PINMARK = `<span class="pinmark" title="Featured">${PIN_SVG}</span><i class="sheen"></i>`;
+const arrangeCtl = (p) => `<div class="arr-ctl"><span class="grip" data-grip role="button" tabindex="0" aria-label="Move ${esc(p.title)}: drag, or use the arrow keys">${GRIP_SVG}</span>`
+  + `<button type="button" class="sq pinbtn${p.pinned ? ' on' : ''}" data-act="pin" data-id="${p.id}" aria-pressed="${!!p.pinned}" aria-label="${p.pinned ? 'Unpin' : 'Pin to top'}: ${esc(p.title)}">${PIN_SVG}</button></div>`;
 const productCard = (p) => {
   const off = Number(p.discount_percent) || 0;
   const note = bulkOn(p) ? `Buy ${p.bulk_min}+ and save ${p.bulk_percent}%` : (!p.is_sold_out && p.stock != null && p.stock <= LOW_STOCK ? `Only ${p.stock} left` : '');
-  return `<article class="card t has-fav"><div class="img">${heartBtn(p.id)}${p.image_url ? `<img loading="lazy" decoding="async" src="${esc(thumb(p.image_url, 480))}" srcset="${esc(thumb(p.image_url, 240))} 240w, ${esc(thumb(p.image_url, 480))} 480w, ${esc(thumb(p.image_url, 800))} 800w" sizes="(max-width:380px) 100vw, (max-width:900px) 50vw, 25vw" alt="${esc(p.title)}">` : ''}${p.hidden ? '<span class="badge">Hidden from shop</span>' : p.is_sold_out ? '<span class="badge">Sold out</span>' : ''}${off ? `<span class="badge off">-${off}% OFF</span>` : ''}</div>` +
+  return `<article class="card t has-fav${p.pinned ? ' pinned' : ''}" data-sid="${p.id}"><div class="img">${heartBtn(p.id)}${p.pinned ? PINMARK : ''}${arrange && isRaven() ? arrangeCtl(p) : ''}${p.image_url ? `<img loading="lazy" decoding="async" src="${esc(thumb(p.image_url, 480))}" srcset="${esc(thumb(p.image_url, 240))} 240w, ${esc(thumb(p.image_url, 480))} 480w, ${esc(thumb(p.image_url, 800))} 800w" sizes="(max-width:380px) 100vw, (max-width:900px) 50vw, 25vw" alt="${esc(p.title)}">` : ''}${p.hidden ? '<span class="badge">Hidden from shop</span>' : p.is_sold_out ? '<span class="badge">Sold out</span>' : ''}${off ? `<span class="badge off">-${off}% OFF</span>` : ''}</div>` +
     capHtml(esc(p.title), note, `${off ? `<span class="was">${money(p.price)}</span> ` : ''}<b>${money(fin(p))}</b>`, `data-act="add" data-id="${p.id}"`, p.is_sold_out, esc(p.description)) + '</article>';
 };
 const comboCard = (c) => {
@@ -137,7 +143,7 @@ const comboCard = (c) => {
   const save = regular - Number(c.price);
   const withPic = c.items.filter((x) => x.image_url).slice(0, 4);
   const imgs = withPic.map((x) => `<img loading="lazy" decoding="async" src="${esc(thumb(x.image_url, withPic.length === 1 ? 480 : 240))}" alt="">`).join('');
-  return `<article class="card t combo"><div class="img"><div class="combo-imgs">${imgs}</div>${out ? '<span class="badge">Sold out</span>' : save > 0 ? `<span class="badge off">Save ${money(save)}</span>` : ''}</div>` +
+  return `<article class="card t combo" data-cid="${c.id}"><div class="img"><div class="combo-imgs">${imgs}</div>${out ? '<span class="badge">Sold out</span>' : save > 0 ? `<span class="badge off">Save ${money(save)}</span>` : ''}</div>` +
     capHtml(esc(c.title), '', `${save > 0 ? `<span class="was">${money(regular)}</span> ` : ''}<b>${money(c.price)}</b>`, `data-act="addcombo" data-id="${c.id}"`, out, c.items.map((x) => `${x.quantity}x ${esc(x.title)}`).join(', ')) + '</article>';
 };
 
@@ -147,31 +153,42 @@ const comboCard = (c) => {
 const shuffleRank = new Map();
 const rank = (key) => { if (!shuffleRank.has(key)) shuffleRank.set(key, Math.random()); return shuffleRank.get(key); };
 const shuffled = (list, keyOf) => [...list].sort((a, b) => rank(keyOf(a)) - rank(keyOf(b)));
-// Raven (the main admin) always gets up to 3 of his own products at the top of each section (in-stock ones first);
-// everything else follows in random order.
+// Order of one section in the shop. Raven can pin products (they go first) and drag the rest into place; both are saved on the server.
+// Products nobody has arranged yet stay in a random order, picked once per page load. If a section has nothing pinned or arranged,
+// the old rule applies: up to 3 of Raven's own products are lifted to the top (in-stock ones first).
 const PINNED = 3;
+const bySort = (a, b) => (a.sort_order == null ? 1e9 : a.sort_order) - (b.sort_order == null ? 1e9 : b.sort_order);
 const shuffledPinned = (list) => {
-  const mix = shuffled(list, (p) => 'p' + p.id);
-  const mine = mix.filter((p) => settings.main_owner_id != null && p.owner_id === settings.main_owner_id)
-    .sort((a, b) => Number(!!a.is_sold_out) - Number(!!b.is_sold_out)); // stable: keeps the random order among equals
-  const top = mine.slice(0, PINNED);
-  return [...top, ...mix.filter((p) => !top.includes(p))];
+  const pinned = list.filter((p) => p.pinned).sort(bySort);
+  const arranged = list.filter((p) => !p.pinned && p.sort_order != null).sort(bySort);
+  if (!pinned.length && !arranged.length) {
+    const mix = shuffled(list, (p) => 'p' + p.id);
+    const mine = mix.filter((p) => settings.main_owner_id != null && p.owner_id === settings.main_owner_id)
+      .sort((a, b) => Number(!!a.is_sold_out) - Number(!!b.is_sold_out)); // stable: keeps the random order among equals
+    const top = mine.slice(0, PINNED);
+    return [...top, ...mix.filter((p) => !top.includes(p))];
+  }
+  return [...pinned, ...arranged, ...shuffled(list.filter((p) => !p.pinned && p.sort_order == null), (p) => 'p' + p.id)];
 };
-function fillGrid() {
+function fillGrid() { const el = $('#grid'); if (el) flipRender(el, drawGrid); }
+function drawGrid() {
   const el = $('#grid');
   if (!el) return;
-  const text = searchText.trim().toLowerCase();
+  const arranging = arrange && isRaven(); // while arranging, every product of a section is shown (no search / favorites), so the saved order is complete
+  el.classList.toggle('arrange', arranging);
+  const text = arranging ? '' : searchText.trim().toLowerCase();
+  const filter = arranging && (catFilter === 'favs' || catFilter === 'combos') ? 'all' : catFilter;
   const match = (p) => !text || `${p.title} ${p.description}`.toLowerCase().includes(text);
   const catOf = (p) => (CATS[p.category] ? p.category : 'snacks');
-  const comboList = catFilter === 'all' || catFilter === 'combos'
+  const comboList = !arranging && (filter === 'all' || filter === 'combos')
     ? shuffled(combos.filter((c) => match({ title: c.title, description: `${c.description} ${c.items.map((x) => x.title).join(' ')}` })), (c) => 'c' + c.id) : [];
   const groups = Object.keys(CATS)
-    .filter((c) => catFilter === 'all' || catFilter === 'favs' || catFilter === c)
-    .map((c) => ({ c, list: shuffledPinned(products.filter((p) => catOf(p) === c && match(p) && (catFilter !== 'favs' || favs.has(p.id)))) }))
+    .filter((c) => filter === 'all' || filter === 'favs' || filter === c)
+    .map((c) => ({ c, list: shuffledPinned(products.filter((p) => catOf(p) === c && match(p) && (filter !== 'favs' || favs.has(p.id)))) }))
     .filter((g) => g.list.length);
   el.innerHTML = (comboList.length ? `<h2 class="cat-title">Combos</h2><section class="grid">${comboList.map(comboCard).join('')}</section>` : '')
-    + groups.map((g) => `<h2 class="cat-title">${CATS[g.c]}</h2><section class="grid">${g.list.map(productCard).join('')}</section>`).join('')
-    || `<p class="panel glass">${catFilter === 'favs' ? 'No favorites yet. Tap the heart on a product to save it here.' : products.length || combos.length ? 'No products match your search.' : 'No products yet.'}</p>`;
+    + groups.map((g) => `<h2 class="cat-title">${CATS[g.c]}</h2><section class="grid" data-sortlist="shop">${g.list.map(productCard).join('')}</section>`).join('')
+    || `<p class="panel glass">${filter === 'favs' ? 'No favorites yet. Tap the heart on a product to save it here.' : products.length || combos.length ? 'No products match your search.' : 'No products yet.'}</p>`;
 }
 
 // What Raven's order cutoff means for an order placed right now.
@@ -188,6 +205,9 @@ function fillBanner() {
   el.innerHTML = (settings.banner ? `<div class="banner glass">${esc(settings.banner)}</div>` : '') + (n ? `<div class="banner glass">${esc(n)}</div>` : '');
 }
 
+const arrBar = () => (arrange
+  ? '<div class="arr-bar glass"><div><b>Arrange mode</b><span class="muted">Drag the handle on a card to move it, or focus it and use the arrow keys. The pin features a product at the top. It saves by itself and customers see it live.</span></div><button type="button" class="primary sq" data-act="arrange">Done</button></div>'
+  : '<div class="arr-open"><button type="button" class="sq" data-act="arrange">Arrange shop</button></div>');
 const CAT_IC = { all: '\u2728', combos: '\u{1F381}', drinks: '\u{1F964}', snacks: '\u{1F37F}' };
 function renderShop() {
   const tile = (id, label) => `<button class="tile${catFilter === id ? ' on' : ''}" data-act="cat" data-cat="${id}">${label}</button>`;
@@ -195,20 +215,22 @@ function renderShop() {
       <input id="search" type="search" placeholder="Search snacks and drinks..." value="${esc(searchText)}" autocomplete="off"></section>
     <div id="banner"></div>
     <div class="cats">${tile('all', 'All')}${user ? tile('favs', '\u2665 Favorites') : ''}${tile('combos', 'Combos')}${Object.entries(CATS).map(([id, label]) => tile(id, label)).join('')}</div>
-    <div id="grid"></div>`;
+    ${isRaven() ? arrBar() : ''}<div id="grid"></div>`;
   fillBanner();
   fillGrid();
   updateCartBar();
 }
 
-const productTable = () => `<table>${products.map((p) => {
+const adminRows = () => { const ix = (p) => Object.keys(CATS).indexOf(CATS[p.category] ? p.category : 'snacks'); return isRaven() ? [...products].sort((a, b) => ix(a) - ix(b)) : products; }; // owner's list is grouped by section so rows can be dragged within it
+const productTable = () => `<table${isRaven() ? ' data-sortlist="admin"' : ''}>${adminRows().map((p) => {
   const mine = canEdit(p.owner_id);
-  return `<tr>
+  return `<tr data-sid="${p.id}" data-cat="${CATS[p.category] ? p.category : 'snacks'}">
+    ${isRaven() ? `<td><span class="grip" data-grip role="button" tabindex="0" aria-label="Move ${esc(p.title)}: drag, or use the arrow keys">${GRIP_SVG}</span></td>` : ''}
     <td>${mine ? `<input type="checkbox" class="pick" value="${p.id}" ${selected.has(p.id) ? 'checked' : ''}>` : ''}</td>
     <td>${p.image_url ? `<img class="thumb" loading="lazy" decoding="async" width="52" height="52" src="${esc(thumb(p.image_url, 160))}" alt="">` : ''}</td>
-    <td><b>${esc(p.title)}</b><br>${money(p.price)}${p.discount_percent ? ` (-${p.discount_percent}%)` : ''}${bulkOn(p) ? ` | Bulk: ${p.bulk_min}+ = -${p.bulk_percent}%` : ''} | ${CATS[p.category] || 'Snacks'}${mine && costMap[p.id] != null ? ` | Profit ${money(fin(p) - Number(costMap[p.id]))} each` : ''}${p.stock != null ? ` | Stock: ${p.stock}${p.stock > 0 && p.stock <= LOW_STOCK ? ' (low!)' : ''}` : ''}${p.is_sold_out ? ' - sold out' : ''}${ownerName(p.owner_id) ? ` | by ${esc(ownerName(p.owner_id))}` : ''}</td>
+    <td><b>${esc(p.title)}</b>${p.pinned ? ' <span class="pill st-packed">Pinned</span>' : ''}<br>${money(p.price)}${p.discount_percent ? ` (-${p.discount_percent}%)` : ''}${bulkOn(p) ? ` | Bulk: ${p.bulk_min}+ = -${p.bulk_percent}%` : ''} | ${CATS[p.category] || 'Snacks'}${mine && costMap[p.id] != null ? ` | Profit ${money(fin(p) - Number(costMap[p.id]))} each` : ''}${p.stock != null ? ` | Stock: ${p.stock}${p.stock > 0 && p.stock <= LOW_STOCK ? ' (low!)' : ''}` : ''}${p.is_sold_out ? ' - sold out' : ''}${ownerName(p.owner_id) ? ` | by ${esc(ownerName(p.owner_id))}` : ''}</td>
     <td>${mine ? `<div class="actions">
-      <button data-act="edit" data-id="${p.id}">Edit</button>
+      ${isRaven() ? `<button data-act="pin" data-id="${p.id}">${p.pinned ? 'Unpin' : 'Pin to top'}</button>` : ''}<button data-act="edit" data-id="${p.id}">Edit</button>
       <button data-act="toggle" data-id="${p.id}">${p.is_sold_out ? 'Mark available' : 'Mark sold out'}</button>
       <button class="danger" data-act="delete" data-id="${p.id}">Delete</button></div>` : '<span class="muted">View only</span>'}</td></tr>`;
 }).join('')}</table>`;
@@ -220,7 +242,7 @@ function updatePicks() {
 function fillProducts() {
   for (const id of [...selected]) if (!myProducts().some((p) => p.id === id)) selected.delete(id);
   const el = $('#plist');
-  if (el) el.innerHTML = productTable();
+  if (el) flipRender(el, () => { el.innerHTML = productTable(); });
   const lb = $('#lowbox');
   if (lb) {
     const m = myProducts().filter((p) => p.stock != null), out = m.filter((p) => p.stock === 0), low = m.filter((p) => p.stock > 0 && p.stock <= LOW_STOCK);
@@ -928,6 +950,7 @@ function renderCustom() {
 }
 
 function render() {
+  if (view !== 'shop' || !isRaven()) arrange = false;
   renderNav();
   if (view === 'admin' && isAdmin()) renderAdmin();
   else if (view === 'orders' && user && !isAdmin()) renderOrders();
@@ -1059,12 +1082,32 @@ function quoteDialog(id) {
 /* ---------- Actions ---------- */
 const actions = {
   shop: () => { view = 'shop'; render(); animateApp(); },
-  cat: (id, d) => { catFilter = d.cat; renderShop(); },
+  cat: (id, d) => {
+    catFilter = d.cat;
+    if ($('#grid')) { document.querySelectorAll('.cats .tile').forEach((t) => t.classList.toggle('on', t.dataset.cat === catFilter)); fillGrid(); } // cards glide to their new places
+    else renderShop();
+  },
+  arrange: () => {
+    if (!isRaven()) return;
+    arrange = !arrange;
+    if (arrange) { searchText = ''; if (catFilter === 'favs' || catFilter === 'combos') catFilter = 'all'; }
+    renderShop();
+  },
+  pin: async (id) => {
+    const p = products.find((x) => x.id == id);
+    if (!p || !isRaven()) return;
+    const on = !p.pinned;
+    await api(`/api/products/${id}/pin`, { method: 'PATCH', json: { pinned: on } });
+    await syncProducts();
+    view === 'shop' ? fillGrid() : fillProducts();
+    toast(on ? `${p.title} is pinned to the top.` : `${p.title} is unpinned.`);
+  },
   fav: async (id) => {
     const pid = Number(id);
     if (!user) return toast('Log in to save favorites.');
     const on = !favs.has(pid);
     on ? favs.add(pid) : favs.delete(pid);
+    if (on) document.querySelectorAll(`[data-act="fav"][data-id="${pid}"]`).forEach((b) => { b.classList.remove('pop'); void b.offsetWidth; b.classList.add('pop'); });
     document.querySelectorAll(`[data-act="fav"][data-id="${pid}"]`).forEach((b) => { b.classList.toggle('on', on); b.textContent = on ? '\u2665' : '\u2661'; b.setAttribute('aria-pressed', on); });
     try { await api(`/api/favorites/${pid}`, { method: on ? 'POST' : 'DELETE' }); if (catFilter === 'favs') fillGrid(); }
     catch (e) { on ? favs.delete(pid) : favs.add(pid); fillGrid(); toast('Could not save that. Try again.'); }
@@ -1156,7 +1199,7 @@ const actions = {
     if (!confirm('Delete this promo code?')) return;
     await api(`/api/promos/${id}`, { method: 'DELETE' }); await refreshAdminPromos(); toast('Deleted.');
   },
-  addcombo: (id) => { const c = combos.find((x) => x.id == id); askQty('c' + id, c ? c.title : 'Combo', null, ''); },
+  addcombo: (id) => { const c = combos.find((x) => x.id == id); quickAdd('c' + id, c ? c.title : 'Combo', null); },
   reprice: async () => {
     const r = await api('/api/orders/reprice', { method: 'POST' });
     await refreshOrders().catch(() => {});
@@ -1299,7 +1342,8 @@ const actions = {
     const i = $('#temppw'); i.select();
     try { await navigator.clipboard.writeText(i.value); toast('Copied.'); } catch (e) { document.execCommand('copy'); toast('Copied.'); }
   },
-  add: (id) => { const p = products.find((x) => x.id == id); if (p) askQty(id, p.title, p.stock, bulkOn(p) ? `Buy ${p.bulk_min} or more for ${p.bulk_percent}% off each.` : ''); },
+  // One tap adds one (change the amount in the cart). Products with a bulk deal still ask first, so the offer is seen.
+  add: (id) => { const p = products.find((x) => x.id == id); if (!p) return; if (bulkOn(p)) askQty(id, p.title, p.stock, `Buy ${p.bulk_min} or more for ${p.bulk_percent}% off each.`); else quickAdd(id, p.title, p.stock); },
   'qty-step': (_, d) => { const i = $('#qtyin'); i.value = Math.max(1, Math.min(Number(i.max) || 99, (parseInt(i.value) || 1) + Number(d.d))); },
   remove: (id) => { delete cart[id]; saveCart(); cartDialog(); },
   'cart-step': (id, d) => {
@@ -1349,7 +1393,7 @@ document.addEventListener('submit', async (e) => {
     } else if (e.target.dataset.form === 'qty') {
       const key = e.target.dataset.key, max = Number($('#qtyin').max) || 99;
       const q = Math.max(1, Math.min(max, parseInt(new FormData(e.target).get('qty')) || 1));
-      cart[key] = Math.min(99, (cart[key] || 0) + q); saveCart(); $('#dlg').close(); toast(`Added ${q} to cart.`);
+      cart[key] = Math.min(99, (cart[key] || 0) + q); saveCart(); $('#dlg').close(); flyToCart(key); toast(`Added ${q} to cart.`);
     } else if (e.target.dataset.form === 'changepw') {
       const d = await api('/api/auth/change-password', { method: 'POST', json: Object.fromEntries(new FormData(e.target)) });
       setSession(d.token, d.user); forcePw = false; $('#dlg').close(); render(); toast('Password changed.');
@@ -1455,7 +1499,7 @@ document.addEventListener('input', (e) => {
 // A full check still happens at least once a minute as a safety net, and whenever /api/rev can't be reached.
 let lastFull = 0;
 async function poll() {
-  if (document.hidden) return;
+  if (document.hidden || dragBusy) return;
   try {
     let key = null;
     try { const r = await fetch('/api/rev'); if (r.ok) { const d = await r.json(); key = d.r + '|' + d.w; } } catch (e) { /* fall back to a full check */ }
@@ -1547,4 +1591,184 @@ loadProducts().catch((e) => toast(e.message));
 document.addEventListener('click', (e) => {
   const c = e.target.closest && e.target.closest('.card.t');
   if (c && !e.target.closest('button, a, input, select')) c.classList.toggle('open');
+});
+
+
+/* ---------- Motion: FLIP moves, drag-to-reorder, fly-to-cart, card tilt ---------- */
+// Everything below animates transform and opacity only (compositor work, no layout), and stays still for people who ask for less motion.
+const RM = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const EASE = 'cubic-bezier(.22,1,.36,1)';
+const keyOf = (n) => (n.dataset.sid ? 's' + n.dataset.sid : n.dataset.cid ? 'c' + n.dataset.cid : null);
+
+// Redraws a list, then slides every card that was already there from its old place to its new one (FLIP).
+// New cards fade in; this is what makes filtering, searching, pinning and live updates glide instead of jump.
+function flipRender(el, draw) {
+  if (!el) return;
+  if (RM) { draw(); return; }
+  const first = new Map();
+  el.querySelectorAll('[data-sid],[data-cid]').forEach((n) => first.set(keyOf(n), n.getBoundingClientRect()));
+  if (first.size) el.classList.add('flip'); // later redraws must not replay the page-load entrance
+  draw();
+  if (!first.size) return;
+  let fresh = 0;
+  el.querySelectorAll('[data-sid],[data-cid]').forEach((n) => {
+    const f = first.get(keyOf(n)), r = n.getBoundingClientRect();
+    if (f) {
+      const dx = f.left - r.left, dy = f.top - r.top;
+      if (Math.abs(dx) + Math.abs(dy) > 2) n.animate([{ transform: `translate(${dx}px,${dy}px)` }, { transform: 'none' }], { duration: 420, easing: EASE });
+    } else if (r.bottom > 0 && r.top < innerHeight) {
+      n.animate([{ opacity: 0, transform: 'translateY(14px) scale(.96)' }, { opacity: 1, transform: 'none' }], { duration: 380, easing: EASE, delay: Math.min(fresh++, 8) * 30, fill: 'backwards' });
+    }
+  });
+}
+// Same idea for moving existing elements around inside a list (used while dragging).
+function flipMove(els, mutate) {
+  const first = els.map((n) => n.getBoundingClientRect());
+  els.forEach((n) => n.getAnimations().forEach((a) => a.cancel()));
+  mutate();
+  if (RM) return;
+  els.forEach((n, i) => {
+    const r = n.getBoundingClientRect(), dx = first[i].left - r.left, dy = first[i].top - r.top;
+    if (Math.abs(dx) + Math.abs(dy) > 1) n.animate([{ transform: `translate(${dx}px,${dy}px)` }, { transform: 'none' }], { duration: 260, easing: EASE });
+  });
+}
+
+async function syncProducts() { // fetch the saved list and remember it, so the live refresh sees "nothing changed" and does not redraw
+  const fresh = await api('/api/products');
+  products = fresh; sig = JSON.stringify([fresh, combos, settings]);
+}
+
+// Saves the order after a drop. Pinned products always stay in front of the others within their section.
+async function commitOrder(zone, list) {
+  try {
+    const items = [...list.children].filter((c) => c.dataset.sid);
+    const pinned = new Set(products.filter((p) => p.pinned).map((p) => p.id));
+    const catIx = (n) => Object.keys(CATS).indexOf(n.dataset.cat);
+    const want = [...items].sort((a, b) => (catIx(a) - catIx(b)) || (pinned.has(+a.dataset.sid) ? 0 : 1) - (pinned.has(+b.dataset.sid) ? 0 : 1));
+    if (want.some((n, i) => n !== items[i])) flipMove(items, () => want.forEach((n) => list.appendChild(n)));
+    await api('/api/products/reorder', { method: 'PATCH', json: { ids: want.map((n) => Number(n.dataset.sid)) } });
+    await syncProducts();
+  } catch (err) {
+    toast(err.message || 'Could not save the order.');
+    try { await syncProducts(); } catch (e) { /* ignore */ }
+    view === 'shop' ? fillGrid() : fillProducts();
+  } finally { dragBusy = false; }
+}
+
+// Drag a card (shop, arrange mode) or a row (Admin > Products) by its handle. Touch, mouse and pen all work.
+document.addEventListener('pointerdown', (e) => {
+  const grip = e.target.closest && e.target.closest('[data-grip]');
+  if (!grip || dragBusy || !isRaven() || (e.pointerType === 'mouse' && e.button !== 0)) return;
+  const item = grip.closest('[data-sid]');
+  if (!item) return;
+  e.preventDefault();
+  startDrag(item, grip, e);
+});
+function startDrag(item, grip, e) {
+  const list = item.parentElement, zone = item.closest('[data-sortlist]');
+  const peers = () => [...list.children].filter((c) => c.dataset.sid && c.dataset.cat === item.dataset.cat); // rows only trade places within their own section
+  const r0 = item.getBoundingClientRect(), gx = e.clientX - (r0.left + r0.width / 2), gy = e.clientY - (r0.top + r0.height / 2); // grab point, measured from the card's centre (it is scaled around its centre)
+  let px = e.clientX, py = e.clientY, tx = 0, ty = 0, raf = 0, live = true;
+  dragBusy = true;
+  item.classList.add('dragging'); document.body.classList.add('dragmode');
+  try { grip.setPointerCapture(e.pointerId); } catch (_) { /* fine without */ }
+  const place = () => {
+    const r = item.getBoundingClientRect(), cx = r.left + r.width / 2 - tx, cy = r.top + r.height / 2 - ty; // centre of the card's slot, with no transform
+    tx = px - gx - cx; ty = py - gy - cy;
+    item.style.transform = `translate(${tx}px,${ty}px) scale(1.04)`;
+  };
+  const tick = () => {
+    if (!live) return;
+    const edge = 90;
+    if (py < edge) scrollBy({ top: -Math.ceil((edge - py) / 4), behavior: 'instant' });
+    else if (py > innerHeight - edge) scrollBy({ top: Math.ceil((py - (innerHeight - edge)) / 4), behavior: 'instant' });
+    const others = peers().filter((c) => c !== item);
+    const rects = others.map((c) => c.getBoundingClientRect());
+    const stacked = rects.every((r) => Math.abs(r.left - rects[0].left) < 2); // one column (Admin list): only the height matters; a grid: the pointer must be over the tile
+    const hit = others.find((c, i) => { // the pointer must be well inside a card before they swap, so cards do not flicker back and forth
+      const r = rects[i], mx = r.width * .22, my = r.height * .22;
+      return (stacked || (px > r.left + mx && px < r.right - mx)) && py > r.top + my && py < r.bottom - my;
+    });
+    if (hit) {
+      const kids = [...list.children];
+      flipMove(others, () => list.insertBefore(item, kids.indexOf(hit) > kids.indexOf(item) ? hit.nextSibling : hit));
+    }
+    place();
+    raf = requestAnimationFrame(tick);
+  };
+  const move = (ev) => { px = ev.clientX; py = ev.clientY; };
+  const end = () => {
+    if (!live) return;
+    live = false; cancelAnimationFrame(raf);
+    grip.removeEventListener('pointermove', move); grip.removeEventListener('pointerup', end); grip.removeEventListener('pointercancel', end); grip.removeEventListener('lostpointercapture', end);
+    const from = `translate(${tx}px,${ty}px) scale(1.04)`;
+    item.style.transform = ''; item.classList.remove('dragging'); document.body.classList.remove('dragmode');
+    if (!RM) item.animate([{ transform: from }, { transform: 'none' }], { duration: 320, easing: EASE });
+    commitOrder(zone, list);
+  };
+  grip.addEventListener('pointermove', move); grip.addEventListener('pointerup', end); grip.addEventListener('pointercancel', end); grip.addEventListener('lostpointercapture', end);
+  place(); raf = requestAnimationFrame(tick);
+}
+// Keyboard: focus a handle, then arrow keys move the card (same save as dragging).
+let kbTimer = 0;
+document.addEventListener('keydown', (e) => {
+  const grip = e.target.closest && e.target.closest('[data-grip]');
+  if (!grip || !/^Arrow/.test(e.key) || !isRaven()) return;
+  e.preventDefault();
+  const item = grip.closest('[data-sid]'), list = item.parentElement, dir = /Left|Up/.test(e.key) ? -1 : 1;
+  const same = [...list.children].filter((c) => c.dataset.sid && c.dataset.cat === item.dataset.cat), t = same[same.indexOf(item) + dir];
+  if (!t) return;
+  dragBusy = true;
+  flipMove([...list.children].filter((c) => c.dataset.sid), () => list.insertBefore(item, dir > 0 ? t.nextSibling : t));
+  grip.focus();
+  clearTimeout(kbTimer); kbTimer = setTimeout(() => commitOrder(item.closest('[data-sortlist]'), list), 700);
+});
+
+// One tap adds one: the product's picture flies into the cart.
+function quickAdd(key, title, stock) {
+  const have = cart[key] || 0, max = Math.min(99, stock != null ? stock : 99);
+  if (have >= max) return toast(stock != null && stock <= 99 ? `You already have all ${stock} in your cart.` : 'Cart limit reached for this item.');
+  cart[key] = have + 1; saveCart(); flyToCart(key);
+  toast(`${title} added. In your cart: ${have + 1}.`);
+}
+function flyToCart(key) {
+  if (RM) return;
+  const id = String(key), card = document.querySelector(id.startsWith('c') ? `.card[data-cid="${id.slice(1)}"]` : `.card[data-sid="${id}"]`);
+  if (!card) return;
+  requestAnimationFrame(() => { // after the cart bar has appeared, so we aim at where it really is
+    const vis = (n) => n && n.getClientRects().length > 0;
+    const target = ['#cartbar', '.nav [data-act="cart"]', '#cartq'].map((q) => document.querySelector(q)).find(vis);
+    const pic = card.querySelector('.img img'), from = (pic || card.querySelector('.img') || card).getBoundingClientRect();
+    if (!target || !from.width) return;
+    const t = target.getBoundingClientRect(), size = 56;
+    const fx = from.left + from.width / 2, fy = from.top + Math.min(from.height / 2, 140), dx = t.left + t.width / 2 - fx, dy = t.top + t.height / 2 - fy;
+    const dot = document.createElement('div');
+    dot.className = 'fly';
+    dot.style.cssText = `left:${fx - size / 2}px;top:${fy - size / 2}px;width:${size}px;height:${size}px`;
+    if (pic && pic.currentSrc) dot.style.backgroundImage = `url("${pic.currentSrc}")`;
+    document.body.appendChild(dot);
+    const a = dot.animate([
+      { transform: 'translate(0,0) scale(1)', opacity: 1, offset: 0, easing: 'ease-out' },
+      { transform: `translate(${dx * .5}px,${Math.min(dy, 0) * .5 - 80}px) scale(.8)`, opacity: 1, offset: .45, easing: 'ease-in' },
+      { transform: `translate(${dx}px,${dy}px) scale(.25)`, opacity: .6, offset: 1 },
+    ], { duration: 700, easing: 'linear' });
+    a.onfinish = a.oncancel = () => { dot.remove(); target.classList.remove('bump'); void target.offsetWidth; target.classList.add('bump'); };
+  });
+}
+
+// Soft 3D tilt under a mouse pointer (the existing glow already follows it). Not on touch, not while arranging.
+let tiltEl = null, tiltRaf = 0;
+document.addEventListener('pointermove', (e) => {
+  if (e.pointerType !== 'mouse' || RM || dragBusy) return;
+  const c = e.target.closest && e.target.closest('.grid>.card');
+  if (tiltEl && tiltEl !== c) { tiltEl.classList.remove('tilting'); tiltEl.style.removeProperty('--rx'); tiltEl.style.removeProperty('--ry'); tiltEl = null; }
+  if (!c || c.closest('#grid.arrange')) return;
+  tiltEl = c;
+  if (tiltRaf) return;
+  const r = c.getBoundingClientRect(), x = (e.clientX - r.left) / r.width - .5, y = (e.clientY - r.top) / r.height - .5;
+  tiltRaf = requestAnimationFrame(() => { tiltRaf = 0; c.classList.add('tilting'); c.style.setProperty('--rx', (-y * 7).toFixed(2) + 'deg'); c.style.setProperty('--ry', (x * 9).toFixed(2) + 'deg'); });
+}, { passive: true });
+document.addEventListener('pointerout', (e) => {
+  const c = e.target.closest && e.target.closest('.grid>.card');
+  if (c && !c.contains(e.relatedTarget)) { c.classList.remove('tilting'); c.style.removeProperty('--rx'); c.style.removeProperty('--ry'); if (tiltEl === c) tiltEl = null; }
 });
