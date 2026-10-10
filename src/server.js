@@ -447,6 +447,15 @@ async function hotIds() {
   } catch (e) { hotCache.t = Date.now(); }
   return hotCache.ids;
 }
+// Names for the "Meet the sellers" cards: only people who currently have something in stock to show, and not hidden sellers.
+app.get('/api/sellers/public', wrap(async (req, res) => {
+  res.json((await pool.query(
+    `SELECT u.id, u.username FROM users u
+     WHERE u.role IN ('seller','admin') AND NOT COALESCE(u.products_hidden, false)
+       AND EXISTS (SELECT 1 FROM products p WHERE p.owner_id = u.id AND NOT p.is_sold_out)
+     ORDER BY u.id`)).rows);
+}));
+
 app.get('/api/products', softAuth, wrap(async (req, res) => {
   const hidden = 'COALESCE((SELECT products_hidden FROM users WHERE users.id=products.owner_id), false) AS hidden';
   const hot = await hotIds();
