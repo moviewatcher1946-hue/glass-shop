@@ -371,3 +371,65 @@ main{padding-left:max(12px,env(safe-area-inset-left));padding-right:max(12px,env
 @keyframes bsLogo{from{opacity:0;transform:scale(.8);filter:blur(12px)}to{opacity:1;transform:none;filter:blur(0)}}
 @keyframes bsSpace{from{letter-spacing:.4em;opacity:0}to{letter-spacing:-.01em;opacity:1}}
 @keyframes bsLetter{from{opacity:0;transform:translateY(10px) scale(.9);filter:blur(10px)}to{opacity:1;transform:none;filter:blur(0)}}
+
+/* ===== v14: pin + arrange, motion ===== */
+.sq{border-radius:14px!important}
+/* featured (pinned) products: a pin that drops in, and a slow light sweep across the picture */
+.pinmark{position:absolute;top:10px;left:10px;z-index:3;display:grid;place-items:center;width:30px;height:30px;color:#fff;background:var(--acc);border-radius:10px;box-shadow:0 6px 16px rgba(10,132,255,.45);animation:pinDrop .7s var(--spring) backwards}
+.pinmark svg{width:16px;height:16px;fill:currentColor;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.card.pinned .badge:not(.off){left:48px}
+.sheen{position:absolute;inset:0;z-index:1;overflow:hidden;pointer-events:none}
+.sheen::before{content:'';position:absolute;top:-20%;bottom:-20%;left:0;width:45%;background:linear-gradient(105deg,transparent,rgba(255,255,255,.26),transparent);transform:translateX(-160%) skewX(-18deg);animation:sheen 7s ease-in-out 1.2s infinite}
+.card.pinned:nth-child(2n) .sheen::before{animation-delay:4s}
+@keyframes sheen{0%,72%{transform:translateX(-160%) skewX(-18deg)}100%{transform:translateX(330%) skewX(-18deg)}}
+@keyframes pinDrop{0%{opacity:0;transform:translateY(-18px) rotate(-45deg) scale(.6)}60%{opacity:1;transform:translateY(2px) rotate(8deg)}100%{transform:none}}
+
+/* arrange mode (Raven only) */
+.arr-bar{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:0 0 18px;padding:14px 18px;border-radius:20px}
+.arr-bar span{display:block;font-size:.88rem}
+.arr-open{display:flex;justify-content:flex-end;margin:-8px 0 14px}
+.arr-ctl{position:absolute;top:10px;left:50%;z-index:6;display:flex;gap:8px;transform:translateX(-50%)}
+.grip{display:inline-grid;place-items:center;width:40px;height:40px;color:var(--txt);cursor:grab;touch-action:none;user-select:none;background:var(--glass2);border:1px solid var(--edge);border-radius:14px;-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px)}
+.grip svg{width:18px;height:18px;fill:currentColor}
+.grip:active{cursor:grabbing}
+.arr-ctl .grip,.arr-ctl .pinbtn{color:#fff;background:rgba(12,14,40,.62);border-color:rgba(255,255,255,.3)}
+.pinbtn{display:grid;place-items:center;width:40px;height:40px;padding:0}
+.pinbtn svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.arr-ctl .pinbtn.on{background:var(--acc)}.pinbtn.on svg{fill:currentColor}
+.table-wrap .grip{width:34px;height:34px;border-radius:12px}
+#grid.arrange .fav,#grid.arrange .add,#grid.arrange .badge,#grid.arrange .pinmark{display:none}
+#app:has(#grid.arrange) .hero input{display:none}
+#grid.arrange .grid>.card:not(.dragging){animation:jiggle .32s ease-in-out infinite alternate!important}
+#grid.arrange .grid>.card:nth-child(2n):not(.dragging){animation-delay:-.16s!important}
+html[data-glass=lite] #grid.arrange .grid>.card{animation:none!important}
+@keyframes jiggle{from{rotate:-.35deg}to{rotate:.35deg}}
+.card.dragging,tr.dragging{position:relative;z-index:30;cursor:grabbing;transition:none!important;animation:none!important;will-change:transform;box-shadow:0 30px 70px rgba(0,0,0,.5)}
+tr.dragging{background:var(--glass2)}
+body.dragmode{user-select:none;-webkit-user-select:none;cursor:grabbing}
+.grip:focus-visible,.pinbtn:focus-visible{outline:2px solid var(--a1);outline-offset:2px}
+
+/* cards that redraw in place (filter, search, pin, live update) glide instead of replaying the entrance */
+#app.fx #grid.flip .card,#app.fx #grid.flip .card .img img,#grid.flip .card .img img{animation:none}
+/* cards further down the page ease in as they scroll into view (browsers without scroll timelines keep the stagger above) */
+@supports (animation-timeline:view()){
+  #app.fx #grid:not(.flip) .grid>.card:nth-child(n+9){animation:revealIn linear both;animation-timeline:view();animation-range:entry 0% entry 65%;animation-delay:0s}
+}
+@keyframes revealIn{from{opacity:0;translate:0 38px;scale:.96}to{opacity:1;translate:0 0;scale:1}}
+
+/* tilt under a mouse (the glow already follows it) */
+@media(hover:hover) and (pointer:fine){
+  .grid>.card:hover{transform:perspective(900px) rotateX(var(--rx,0deg)) rotateY(var(--ry,0deg)) scale(1.02)}
+  .grid>.card.tilting{transition:transform .12s linear,box-shadow .3s}
+  #grid.arrange .grid>.card:hover{transform:none}
+}
+
+/* picture flies into the cart */
+.fly{position:fixed;z-index:300;border-radius:50%;background:var(--acc) center/cover no-repeat;border:2px solid rgba(255,255,255,.85);box-shadow:0 10px 30px rgba(10,132,255,.45);pointer-events:none;will-change:transform,opacity}
+
+/* heart: pop and ring */
+.fav.pop{animation:heartPop .55s var(--spring)}
+@keyframes heartPop{0%{transform:scale(1);box-shadow:0 0 0 0 rgba(224,36,94,.55)}30%{transform:scale(1.35)}60%{transform:scale(.92)}100%{transform:scale(1.05);box-shadow:0 0 0 16px rgba(224,36,94,0)}}
+
+/* bigger touch target for the + on phones */
+@media(max-width:900px){.cap .add{width:42px;height:42px}.arr-bar{flex-direction:column;align-items:stretch}}
+@media(prefers-reduced-motion:reduce){.sheen::before,.pinmark,.fly{animation:none!important}#grid.arrange .grid>.card{animation:none!important}}
