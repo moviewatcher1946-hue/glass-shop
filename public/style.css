@@ -345,3 +345,29 @@ main{padding-left:max(12px,env(safe-area-inset-left));padding-right:max(12px,env
 .fav.on{color:#e0245e;transform:scale(1.05)}
 .card.has-fav .badge.off{right:58px}
 @media(max-width:520px){.fav{top:8px;right:8px;width:34px;height:34px;font-size:1.1rem}.card.has-fav .badge.off{right:50px}}
+
+/* ===== descriptions stay out of the way until a tile is tapped ===== */
+.cap small.desc,.grid>.card .cap small.desc{display:none}
+.card.open .cap small.desc{display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;margin-top:4px}
+.card.t{cursor:pointer}
+/* ===== new startup animation: aurora bloom, spinning glass ring, blur-in title ===== */
+#boot{gap:26px}
+#boot::before{animation:bsBloom 1.6s var(--ease) both;animation-play-state:paused}
+#boot.go::before{animation-play-state:running}
+.boot-logo{width:140px;height:140px}
+.boot-logo::before,.boot-logo::after{content:'';position:absolute;border-radius:50%;animation-play-state:paused}
+.boot-logo::before{inset:0;background:conic-gradient(from 0deg,transparent 0 50%,#0a84ff,#bf5af2,transparent);-webkit-mask:radial-gradient(farthest-side,transparent calc(100% - 3px),#000 calc(100% - 2px));mask:radial-gradient(farthest-side,transparent calc(100% - 3px),#000 calc(100% - 2px));animation:bsSpin 1.7s linear infinite}
+.boot-logo::after{inset:12px;background:var(--glass);border:1px solid var(--edge);box-shadow:var(--sh2),inset 0 1px 0 var(--edge);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);animation:bsDisc .9s var(--spring) backwards}
+#boot.go .boot-logo::before,#boot.go .boot-logo::after{animation-play-state:running}
+#boot .boot-logo img,#boot.go .boot-logo img{position:relative;z-index:1;width:72px;height:72px;animation:bsLogo .9s var(--ease) .15s backwards,bootBreath 2.6s ease-in-out 1.1s infinite}
+#boot .boot-title{font-size:2rem;animation:bsSpace 1.5s var(--ease) .3s backwards;animation-play-state:paused}
+#boot.go .boot-title{animation-play-state:running}
+#boot .boot-title span{animation:bsLetter .7s var(--ease) backwards;animation-delay:calc(.35s + var(--i)*.06s)}
+#boot .boot-bar{width:170px;height:3px;background:rgba(128,140,200,.25)}
+#boot .boot-bar i{background:linear-gradient(90deg,transparent,#0a84ff,#bf5af2);animation:bootBar 1.3s var(--ease) .3s backwards}
+@keyframes bsBloom{from{opacity:0;transform:scale(1.25)}to{opacity:1;transform:none}}
+@keyframes bsSpin{to{transform:rotate(360deg)}}
+@keyframes bsDisc{from{opacity:0;transform:scale(.6)}to{opacity:1;transform:none}}
+@keyframes bsLogo{from{opacity:0;transform:scale(.8);filter:blur(12px)}to{opacity:1;transform:none;filter:blur(0)}}
+@keyframes bsSpace{from{letter-spacing:.4em;opacity:0}to{letter-spacing:-.01em;opacity:1}}
+@keyframes bsLetter{from{opacity:0;transform:translateY(10px) scale(.9);filter:blur(10px)}to{opacity:1;transform:none;filter:blur(0)}}
