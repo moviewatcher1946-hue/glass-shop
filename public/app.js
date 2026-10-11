@@ -5,7 +5,9 @@ const money = (n) => CURRENCY + Number(n).toFixed(2);
 
 /* ===== Sounds: made with the Web Audio API (no files to download). One mute switch, remembered on the device. ===== */
 const SFX = (() => {
-  let ctx = null, muted = false;
+  let ctx = null, muted = false, volume = 1;
+  try { volume = Number(localStorage.sfxvol || 1); } catch (e) {}
+  const vv = () => volume;
   try { muted = localStorage.sfx === 'off'; } catch (e) {}
   const ac = () => {
     if (muted) return null;
@@ -15,8 +17,16 @@ const SFX = (() => {
   const tone = (c, f, t, d, vol, type = 'sine', to = 0) => {
     const o = c.createOscillator(), g = c.createGain(), t0 = c.currentTime + t;
     o.type = type; o.frequency.setValueAtTime(f, t0); if (to) o.frequency.exponentialRampToValueAtTime(to, t0 + d);
-    g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(vol, t0 + 0.012); g.gain.exponentialRampToValueAtTime(0.0001, t0 + d);
+    g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(vol * vv(), t0 + 0.012); g.gain.exponentialRampToValueAtTime(0.0001, t0 + d);
     o.connect(g); g.connect(c.destination); o.start(t0); o.stop(t0 + d + 0.03);
+  };
+  const noise = (c, t, d, vol, f0, f1) => { // filtered noise burst: the "whoosh" of glass sliding
+    const n = Math.floor(c.sampleRate * d), buf = c.createBuffer(1, n, c.sampleRate), ch = buf.getChannelData(0);
+    for (let i = 0; i < n; i++) ch[i] = (Math.random() * 2 - 1) * (1 - i / n);
+    const s = c.createBufferSource(), fl = c.createBiquadFilter(), g = c.createGain(), t0 = c.currentTime + t;
+    s.buffer = buf; fl.type = 'bandpass'; fl.Q.value = 0.9; fl.frequency.setValueAtTime(f0, t0); fl.frequency.exponentialRampToValueAtTime(f1, t0 + d);
+    g.gain.setValueAtTime(vol * vv(), t0); g.gain.exponentialRampToValueAtTime(0.0001, t0 + d);
+    s.connect(fl); fl.connect(g); g.connect(c.destination); s.start(t0);
   };
   const play = (fn) => () => { const c = ac(); if (c) fn(c); };
   const api = {
@@ -24,7 +34,21 @@ const SFX = (() => {
     add: play((c) => { tone(c, 660, 0, 0.09, 0.07); tone(c, 990, 0.07, 0.14, 0.07); }),
     order: play((c) => [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => { tone(c, f, i * 0.09, 0.45, 0.08); tone(c, f * 2, i * 0.09, 0.25, 0.025); })),
     ding: play((c) => { tone(c, 880, 0, 0.5, 0.09); tone(c, 1760, 0, 0.3, 0.03); tone(c, 659.25, 0.28, 0.6, 0.09); }),
+    // v20 sound design: noise whooshes, ticks, sparkles, a soft error, and a boot shimmer. Master volume is remembered (SFX.vol).
+    swoosh: play((c) => noise(c, 0, 0.32, 0.05, 400, 3200)),
+    cartOpen: play((c) => { noise(c, 0, 0.4, 0.05, 300, 2600); tone(c, 392, 0.05, 0.3, 0.05, 'triangle'); tone(c, 587.33, 0.14, 0.4, 0.05, 'triangle'); }),
+    cartClose: play((c) => { noise(c, 0, 0.3, 0.04, 2600, 300); tone(c, 440, 0, 0.2, 0.04, 'triangle', 260); }),
+    tickUp: play((c) => tone(c, 760, 0, 0.06, 0.05, 'square', 900)),
+    tickDown: play((c) => tone(c, 560, 0, 0.06, 0.05, 'square', 420)),
+    remove: play((c) => { tone(c, 420, 0, 0.16, 0.07, 'sawtooth', 160); noise(c, 0, 0.12, 0.03, 1800, 600); }),
+    undo: play((c) => { tone(c, 440, 0, 0.09, 0.06, 'triangle'); tone(c, 660, 0.07, 0.14, 0.06, 'triangle'); }),
+    clear: play((c) => { noise(c, 0, 0.45, 0.06, 2400, 200); tone(c, 330, 0, 0.35, 0.05, 'sine', 110); }),
+    promoOk: play((c) => [1318.5, 1568, 2093, 2637].forEach((f, i) => tone(c, f, i * 0.06, 0.28, 0.04))),
+    error: play((c) => { tone(c, 220, 0, 0.14, 0.07, 'square'); tone(c, 165, 0.12, 0.2, 0.07, 'square'); }),
+    hover: play((c) => tone(c, 1200, 0, 0.025, 0.012, 'sine')),
     get muted() { return muted; },
+    set vol(v) { volume = Math.max(0, Math.min(1.5, v)); try { localStorage.sfxvol = String(volume); } catch (e) {} },
+    get vol() { return volume; },
     toggle() { muted = !muted; try { localStorage.sfx = muted ? 'off' : 'on'; } catch (e) {} if (!muted) api.click(); return muted; }
   };
   return api;
@@ -1162,14 +1186,24 @@ function cartLines() {
   return Object.entries(cart).map(([key, q]) => {
     if (key[0] === 'c') {
       const c = combos.find((x) => 'c' + x.id === key);
-      return c && { key, title: 'Combo: ' + c.title, price: Number(c.price), q, owner: c.owner_id, parts: comboParts(c) };
+      return c && { key, title: 'Combo: ' + c.title, price: Number(c.price), q, owner: c.owner_id, parts: comboParts(c), img: c.image_url || '' };
     }
     const p = products.find((x) => x.id == key);
     if (!p) return null;
     const hit = bulkOn(p) && q >= Number(p.bulk_min);
     const note = hit ? ` <small class="muted bulk">${ring(q, Number(p.bulk_min))} bulk price, ${p.bulk_percent}% off</small>` : bulkOn(p) ? ` <small class="muted bulk">${ring(q, Number(p.bulk_min))} add ${Number(p.bulk_min) - q} more to save ${p.bulk_percent}%</small>` : '';
-    return { key, title: p.title, price: unitFor(p, q), q, owner: p.owner_id, note };
+    return { key, title: p.title, price: unitFor(p, q), q, owner: p.owner_id, note, img: p.image_url || '', list: Number(p.price) };
   }).filter(Boolean);
+}
+let cartUndo = null; // { items, label }: what the last Remove / Clear took out, so it can be put back
+const undoBanner = () => cartUndo ? `<div class="cart-undo"><span>${esc(cartUndo.label)}</span><button type="button" data-act="cart-undo">Undo</button></div>` : '';
+const saveLine = (lines) => { const s = lines.reduce((t, l) => t + (l.list ? Math.max(0, l.list - l.price) * l.q : 0), 0); return s > 0.004 ? `<p class="cart-save">You are saving ${money(s)} with deals</p>` : ''; };
+// "You might also like": up to 3 in-stock products that are not in the cart yet, one tap to add.
+function suggestHtml(lines) {
+  const have = new Set(lines.map((l) => String(l.key)));
+  const list = products.filter((p) => !p.is_sold_out && !have.has(String(p.id))).slice(0, 3);
+  if (!list.length) return '';
+  return `<div class="cart-sug"><h3>You might also like</h3><div class="sug-row">${list.map((p) => `<div class="sug">${p.image_url ? `<img loading="lazy" alt="" src="${esc(thumb(p.image_url, 120))}">` : '<span class="ph"></span>'}<div><b>${esc(p.title)}</b><span>${money(fin(p))}</span></div><button type="button" class="primary" data-act="cart-sug" data-id="${p.id}" aria-label="Add ${esc(p.title)}">+</button></div>`).join('')}</div></div>`;
 }
 function cartDialog() {
   const dlg = $('#dlg'), again = dlg.open && dlg.dataset.kind === 'cart'; // already showing the cart: this is just a refresh after + / - / remove
@@ -1187,17 +1221,21 @@ function cartDialog() {
   const off = promo ? Math.round(base * promo.percent) / 100 : 0;
   const n = lines.reduce((t, l) => t + l.q, 0), total = sub - off;
   dlg.innerHTML = `<div class="cart-head"><div><h2>Your cart</h2><span class="cart-count">${n} item${n === 1 ? '' : 's'}</span></div><button type="button" class="cart-x" data-act="close" aria-label="Close cart">&times;</button></div>
-    <div class="cart-body">${lines.length ? '' : `<div class="empty">${EMPTY_ART}<p>Your cart is empty.<br><span class="muted">Tap + on anything you like.</span></p></div>`}${lines.map((l) => `<div class="cline"><span class="cl-t">${esc(l.title)}${l.note || ''}</span><div class="qty"><button data-act="cart-step" data-id="${l.key}" data-d="-1" aria-label="One less">-</button><b>${l.q}</b><button data-act="cart-step" data-id="${l.key}" data-d="1" aria-label="One more">+</button></div><b class="cl-p">${money(l.price * l.q)}</b><button class="cl-r" data-act="remove" data-id="${l.key}">Remove</button></div>`).join('')}
-    ${lines.length ? `<div class="cart-extra"><label>Promo code (optional)</label>
+    <div class="cart-body">${lines.length ? '' : `<div class="empty">${EMPTY_ART}<p>Your cart is empty.<br><span class="muted">Tap + on anything you like.</span></p></div>`}${undoBanner()}${lines.map((l) => `<div class="cline">${l.img ? `<img class="cl-i" loading="lazy" alt="" src="${esc(thumb(l.img, 160))}">` : '<span class="cl-i"></span>'}<span class="cl-t">${esc(l.title)}<small class="cl-u">${money(l.price)} each</small>${l.note || ''}</span><div class="qty"><button data-act="cart-step" data-id="${l.key}" data-d="-1" aria-label="One less">-</button><b>${l.q}</b><button data-act="cart-step" data-id="${l.key}" data-d="1" aria-label="One more">+</button></div><b class="cl-p">${money(l.price * l.q)}</b><button class="cl-r" data-act="remove" data-id="${l.key}">Remove</button></div>`).join('')}
+    ${lines.length ? `<div class="cart-tools"><button type="button" data-act="cart-clear">Clear cart</button></div>
+      <div class="cart-extra"><label>Promo code (optional)</label>
       <div class="actions"><input id="promoin" value="${esc(promo ? promo.code : '')}" placeholder="Enter code" style="flex:1;margin:0"><button data-act="applypromo">Apply</button></div>
       <label style="display:block;margin-top:12px">Note for the seller (your name, seat, anything helpful)</label>
-      <input id="ordernote" maxlength="300" value="${esc(cartNote)}"></div>` : ''}</div>
-    <div class="cart-foot">
+      <input id="ordernote" maxlength="300" value="${esc(cartNote)}">
+      <div class="cart-chips">${['Please pack separately', 'Call me when ready', 'No need for change'].map((t) => `<button type="button" data-act="note-chip" data-t="${esc(t)}">${esc(t)}</button>`).join('')}</div></div>
+      ${suggestHtml(lines)}` : ''}</div>
+    <div class="cart-foot">${saveLine(lines)}
     <p class="sum-m">Subtotal: <b>${money(sub)}</b>${off ? `<br>Promo ${esc(promo.code)} (-${promo.percent}%): <b>-${money(off)}</b>` : ''}<br><b>Total: ${money(total)}</b></p>
     <div class="sum-d"><div><span>Subtotal</span><b>${money(sub)}</b></div>${off ? `<div class="sum-off"><span>Promo ${esc(promo.code)} (-${promo.percent}%)</span><b>-${money(off)}</b></div>` : ''}<div class="sum-total"><span>Total</span><b>${money(total)}</b></div></div>${deliveryLine()}
     <p class="notice">Cash on delivery: you pay when your order is handed to you in class.</p>
     <button class="primary" data-act="checkout" ${lines.length ? '' : 'disabled'}>Place order</button>
-    <button class="close-btn" data-act="close">Close</button></div>`;
+    <button class="close-btn" data-act="close">Close</button><p class="cart-keys">Esc closes the cart</p></div>`;
+  if (!again) { cartUndo = null; SFX.cartOpen(); }
   dlg.dataset.kind = 'cart'; // desktop shows the cart as a side drawer, phones as a bottom sheet
   dlg.showModal();
   // A refresh must not throw the person back to the top of the list or drop the keyboard focus.
@@ -1298,7 +1336,7 @@ const actions = {
     const code = $('#promoin').value.trim();
     if (!code) { promo = null; return cartDialog(); }
     promo = await api('/api/promos/check?code=' + encodeURIComponent(code));
-    cartDialog(); toast(`${promo.percent}% off applied.`);
+    cartDialog(); SFX.promoOk(); toast(`${promo.percent}% off applied.`);
   },
   change: async (id) => {
     const o = myOrders.find((x) => x.id == id); if (!o) return;
@@ -1514,7 +1552,7 @@ const actions = {
     toast(r.waiting && r.waiting.length ? `Saved. Waiting for ${r.waiting.join(', ')} to approve too.`
       : d.status === 'packed' ? 'Marked packed. The customer is notified.' : 'Order updated.');
   },
-  close: () => $('#dlg').close(),
+  close: () => { if ($('#dlg').dataset.kind === 'cart') SFX.cartClose(); $('#dlg').close(); },
   auth: authDialog,
   cart: cartDialog,
   install: () => installApp(),
@@ -1532,11 +1570,16 @@ const actions = {
   // One tap adds one (change the amount in the cart). Products with a bulk deal still ask first, so the offer is seen.
   add: (id) => { const p = products.find((x) => x.id == id); if (!p) return; if (bulkOn(p)) askQty(id, p.title, p.stock, `Buy ${p.bulk_min} or more for ${p.bulk_percent}% off each.`); else quickAdd(id, p.title, p.stock); },
   'qty-step': (_, d) => { const i = $('#qtyin'); i.value = Math.max(1, Math.min(Number(i.max) || 99, (parseInt(i.value) || 1) + Number(d.d))); },
-  remove: (id) => { delete cart[id]; saveCart(); cartDialog(); },
+  remove: (id) => { const l = cartLines().find((x) => x.key === String(id)); cartUndo = { items: { [id]: cart[id] }, label: `Removed ${l ? l.title : 'item'}.` }; delete cart[id]; SFX.remove(); saveCart(); cartDialog(); },
+  'cart-clear': () => { if (!Object.keys(cart).length) return; cartUndo = { items: { ...cart }, label: 'Cart cleared.' }; cart = {}; SFX.clear(); saveCart(); cartDialog(); },
+  'cart-undo': () => { if (!cartUndo) return; Object.entries(cartUndo.items).forEach(([k, q]) => { cart[k] = Math.min(99, (cart[k] || 0) + q); }); cartUndo = null; SFX.undo(); saveCart(); cartDialog(); },
+  'note-chip': (_, d) => { const i = $('#ordernote'); if (!i) return; const t = d.t; i.value = i.value.includes(t) ? i.value : (i.value ? i.value + '. ' : '') + t; cartNote = i.value.slice(0, 300); i.value = cartNote; },
+  'cart-sug': (id) => { const p = products.find((x) => x.id == id); if (!p) return; const have = cart[id] || 0; if (p.stock != null && have >= p.stock) return toast(`Only ${p.stock} in stock.`); cart[id] = have + 1; SFX.add(); saveCart(); cartDialog(); },
   'cart-step': (id, d) => {
     const n = (cart[id] || 0) + Number(d.d), p = String(id).startsWith('c') ? null : products.find((x) => x.id == id);
     const max = Math.min(99, p && p.stock != null ? p.stock : 99);
     if (n < 1) return; // use Remove to take an item out
+    (Number(d.d) > 0 ? SFX.tickUp : SFX.tickDown)();
     if (n > max) return toast(max < 99 ? `Only ${max} in stock.` : 'Max 99 per item.');
     cart[id] = n; saveCart(); cartDialog();
   },
@@ -2176,5 +2219,16 @@ function orderCelebrate(id) {
     const b = e.target.closest && e.target.closest('button');
     if (!b || b.disabled || b.id === 'sfx-btn') return;
     (b.matches('.add,[data-act="add"]') ? SFX.add : SFX.click)();
+  }, true);
+})();
+
+/* ===== v20: soft hover ticks on buttons and cards (mouse only, throttled) ===== */
+(() => {
+  if (!matchMedia('(hover:hover) and (pointer:fine)').matches) return;
+  let last = 0;
+  document.addEventListener('pointerover', (e) => {
+    const t = e.target.closest && e.target.closest('button:not(:disabled), .card');
+    if (!t || (e.relatedTarget && t.contains(e.relatedTarget))) return;
+    const now = performance.now(); if (now - last < 90) return; last = now; SFX.hover();
   }, true);
 })();
