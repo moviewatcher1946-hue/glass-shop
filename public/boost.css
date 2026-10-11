@@ -21,12 +21,9 @@ html.bx-hid *, html.bx-hid *::before, html.bx-hid *::after { animation-play-stat
 
 /* Scroll progress, header shadow, back-to-top */
 #bx-progress { position: fixed; inset: 0 0 auto 0; height: 3px; z-index: 9998; transform-origin: 0 50%; transform: scaleX(0); background: linear-gradient(90deg, var(--bx-c), var(--bx-a), var(--bx-b)); pointer-events: none; opacity: .92; }
-html.bx-sc .nav { box-shadow: 0 10px 32px -14px rgba(0, 0, 0, .5); }
-#bx-top { position: fixed; right: max(16px, env(safe-area-inset-right)); bottom: calc(16px + env(safe-area-inset-bottom)); z-index: 60; width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center; padding: 0; cursor: pointer; opacity: 0; translate: 0 14px; pointer-events: none; transition: opacity .3s, translate .3s; }
-#bx-top.on { opacity: 1; translate: 0 0; pointer-events: auto; }
-#bx-top svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
-@media (max-width: 640px) { #bx-top { bottom: calc(86px + env(safe-area-inset-bottom)); } }
-
+@media (min-width: 641px) { html.bx-sc .nav { box-shadow: 0 10px 32px -14px rgba(0, 0, 0, .5); } }
+@media (max-width: 640px) { #bx-progress { display: none; } }
+@media (max-width: 640px) { 
 /* Aurora + cursor spotlight (soft colour that drifts behind the glass) */
 #bx-aurora { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; contain: strict; mix-blend-mode: screen; opacity: .5; }
 html[data-theme="light"] #bx-aurora { mix-blend-mode: multiply; opacity: .3; }
@@ -94,3 +91,13 @@ img.bx-f.bx-ok { opacity: 1; transition: opacity .45s ease; }
   html.bx-rv .card.bx-pre { opacity: 1; translate: none; scale: none; }
 }
 @media (prefers-contrast: more) { #bx-aurora, #bx-grain, #bx-spot { display: none; } }
+
+/* Phones: the original colour glow faded to plain background at the top and bottom edges (and was oversized, rotating and always animating),
+   which looked like a border there. This one is fixed, full-screen, reaches both edges and costs no battery. */
+@media (max-width: 640px) {
+  html { background: var(--bg); }
+  body::before { inset: 0 !important; transform: none !important; animation: none !important;
+    background: radial-gradient(80% 30% at 15% 0%, var(--o1), transparent 78%), radial-gradient(80% 30% at 85% 100%, var(--o2), transparent 78%), radial-gradient(70% 32% at 50% 50%, var(--o3), transparent 78%) !important; }
+}
+
+.bx-pill { flex-wrap: wrap; justify-content: center; text-align: center; line-height: 1.35; }
