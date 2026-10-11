@@ -182,15 +182,159 @@
     sysTool('Keep server awake', 'Pings the shop every 10 minutes so free hosting does not put it to sleep. Uses the RENDER_EXTERNAL_URL setting that Render provides.', 'awake', [])
   );
 
+  // ----- 50 more tools (v3) -----
+  var base = tools.length;
+  var K = function (a) { return a.map(function (c) { return C(c[0], function (x) { var v = x[c[1]]; return c[2] ? c[2](v) : v; }); }); };
+  var dt = function (v) { return String(v || '').replace('T', ' ').slice(5, 16); };
+  var yn = function (v) { return v ? 'yes' : 'no'; };
+  var noEnd = function (v) { return v ? d10(v) : 'no end'; };
+  var num0 = function (v) { return v == null ? 'none' : v; };
+  var kb = function (v) { return Math.max(1, Math.round(Number(v || 0) / 1024)) + ' KB'; };
+  var ord = function (v) { return '#' + v; };
+  var dur = function (s) { return s < 90 ? s + ' s' : s < 5400 ? Math.round(s / 60) + ' min' : s < 172800 ? Math.round(s / 3600) + ' h' : Math.round(s / 86400) + ' days'; };
+  function btnTool(title, note, label, url, confirmMsg, okMsg) {
+    return [title, function (b) {
+      b.innerHTML = '<p class="muted">' + note + '</p><button data-go>' + label + '</button>';
+      $('[data-go]', b).onclick = function () { if (!confirmMsg || confirm(confirmMsg)) run(api(url, 'POST'), okMsg || 'Done'); };
+    }];
+  }
+  var statsHtml = function (rows) { return '<div class="ap-stats">' + rows.map(function (r) { return '<div><b>' + esc(r[1]) + '</b>' + esc(r[0]) + '</div>'; }).join('') + '</div>'; };
+
+  // Software protection: live status of the server's self-defence (src/guard.js)
+  function guardTool() {
+    return ['Software protection', function (b) {
+      function paint(g) {
+        var i = g.integrity || {}, shed = g.shed || {};
+        b.innerHTML = statsHtml([
+          ['Status', g.ready ? (g.overloaded ? 'Busy, shedding' : 'Healthy') : 'Starting'],
+          ['Database answer', g.dbMs < 0 ? 'Not answering' : g.dbMs + ' ms'],
+          ['Event loop delay', g.lagMs + ' ms (peak ' + g.peakLag + ')'],
+          ['Memory', g.rssMb + ' of ' + g.limits.rssMb + ' MB'],
+          ['Requests running', g.inflight + ' (peak ' + g.peakInflight + ')'],
+          ['Up for', dur(g.uptime)],
+          ['Started in', g.bootSeconds == null ? '-' : g.bootSeconds + ' s'],
+          ['Files', i.ok === false ? 'CHANGED' : 'Unchanged']
+        ]) +
+          swrow('Load shedding', 'When the server is overloaded, extra requests get a polite "try again" instead of slowing everyone down. Your admin pages are never refused.', sw('data-shed' + (g.shedding ? ' checked' : ''))) +
+          '<h4>Turned away so far</h4>' + statsHtml([['Still starting', shed.starting], ['Too many at once', shed.busy], ['Overloaded', shed.lag], ['Memory full', shed.memory], ['Database down', shed.db], ['Too slow', shed.timeout]]) +
+          '<p class="muted">Database pool: ' + g.pool.total + ' open, ' + g.pool.idle + ' idle, ' + g.pool.waiting + ' waiting. Breaker opened ' + g.breaker.opened + ' time(s)' + (g.breaker.open ? ' (open now)' : '') + '. Auto restart on memory limit: ' + (g.limits.autoRestart ? 'on' : 'off') + '.' + (g.restartReason ? ' Last restart reason: ' + esc(g.restartReason) + '.' : '') + '</p>' +
+          '<button data-refresh>Refresh</button>';
+        b.querySelector('[data-shed]').onchange = function (e) { api('/api/admin/guard/shedding', 'POST', { on: e.target.checked }).then(paint).catch(function (x) { toast(x.message); }); };
+        b.querySelector('[data-refresh]').onclick = load;
+      }
+      function load() { b.insertAdjacentHTML('afterbegin', ''); api('/api/admin/guard').then(paint).catch(function (e) { b.innerHTML = '<p class="muted">' + esc(e.message) + '</p>'; }); }
+      load();
+    }];
+  }
+  function integrityTool() {
+    return ['File integrity check', function (b) {
+      function paint(g) {
+        var i = g.integrity || {}, bad = (i.changed || []).concat(i.added || [], i.removed || []);
+        b.innerHTML = '<p class="muted">Every app file gets a fingerprint when the server starts and is checked again every 10 minutes. On Render the files only change when you deploy, so a change means something modified the code.</p>' +
+          statsHtml([['Result', i.ok === false ? 'FILES CHANGED' : 'All unchanged'], ['Files watched', i.files || 0], ['Fingerprint', i.digest || '-'], ['Last check', i.checkedAt ? new Date(i.checkedAt).toLocaleTimeString() : 'not yet']]) +
+          (bad.length ? '<h4>Different since start</h4>' + table(bad.map(function (f) { return { f: f, w: (i.changed || []).indexOf(f) > -1 ? 'changed' : (i.added || []).indexOf(f) > -1 ? 'new' : 'removed' }; }), K([['File', 'f'], ['What', 'w']])) : '') +
+          '<button data-scan>Check now</button>';
+        b.querySelector('[data-scan]').onclick = function () { api('/api/admin/guard/scan', 'POST').then(function (r) { paint(r); toast(r.integrity.ok ? 'Files unchanged' : 'Files changed!'); }).catch(function (e) { toast(e.message); }); };
+      }
+      api('/api/admin/guard').then(paint).catch(function (e) { b.innerHTML = '<p class="muted">' + esc(e.message) + '</p>'; });
+    }];
+  }
+  function healthTool() {
+    return ['Health check test', function (b) {
+      b.innerHTML = '<p class="muted">Asks /healthz (the page your host checks) three times from this device. Render fails a health check that takes longer than 5 seconds.</p><button data-go>Run test</button><div class="hc-out"></div>';
+      $('[data-go]', b).onclick = function () {
+        var out = $('.hc-out', b), times = [], n = 0; out.innerHTML = '<p class="muted">Testing...</p>';
+        function one() {
+          var t = performance.now();
+          fetch('/healthz', { cache: 'no-store' }).then(function (r) { return r.text().then(function (x) { times.push({ ms: Math.round(performance.now() - t), ok: r.ok && x === 'ok' }); }); }).catch(function () { times.push({ ms: -1, ok: false }); }).then(function () { if (++n < 3) one(); else done(); });
+        }
+        function done() {
+          var worst = Math.max.apply(null, times.map(function (x) { return x.ms; })), allOk = times.every(function (x) { return x.ok; });
+          api('/api/admin/guard').then(function (g) {
+            out.innerHTML = statsHtml([['Verdict', allOk && worst < 5000 ? 'PASS' : 'FAIL'], ['Slowest answer', worst + ' ms'], ['Time to spare', allOk ? Math.max(0, 5000 - worst) + ' ms' : '-'], ['Ready for visitors', g.ready ? 'yes' : 'no'], ['Database answer', g.dbMs < 0 ? 'down' : g.dbMs + ' ms'], ['Server started in', g.bootSeconds == null ? '-' : g.bootSeconds + ' s']]);
+          }).catch(function () { out.innerHTML = statsHtml([['Verdict', allOk && worst < 5000 ? 'PASS' : 'FAIL'], ['Slowest answer', worst + ' ms']]); });
+        }
+        one();
+      };
+    }];
+  }
+  function auditSearchTool() {
+    return ['Search activity log', function (b) {
+      b.innerHTML = '<input id="al-q" placeholder="Word to find (person, action or detail)"><button data-go>Search</button><div id="al-o"></div>';
+      var go = function () { var v = $('#al-q').value.trim(); if (!v) return; api('/api/plus/audit-search?q=' + encodeURIComponent(v)).then(function (r) { $('#al-o').innerHTML = table(r, K([['When', 'at', dt], ['Who', 'username'], ['Action', 'action'], ['Detail', 'detail']])); }).catch(function (e) { toast(e.message); }); };
+      $('[data-go]', b).onclick = go; $('#al-q').onkeydown = function (e) { if (e.key === 'Enter') go(); };
+    }];
+  }
+  var ORDER_COLS = K([['Order', 'id', ord], ['Customer', 'username'], ['Total', 'total', money], ['Status', 'status'], ['Placed', 'created_at', dt]]);
+  tools.push(
+    // Catalog (10)
+    listTool('Free or zero-price products', '/api/plus/free-products', K([['ID', 'id'], ['Product', 'title'], ['Price', 'price', money]])),
+    listTool('Active discounts', '/api/plus/active-discounts', K([['ID', 'id'], ['Product', 'title'], ['Off %', 'pct'], ['Until', 'discount_until', noEnd]])),
+    listTool('Discounts ending within 7 days', '/api/plus/discounts-ending', K([['ID', 'id'], ['Product', 'title'], ['Off %', 'pct'], ['Ends', 'discount_until', dt]])),
+    listTool('Lowest margins', '/api/plus/low-margin', K([['ID', 'id'], ['Product', 'title'], ['Price', 'price', money], ['Cost', 'cost', money], ['Margin %', 'margin']])),
+    listTool('Products with no cost set', '/api/plus/no-cost', K([['ID', 'id'], ['Product', 'title'], ['Price', 'price', money]])),
+    listTool('Bulk-deal products', '/api/plus/bulk-deals', K([['ID', 'id'], ['Product', 'title'], ['From qty', 'bulk_min'], ['Off %', 'bulk_percent']])),
+    listTool('Newest products', '/api/plus/newest-products', K([['ID', 'id'], ['Product', 'title'], ['Price', 'price', money], ['Added', 'created_at', d10]])),
+    barTool('Products per owner', '/api/plus/products-per-owner', 'owner', 'products'),
+    btnTool('Unpin all products', 'Removes the pin from every pinned product so the shop order is back to normal.', 'Unpin everything', '/api/plus/products/unpin-all', 'Unpin all products?', 'Unpinned'),
+    listTool('Products hidden by seller', '/api/plus/hidden-products', K([['ID', 'id'], ['Product', 'title'], ['Seller', 'owner']])),
+    // Inventory (6)
+    listTool('Out of stock (0 left)', '/api/plus/out-of-stock', K([['ID', 'id'], ['Product', 'title'], ['Marked sold out', 'is_sold_out', yn]])),
+    statTool('Stock value', '/api/plus/stock-value', [['Units in stock', 'units'], ['Products tracked', 'tracked'], ['Worth at cost', 'at_cost', money], ['Worth at price', 'at_price', money]]),
+    listTool('Overstocked (50 or more)', '/api/plus/overstocked', K([['ID', 'id'], ['Product', 'title'], ['Stock', 'stock']])),
+    listTool('Days of stock left', '/api/plus/stock-runway', K([['ID', 'id'], ['Product', 'title'], ['Stock', 'stock'], ['Sold 30d', 'sold30'], ['Days left', 'days_left']])),
+    btnTool('Sync sold-out with stock', 'Marks products with 0 stock as sold out, and puts products that have stock back in stock.', 'Sync now', '/api/plus/products/sync-soldout', 'Update every sold-out flag to match the stock numbers?', 'Synced'),
+    listTool('Products not tracking stock', '/api/plus/untracked-stock', K([['ID', 'id'], ['Product', 'title'], ['Price', 'price', money]])),
+    // Orders (10)
+    listTool("Today's orders", '/api/plus/orders-today', ORDER_COLS),
+    listTool('Unpaid orders', '/api/plus/unpaid-orders', ORDER_COLS),
+    listTool('Recent cancelled orders', '/api/plus/cancelled-recent', K([['Order', 'id', ord], ['Customer', 'username'], ['Total', 'total', money], ['Reason', 'reason'], ['Placed', 'created_at', dt]])),
+    barTool('Cancellation reasons', '/api/plus/cancel-reasons', 'reason', 'orders'),
+    listTool('Biggest orders', '/api/plus/biggest-orders', ORDER_COLS),
+    listTool('Orders with customer notes', '/api/plus/orders-with-notes', K([['Order', 'id', ord], ['Customer', 'username'], ['Note', 'note'], ['Status', 'status']])),
+    barTool('Pending orders by age', '/api/plus/pending-age', 'label', 'orders'),
+    statTool('Today vs yesterday', '/api/plus/today-vs-yesterday', [['Today', 'today', money], ['Yesterday', 'yesterday', money], ['Same day last week', 'last_week', money], ['Orders today', 'orders_today'], ['Orders yesterday', 'orders_yesterday']]),
+    barTool('Items sold today', '/api/plus/items-today', 'title', 'qty'),
+    listTool('Promo code performance', '/api/plus/promo-performance', K([['Code', 'code'], ['Off %', 'percent'], ['Used', 'used_count'], ['Limit', 'max_uses', num0], ['Active', 'is_active', yn]])),
+    // People (8)
+    listTool('New customers (7 days)', '/api/plus/new-customers', K([['ID', 'id'], ['User', 'username'], ['Joined', 'created_at', dt]])),
+    listTool('Sellers overview', '/api/plus/sellers-overview', K([['ID', 'id'], ['Seller', 'username'], ['Products', 'products'], ['Revenue', 'revenue', money], ['Hidden', 'hidden', yn]])),
+    listTool('Top spenders (30 days)', '/api/plus/top-spenders-30', K([['User', 'username'], ['Orders', 'orders'], ['Spent', 'spent', money]])),
+    listTool('Must change password', '/api/plus/must-change', K([['ID', 'id'], ['User', 'username'], ['Role', 'role'], ['Temp password ends', 'temp_expires', dt]])),
+    listTool('Recent password resets', '/api/plus/recent-resets', K([['User', 'username'], ['When', 'created_at', dt], ['Reset by', 'reset_by']])),
+    listTool('Blocked customers', '/api/plus/blocked-customers', K([['User', 'username'], ['Shop-wide', 'shop_wide', yn], ['Reason', 'reason'], ['Blocked by', 'blocker'], ['When', 'created_at', d10]])),
+    listTool('Many accounts, one sign-up address (5+)', '/api/plus/shared-signup-ip', K([['Address', 'ip'], ['Accounts', 'accounts'], ['Users', 'users']])),
+    listTool('Custom requests waiting', '/api/plus/requests-waiting', K([['ID', 'id'], ['Customer', 'username'], ['Request', 'request'], ['Sent', 'created_at', dt]])),
+    // Insights (8)
+    barTool('Revenue, last 7 days', '/api/plus/revenue-week', 'label', 'revenue', money),
+    barTool('Orders by hour today', '/api/plus/sales-by-hour-today', 'label', 'orders'),
+    barTool('Best sellers (7 days)', '/api/plus/best-sellers-7', 'title', 'sold'),
+    listTool('Slow movers (30 days)', '/api/plus/slow-movers', K([['ID', 'id'], ['Product', 'title'], ['Sold 30d', 'sold30']])),
+    listTool('Favorited but never sold', '/api/plus/fav-never-sold', K([['ID', 'id'], ['Product', 'title'], ['Hearts', 'hearts']])),
+    barTool('Revenue by category (30 days)', '/api/plus/category-30', 'label', 'revenue', money),
+    statTool('This month vs last month', '/api/plus/month-compare', [['This month', 'this_month', money], ['Last month', 'last_month', money], ['Orders this month', 'orders_this'], ['Orders last month', 'orders_last']]),
+    statTool('Discounts given (30 days)', '/api/plus/discount-given', [['Money discounted', 'given', money], ['Orders with a discount', 'orders_with_discount'], ['All orders', 'orders']]),
+    // System (8)
+    guardTool(),
+    integrityTool(),
+    healthTool(),
+    listTool('Security events (latest 50)', '/api/admin/guard/events', K([['When', 'at', dt], ['Type', 'type'], ['IP', 'ip'], ['User', 'user'], ['Detail', 'detail']])),
+    listTool('Environment check', '/api/admin/guard/env', K([['Setting', 'name'], ['OK', 'ok', yn], ['Note', 'note']])),
+    listTool('Saved backups', '/api/plus/backup-list', K([['ID', 'id'], ['Size', 'size', kb], ['Made', 'created_at', dt]])),
+    barTool('Top actions (7 days)', '/api/plus/top-actions', 'label', 'n'),
+    auditSearchTool()
+  );
+  var R = function (a, n) { var o = []; for (var j = 0; j < n; j++) o.push(base + a + j); return o; };
+
   var GROUPS = [
     ['Store', 'store', 25, [0, 1, 52]],
-    ['Catalog', 'tag', 215, [2, 3, 4, 37, 38, 39, 40, 41, 25, 46, 47, 48]],
-    ['Inventory', 'box', 170, [20, 21, 22, 23, 24]],
-    ['Orders', 'cart', 265, [5, 6, 18, 27, 28, 35, 36]],
-    ['People', 'users', 335, [7, 8, 9, 10, 11, 33, 34]],
-    ['Insights', 'chart', 140, [12, 13, 14, 26, 29, 30, 31, 32, 44, 45, 49]],
+    ['Catalog', 'tag', 215, [2, 3, 4, 37, 38, 39, 40, 41, 25, 46, 47, 48].concat(R(0, 10))],
+    ['Inventory', 'box', 170, [20, 21, 22, 23, 24].concat(R(10, 6))],
+    ['Orders', 'cart', 265, [5, 6, 18, 27, 28, 35, 36].concat(R(16, 10))],
+    ['People', 'users', 335, [7, 8, 9, 10, 11, 33, 34].concat(R(26, 8))],
+    ['Insights', 'chart', 140, [12, 13, 14, 26, 29, 30, 31, 32, 44, 45, 49].concat(R(34, 8))],
     ['Performance', 'bolt', 45, [50, 51, 53]],
-    ['System', 'gear', 205, [15, 16, 17, 19, 42, 43, 54, 55, 56, 57]]
+    ['System', 'gear', 205, [15, 16, 17, 19, 42, 43, 54, 55, 56, 57].concat(R(42, 8))]
   ];
 
   function close() { var o = $('#ap-dlg'); if (o) o.remove(); document.body.style.overflow = ''; document.removeEventListener('keydown', onKey); }
