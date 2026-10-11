@@ -102,6 +102,11 @@ const PACK = [
   ['Insights+', 'Promo codes used most', 'ins-promos', 'b', "SELECT code label,used_count value FROM promo_codes ORDER BY used_count DESC LIMIT 10"],
   ['Insights+', 'Today so far', 'ins-today', 's', `SELECT COUNT(*)::int orders,COALESCE(SUM(o.total),0)::float revenue FROM orders o WHERE ${OD}=${MNL} AND ${OK}`],
   ['Insights+', 'Items sold per category (30 days)', 'ins-cat-items', 'b', `SELECT COALESCE(NULLIF(p.category,''),'none') label,SUM(i.quantity)::int value FROM order_items i JOIN orders o ON o.id=i.order_id AND ${OK} AND ${D(30)} JOIN products p ON p.id=i.product_id GROUP BY 1 ORDER BY value DESC`],
+  ['Insights+', 'Messages sent (last 24 hours)', 'msg-today', 's', "SELECT COUNT(*)::int messages,COUNT(DISTINCT sender_id)::int senders FROM dm_messages WHERE created_at>now()-interval '24 hours'"],
+  ['Insights+', 'Messages per day (14 days)', 'msg-days', 'b', "SELECT to_char(d,'MM-DD') label,COUNT(m.id)::int value FROM generate_series(now()::date-13,now()::date,interval '1 day') d LEFT JOIN dm_messages m ON m.created_at::date=d::date GROUP BY d ORDER BY d"],
+  ['Insights+', 'Top message senders (7 days)', 'msg-top', 'l', "SELECT u.username,u.role,COUNT(*)::int sent FROM dm_messages m JOIN users u ON u.id=m.sender_id WHERE m.created_at>now()-interval '7 days' AND NOT m.broadcast GROUP BY 1,2 ORDER BY sent DESC LIMIT 20"],
+  ['Insights+', 'Message reports (open first)', 'msg-reports', 'l', "SELECT r.id,r.status,a.username reporter,b.username reported,LEFT(r.excerpt,80) excerpt,r.reason,r.created_at FROM dm_reports r LEFT JOIN users a ON a.id=r.reporter_id LEFT JOIN users b ON b.id=r.reported_id ORDER BY (r.status='open') DESC,r.id DESC LIMIT 50"],
+  ['System+', 'Messaging diagnostics', 'msg-diag', 's', "SELECT (SELECT COUNT(*)::int FROM dm_messages) messages,(SELECT COUNT(*)::int FROM dm_messages WHERE read_at IS NULL) unread_backlog,(SELECT COUNT(*)::int FROM dm_scheduled) scheduled_waiting,(SELECT COUNT(*)::int FROM dm_reports WHERE status='open') open_reports,(SELECT COUNT(*)::int FROM dm_blocks) blocks,(SELECT COUNT(*)::int FROM dm_prefs WHERE auto_reply_on) auto_replies_on,(SELECT COUNT(*)::int FROM dm_messages WHERE kind='image') pictures"],
 ];
 // Safe actions (POST, admin only, each logged). They only tidy up; none touches orders, products or accounts.
 const ACTIONS = [
