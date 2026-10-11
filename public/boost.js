@@ -15,20 +15,31 @@
   const raf = (f) => { let q = false; return (...a) => { if (q) return; q = true; requestAnimationFrame(() => { q = false; f(...a); }); }; };
   const safe = (f) => { try { f(); } catch (e) { /* one feature failing must not stop the rest */ } };
 
-  /* 1. Automatic lite mode: data saver, slow network, reduced transparency, weak CPU. Never overrides a choice the person made. */
+  /* 1-3. Performance mode: when the device looks slow (data saver, slow network, weak CPU, low battery, low frame rate) it ASKS before
+     switching to lite mode. "Not now" is remembered for 30 days. Press L any time to switch by hand. */
+  const ask = (why) => {
+    if (lite() || localStorage.glass || Date.now() < Number(ls.get('noperf', 0)) || sessionStorage.bxask) return;
+    try { sessionStorage.bxask = '1'; } catch (e) { /* ignore */ }
+    const p = el('div', 'bx-perf', '<span>' + why + ' Switch to lite mode for smoother scrolling?</span><button type="button" class="primary">Switch</button><button type="button">Not now</button>', 'bx-pill glass');
+    requestAnimationFrame(() => p.classList.add('on'));
+    const b = p.querySelectorAll('button');
+    b[0].onclick = () => { R.dataset.glass = 'lite'; try { localStorage.glass = 'lite'; } catch (e) { /* ignore */ } p.remove(); say('Lite mode on. Press L to switch back.'); };
+    b[1].onclick = () => { ls.set('noperf', Date.now() + 30 * 864e5); p.remove(); };
+    setTimeout(() => { if (p.isConnected) { p.classList.remove('on'); setTimeout(() => p.remove(), 500); } }, 25000);
+  };
   safe(() => {
-    if (R.dataset.glass === 'lite' || localStorage.glass) return;
     const c = navigator.connection || {};
-    if (c.saveData || /(^|-)2g$/.test(c.effectiveType || '') || navigator.hardwareConcurrency <= 2 || matchMedia('(prefers-reduced-transparency: reduce)').matches) R.dataset.glass = 'lite';
+    const why = c.saveData ? 'Data saver is on.' : /(^|-)2g$/.test(c.effectiveType || '') ? 'Your connection is slow.'
+      : (navigator.deviceMemory && navigator.deviceMemory <= 4) || navigator.hardwareConcurrency <= 2 ? 'This device looks like it has limited power.'
+      : matchMedia('(prefers-reduced-transparency: reduce)').matches ? 'Your device asks for less transparency.' : '';
+    if (why) setTimeout(() => ask(why), 4000);
+    if (navigator.getBattery) navigator.getBattery().then((b) => { if (!b.charging && b.level < 0.2) setTimeout(() => ask('Battery is low.'), 5000); });
   });
-  /* 2. Battery saver: low battery and not charging. */
-  safe(() => navigator.getBattery && navigator.getBattery().then((b) => { if (!b.charging && b.level < 0.2 && !localStorage.glass) R.dataset.glass = 'lite'; }));
-  /* 3. Frame-rate watchdog: if the first seconds run under ~38 fps, switch to lite and say so (once per visit). */
   safe(() => {
     if (reduce || lite() || sessionStorage.bxfps) return;
     const run = () => {
       let n = 0, t0 = 0;
-      const tick = (t) => { if (!t0) t0 = t; n++; if (t - t0 < 2200) return requestAnimationFrame(tick); const fps = n / ((t - t0) / 1000); sessionStorage.bxfps = '1'; if (fps < 38 && !document.hidden && !lite()) { R.dataset.glass = 'lite'; say('Smoother mode on for this device.'); } };
+      const tick = (t) => { if (!t0) t0 = t; n++; if (t - t0 < 2200) return requestAnimationFrame(tick); const fps = n / ((t - t0) / 1000); sessionStorage.bxfps = '1'; if (fps < 38 && !document.hidden) ask('The page is running slowly.'); };
       requestAnimationFrame(tick);
     };
     let started = false; const go = () => { if (!started) { started = true; setTimeout(run, 1500); } };
@@ -40,20 +51,17 @@
     const title = document.title;
     document.addEventListener('visibilitychange', () => { R.classList.toggle('bx-hid', document.hidden); document.title = document.hidden ? 'Still here, come back for a snack' : title; });
     const tc = document.querySelector('meta[name=theme-color]');
-    const sync = () => { if (tc) tc.content = R.dataset.theme === 'light' ? '#eef2ff' : '#070a1c'; };
+    const sync = () => { if (tc) setTimeout(() => { const v = getComputedStyle(R).getPropertyValue('--bg').trim(); if (v) tc.content = v; }, 80); }; // browser bars take the page's real background colour
     sync(); new MutationObserver(sync).observe(R, { attributes: true, attributeFilter: ['data-theme'] });
   });
 
-  /* 7. Scroll progress, 8. header shadow, 9. back-to-top */
+  /* 7. Scroll progress, 8. header shadow (the shop already has its own back-to-top button) */
   safe(() => {
     const bar = el('div', 'bx-progress');
-    const top = el('button', 'bx-top', '<svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>', 'glass');
-    top.type = 'button'; top.setAttribute('aria-label', 'Back to top');
-    top.onclick = () => { if (window.__lenis) window.__lenis.scrollTo(0); else scrollTo({ top: 0, behavior: reduce ? 'auto' : 'smooth' }); };
     const upd = raf(() => {
       const h = R.scrollHeight - innerHeight, y = scrollY;
       bar.style.transform = 'scaleX(' + (h > 0 ? Math.min(1, y / h) : 0) + ')';
-      R.classList.toggle('bx-sc', y > 12); top.classList.toggle('on', y > 700);
+      R.classList.toggle('bx-sc', y > 12);
     });
     addEventListener('scroll', upd, { passive: true }); upd();
   });
@@ -151,7 +159,7 @@
       if (e.key === '/') { const s = document.getElementById('search') || document.querySelector('input[type=search]'); if (s) { e.preventDefault(); s.focus(); } }
       else if (e.key === 't') { const b = document.getElementById('theme'); b && b.click(); }
       else if (e.key === 'l') { const on = !lite(); if (on) R.dataset.glass = 'lite'; else delete R.dataset.glass; try { localStorage.glass = on ? 'lite' : 'full'; } catch (x) { /* ignore */ } say(on ? 'Lite mode on.' : 'Full glass on.'); }
-      else if (e.key === 'g') { const b = document.getElementById('bx-top'); b && b.click(); }
+      else if (e.key === 'g') { if (window.__lenis) window.__lenis.scrollTo(0); else scrollTo({ top: 0, behavior: reduce ? 'auto' : 'smooth' }); }
       else if (e.key === 'p') { const b = document.getElementById('bx-pbtn'); b && b.classList.contains('on') && b.click(); }
       else if (e.key === '?') help.classList.toggle('on');
     });
