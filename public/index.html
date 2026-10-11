@@ -50,43 +50,52 @@
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;500;600;700;800&display=swap">
 </head>
 <body>
-  <div id="boot" role="status" aria-live="polite">
-    <svg width="0" height="0" aria-hidden="true" style="position:absolute"><filter id="goo"><feGaussianBlur in="SourceGraphic" stdDeviation="9" result="b"/><feColorMatrix in="b" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 22 -9"/></filter></svg>
-    <div class="boot-title" aria-label="Snack Shop"><span style="--i:0">S</span><span style="--i:1">n</span><span style="--i:2">a</span><span style="--i:3">c</span><span style="--i:4">k</span><span style="--i:5">&nbsp;</span><span style="--i:6">S</span><span style="--i:7">h</span><span style="--i:8">o</span><span style="--i:9">p</span></div>
-    <div class="boot-bar"><i></i></div>
-    <p class="boot-msg" id="boot-msg"></p>
+  <div id="gw" role="status" aria-live="polite">
+    <div class="gw-cols" aria-hidden="true"></div><div class="gw-rows" aria-hidden="true"></div><div class="gw-panes" aria-hidden="true"></div><div class="gw-shine" aria-hidden="true"></div>
+    <div class="gw-wipe" style="--w:0" aria-hidden="true"></div><div class="gw-wipe" style="--w:1" aria-hidden="true"></div><div class="gw-wipe" style="--w:2" aria-hidden="true"></div>
+    <div class="gw-center">
+      <div class="gw-title" aria-label="Snack Shop"><span style="--i:0">S</span><span style="--i:1">n</span><span style="--i:2">a</span><span style="--i:3">c</span><span style="--i:4">k</span><span style="--i:5">&nbsp;</span><span style="--i:6">S</span><span style="--i:7">h</span><span style="--i:8">o</span><span style="--i:9">p</span></div>
+      <div class="gw-bar"><i></i></div>
+      <p class="gw-msg" id="gw-msg"></p>
+    </div>
   </div>
   <script>
-    // Startup animation. It plays on every fresh open (a little shorter on repeat opens) and stays up until the shop's products and
-    // first photos have really loaded, so nobody stares at a blank page. If the free server is still waking up it says so, and after
-    // a very long wait it offers a retry button. Tap anywhere to skip. Skipped for reduced-motion.
+    // Startup: sheets of glass slide in, drift and shine while the shop loads, then a stack of glass wipes sweeps away to reveal the page.
+    // It stays up until the shop's products and first photos have really loaded, so nobody stares at a blank page. If the free server is still
+    // waking up it says so, and after a very long wait it offers a retry button. Tap anywhere to skip. Skipped for reduced-motion.
     (function () {
-      var b = document.getElementById('boot'), msg = document.getElementById('boot-msg'), body = document.body, seen = false, shown = false, minDone = false, ready = false;
+      var b = document.getElementById('gw'), msg = document.getElementById('gw-msg'), body = document.body, seen = false, shown = false, minDone = false, ready = false;
       try { seen = sessionStorage.boot === '1'; sessionStorage.boot = '1'; } catch (e) {}
       if (matchMedia('(prefers-reduced-motion: reduce)').matches) { b.remove(); return; }
+      function fill(sel, n, fn) { var s = ''; for (var k = 0; k < n; k++) s += fn(k); b.querySelector(sel).innerHTML = s; }
+      function dir(k) { return k % 2 ? -1 : 1; }
+      fill('.gw-cols', 14, function (k) { return '<i style="--i:' + k + ';--s:' + dir(k) + '"></i>'; });
+      fill('.gw-rows', 9, function (k) { return '<i style="--i:' + k + ';--s:' + dir(k) + '"></i>'; });
+      var P = [[6, 10, 22, 26, -8], [62, 6, 30, 18, 10], [70, 52, 24, 34, -12], [10, 58, 28, 30, 9], [40, 70, 20, 22, -6], [44, 14, 16, 14, 14], [84, 30, 12, 20, 6]];
+      fill('.gw-panes', P.length, function (k) { var p = P[k]; return '<i style="--i:' + k + ';--x:' + p[0] + '%;--y:' + p[1] + '%;--w:' + p[2] + '%;--h:' + p[3] + '%;--r:' + p[4] + 'deg"></i>'; });
       body.classList.add('booting'); // hides the page underneath so the phone only has the animation to draw
-      function say(t, ms) { msg.textContent = t; msg.classList.add('on'); }
+      function say(t) { msg.textContent = t; msg.classList.add('on'); }
       function lift(cls, ms) {
         if (shown) return; shown = true;
         b.classList.add(cls);
-        body.classList.remove('booting');
+        body.classList.remove('booting'); // the page is already there underneath while the glass wipes away
         window.dispatchEvent(new Event('bootdone'));
         setTimeout(function () { b.remove(); }, ms);
       }
-      function check() { if (minDone && ready) lift('out', 650); }
+      function check() { if (minDone && ready) lift('out', 1500); }
       b.onclick = function (e) { if (e.target.closest && e.target.closest('button')) return; lift('skip', 400); };
       // Start the clock only after the browser has painted the first frame, so a slow phone doesn't lose the first half second.
       requestAnimationFrame(function () { requestAnimationFrame(function () {
         b.classList.add('go');
-        setTimeout(function () { minDone = true; check(); }, seen ? 1300 : 2200);
-        setTimeout(function () { if (!shown && !ready) { b.classList.add('slow'); say('Waking the shop up. The server sleeps when it is quiet, so this can take up to a minute the first time.'); } }, 3500);
+        setTimeout(function () { minDone = true; check(); }, seen ? 1800 : 2600);
+        setTimeout(function () { if (!shown && !ready) { b.classList.add('slow'); say('Waking the shop up. The server sleeps when it is quiet, so this can take up to a minute the first time.'); } }, 4000);
       }); });
       (window.__pre || Promise.resolve()).then(function () { return window.__preReady; }).then(function () { ready = true; check(); }, function () {
         // Every retry failed: say so, and let the person try again or carry on without data.
         b.classList.remove('slow');
-        msg.innerHTML = 'Cannot reach the shop right now.<br><button type="button" class="primary" id="boot-retry">Try again</button>';
+        msg.innerHTML = 'Cannot reach the shop right now.<br><button type="button" class="primary" id="gw-retry">Try again</button>';
         msg.classList.add('on');
-        document.getElementById('boot-retry').onclick = function () { location.reload(); };
+        document.getElementById('gw-retry').onclick = function () { location.reload(); };
       });
       setTimeout(function () { lift('skip', 0); }, 120000); // safety net
     })();
@@ -96,6 +105,7 @@
     <div class="tools">
       <nav id="nav"></nav>
       <button id="tour-btn" type="button" title="Tutorial" aria-label="Tutorial"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.5a2.5 2.5 0 1 1 3.4 2.3c-.7.3-1 .8-1 1.5M12 17v.01"/></svg></button>
+      <button id="sfx-btn" type="button" title="Sounds" aria-label="Sounds"></button>
       <button id="theme" type="button"></button>
     </div>
   </header>
@@ -128,8 +138,31 @@
     (function () {
       function load(src, cb) { var s = document.createElement('script'); s.src = src; if (cb) s.onload = cb; document.body.appendChild(s); }
       function start() { load('app.js', function () { load('tour.js'); }); }
-      if (document.getElementById('boot')) setTimeout(start, 300); else start();
+      if (document.getElementById('gw')) setTimeout(start, 300); else start();
+      // Smooth scrolling (Lenis). Skipped for reduced-motion and lite mode. If the script cannot load, the page just scrolls normally.
+      if (!matchMedia('(prefers-reduced-motion: reduce)').matches && document.documentElement.dataset.glass !== 'lite') {
+        setTimeout(function () {
+          load('https://cdn.jsdelivr.net/npm/lenis@1.3.4/dist/lenis.min.js', function () {
+            try {
+              window.__lenis = new Lenis({
+                autoRaf: true,
+                duration: 1.1,
+                prevent: function (n) { return !!(n.closest && n.closest('dialog, .picks, [data-lenis-prevent]')); } // popups and inner lists keep their own scrolling
+              });
+            } catch (e) {}
+          });
+        }, 600);
+      }
     })();
+  </script>
+  <script>
+    // One helper for "scroll to this element", used by app.js and tour.js: smooth through Lenis when it is running, native otherwise.
+    window.smoothTo = function (el, o) {
+      o = o || {};
+      var l = window.__lenis;
+      if (l) l.scrollTo(el, { offset: o.block === 'center' ? el.offsetHeight / 2 - innerHeight / 2 : 0 });
+      else el.scrollIntoView({ behavior: 'smooth', block: o.block || 'start' });
+    };
   </script>
   <script>
     // Specular glow follows the pointer on cards and buttons (visionOS-style hover highlight).
