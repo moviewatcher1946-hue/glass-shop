@@ -1,0 +1,91 @@
+/* Boost: polish + speed. Everything here uses transform/opacity only, and switches off in lite mode and for reduced motion. */
+:root { --bx-a: #7c8cff; --bx-b: #c084fc; --bx-c: #38bdf8; }
+html { scrollbar-gutter: stable; -webkit-text-size-adjust: 100%; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; scroll-padding-top: 84px; }
+button, a, input, select, textarea, summary, label { touch-action: manipulation; }
+h1, h2, h3 { text-wrap: balance; }
+p { text-wrap: pretty; }
+::selection { background: color-mix(in srgb, var(--bx-a) 45%, transparent); }
+* { scrollbar-width: thin; scrollbar-color: rgba(140, 150, 200, .45) transparent; }
+:focus-visible { outline: 2px solid var(--bx-a); outline-offset: 2px; border-radius: 10px; }
+dialog { overscroll-behavior: contain; }
+button:not(:disabled):active { scale: .97; }
+.grid > .card:nth-child(n+13) { content-visibility: auto; contain-intrinsic-size: auto 340px; }
+
+/* Pause every animation while the tab is hidden: no battery or CPU spent on a page nobody sees. */
+html.bx-hid *, html.bx-hid *::before, html.bx-hid *::after { animation-play-state: paused !important; }
+
+/* Scroll progress, header shadow, back-to-top */
+#bx-progress { position: fixed; inset: 0 0 auto 0; height: 3px; z-index: 9998; transform-origin: 0 50%; transform: scaleX(0); background: linear-gradient(90deg, var(--bx-c), var(--bx-a), var(--bx-b)); pointer-events: none; opacity: .92; }
+html.bx-sc .nav { box-shadow: 0 10px 32px -14px rgba(0, 0, 0, .5); }
+#bx-top { position: fixed; right: max(16px, env(safe-area-inset-right)); bottom: calc(16px + env(safe-area-inset-bottom)); z-index: 60; width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center; padding: 0; cursor: pointer; opacity: 0; translate: 0 14px; pointer-events: none; transition: opacity .3s, translate .3s; }
+#bx-top.on { opacity: 1; translate: 0 0; pointer-events: auto; }
+#bx-top svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+@media (max-width: 640px) { #bx-top { bottom: calc(86px + env(safe-area-inset-bottom)); } }
+
+/* Aurora + cursor spotlight (soft colour that drifts behind the glass) */
+#bx-aurora { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; contain: strict; mix-blend-mode: screen; opacity: .5; }
+html[data-theme="light"] #bx-aurora { mix-blend-mode: multiply; opacity: .3; }
+#bx-aurora i { position: absolute; width: 60vmax; height: 60vmax; border-radius: 50%; background: radial-gradient(closest-side, var(--c), transparent); will-change: transform; animation: bx-drift 26s ease-in-out infinite alternate; }
+#bx-aurora i:nth-child(1) { --c: rgba(124, 140, 255, .55); left: -15vmax; top: -20vmax; }
+#bx-aurora i:nth-child(2) { --c: rgba(192, 132, 252, .45); right: -20vmax; top: 10vmax; animation-duration: 32s; animation-delay: -8s; }
+#bx-aurora i:nth-child(3) { --c: rgba(56, 189, 248, .4); left: 10vmax; bottom: -30vmax; animation-duration: 38s; animation-delay: -15s; }
+@keyframes bx-drift { to { transform: translate3d(12vmax, 8vmax, 0) scale(1.18); } }
+#bx-spot { position: fixed; left: 0; top: 0; width: 520px; height: 520px; margin: -260px 0 0 -260px; border-radius: 50%; pointer-events: none; z-index: 0; background: radial-gradient(closest-side, rgba(124, 140, 255, .16), transparent); opacity: 0; transition: opacity .4s; will-change: transform; }
+#bx-spot.on { opacity: 1; }
+#bx-grain { position: fixed; inset: 0; z-index: 9997; pointer-events: none; opacity: .045; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); }
+html[data-theme="light"] #bx-grain { opacity: .03; }
+html[data-glass="lite"] #bx-aurora, html[data-glass="lite"] #bx-spot, html[data-glass="lite"] #bx-grain { display: none; }
+
+/* Cards rise in as they scroll into view; shimmer on loading skeletons; pictures fade in */
+html.bx-rv .card.bx-pre { opacity: 0; translate: 0 16px; scale: .98; }
+.card.bx-in { animation: bx-rise .6s cubic-bezier(.2, .8, .2, 1) backwards; animation-delay: var(--bx-d, 0ms); }
+@keyframes bx-rise { from { opacity: 0; translate: 0 16px; scale: .98; } }
+.sk { position: relative; overflow: hidden; }
+.sk::after { content: ""; position: absolute; inset: 0; background: linear-gradient(100deg, transparent 20%, rgba(255, 255, 255, .18) 50%, transparent 80%); translate: -100% 0; animation: bx-sh 1.4s infinite; }
+@keyframes bx-sh { to { translate: 100% 0; } }
+img.bx-f { opacity: 0; }
+img.bx-f.bx-ok { opacity: 1; transition: opacity .45s ease; }
+
+/* Pills: offline notice, install prompt */
+.bx-pill { position: fixed; left: 50%; top: calc(10px + env(safe-area-inset-top)); z-index: 9990; translate: -50% -140%; padding: 9px 16px; border-radius: 999px; font-size: 13px; font-weight: 600; display: flex; gap: 10px; align-items: center; transition: translate .4s cubic-bezier(.2, .9, .3, 1.2); max-width: calc(100vw - 24px); }
+.bx-pill.on { translate: -50% 0; }
+.bx-pill button { padding: 5px 12px; border-radius: 999px; font-size: 12px; cursor: pointer; }
+
+/* Shortcut help */
+#bx-help { position: fixed; inset: 0; z-index: 9996; display: none; place-items: center; background: rgba(5, 8, 24, .45); }
+#bx-help.on { display: grid; }
+#bx-help > div { padding: 22px 26px; border-radius: 22px; min-width: min(360px, 90vw); }
+#bx-help h3 { margin: 0 0 12px; }
+#bx-help p { margin: 6px 0; display: flex; justify-content: space-between; gap: 24px; font-size: 14px; }
+#bx-help kbd { font: 600 12px ui-monospace, monospace; padding: 2px 8px; border-radius: 7px; border: 1px solid rgba(140, 150, 200, .5); background: rgba(140, 150, 200, .15); }
+#bx-conf { position: fixed; inset: 0; z-index: 9999; pointer-events: none; width: 100%; height: 100%; }
+
+/* Admin Pulse */
+#bx-pbtn { position: fixed; left: max(16px, env(safe-area-inset-left)); bottom: calc(16px + env(safe-area-inset-bottom)); z-index: 61; width: 46px; height: 46px; border-radius: 50%; display: none; place-items: center; padding: 0; cursor: pointer; }
+#bx-pbtn.on { display: grid; }
+#bx-pbtn svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+@media (max-width: 640px) { #bx-pbtn { bottom: calc(86px + env(safe-area-inset-bottom)); } }
+#bx-pulse { position: fixed; z-index: 9995; left: 16px; bottom: 72px; width: min(520px, calc(100vw - 32px)); max-height: min(78vh, 760px); overflow: auto; overscroll-behavior: contain; padding: 18px; border-radius: 22px; display: none; }
+#bx-pulse.on { display: block; animation: bx-rise .35s cubic-bezier(.2, .8, .2, 1); }
+@media (max-width: 640px) { #bx-pulse { left: 8px; right: 8px; width: auto; bottom: 8px; max-height: 82vh; } }
+#bx-pulse h3 { margin: 0 0 4px; font-size: 16px; display: flex; justify-content: space-between; align-items: center; }
+#bx-pulse h4 { margin: 16px 0 6px; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; opacity: .7; }
+.bx-g { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; }
+.bx-t { padding: 10px 12px; border-radius: 14px; background: rgba(140, 150, 200, .13); }
+.bx-t b { display: block; font-size: 18px; line-height: 1.15; }
+.bx-t span { font-size: 11px; opacity: .7; }
+.bx-t.warn b { color: #f59e0b; }
+.bx-t.bad b { color: #ef4444; }
+.bx-t.good b { color: #22c55e; }
+.bx-row { display: flex; justify-content: space-between; gap: 10px; padding: 5px 0; font-size: 13px; border-bottom: 1px solid rgba(140, 150, 200, .15); }
+.bx-row span:last-child { opacity: .75; white-space: nowrap; }
+.bx-spark { width: 100%; height: 44px; display: block; }
+.bx-spark rect { fill: var(--bx-a); }
+.bx-acts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.bx-acts button, .bx-row button { padding: 6px 12px; border-radius: 10px; font-size: 12px; cursor: pointer; }
+
+@media (prefers-reduced-motion: reduce) {
+  #bx-aurora i, .sk::after, .card.bx-in, #bx-pulse.on { animation: none !important; }
+  html.bx-rv .card.bx-pre { opacity: 1; translate: none; scale: none; }
+}
+@media (prefers-contrast: more) { #bx-aurora, #bx-grain, #bx-spot { display: none; } }
