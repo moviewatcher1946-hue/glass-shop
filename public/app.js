@@ -1,4 +1,19 @@
 const $ = (s) => document.querySelector(s);
+const HAPTICS = () => { try { return localStorage.haptics !== 'off'; } catch (e) { return true; } };
+if (navigator.vibrate) { const v = navigator.vibrate.bind(navigator); navigator.vibrate = (pat) => (HAPTICS() ? v(pat) : false); }
+let usualIds = null, usualUser = null, stockSeen = null, deepDone = false, flashBusy = false;
+const LS = (k, d) => { try { return localStorage[k] ?? d; } catch (e) { return d; } };
+const SAVER = () => LS('saver', 'off') === 'on';
+const ACCENTS = [['Ocean', '', ''], ['Grape', '#8e5bff', '#ff5bd6'], ['Sunset', '#ff7a18', '#ff375f'], ['Mint', '#00a67e', '#0a84ff'], ['Rose', '#ff375f', '#ff9f0a']];
+function applyAccent(i) {
+  const r = document.documentElement.style, c = ACCENTS[i] || ACCENTS[0];
+  if (!c[1]) ['--a1', '--a2', '--acc'].forEach((k) => r.removeProperty(k));
+  else { r.setProperty('--a1', c[1]); r.setProperty('--a2', c[2]); r.setProperty('--acc', `linear-gradient(135deg,${c[1]},${c[2]})`); }
+}
+applyAccent(Number(LS('accent', 0)));
+{ const fz = Number(LS('fz', 100)); if (fz !== 100) document.documentElement.style.fontSize = fz + '%'; }
+let sortMode = 'featured', inStockOnly = false;
+const SLOTS = { recess: 'Recess', lunch: 'Lunch', dismissal: 'Dismissal' };
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const CURRENCY = '₱';
 const money = (n) => CURRENCY + Number(n).toFixed(2);
@@ -48,6 +63,7 @@ const SFX = (() => {
     hover: play((c) => tone(c, 1200, 0, 0.025, 0.012, 'sine')),
     charge: play((c) => { tone(c, 280, 0, 0.9, 0.035, 'sine', 880); noise(c, 0, 0.7, 0.015, 600, 2400); }),
     press: play((c) => { tone(c, 300, 0, 0.12, 0.08, 'triangle', 700); tone(c, 1046.5, 0.05, 0.22, 0.05); }),
+    error2: play((c) => tone(c, 196, 0, 0.2, 0.05, 'triangle')),
     pop: play((c) => { tone(c, 523.25, 0, 0.12, 0.05); tone(c, 783.99, 0.08, 0.28, 0.05); }),
     get muted() { return muted; },
     set vol(v) { volume = Math.max(0, Math.min(1.5, v)); try { localStorage.sfxvol = String(volume); } catch (e) {} },
@@ -63,7 +79,7 @@ const fmtTime = (hm) => { const [h, m] = String(hm).split(':').map(Number); retu
 const bulkOn = (p) => Number(p.bulk_min) >= 2 && Number(p.bulk_percent) > 0;
 const unitFor = (p, q) => (bulkOn(p) && q >= Number(p.bulk_min) ? Math.min(fin(p), Math.round(Number(p.price) * (100 - Number(p.bulk_percent))) / 100) : fin(p));
 // Smaller copies of product photos for lists and grids (the server makes and remembers them): a fraction of the bytes, same look.
-const thumb = (url, w) => (url ? url + (url.includes('?') ? '&' : '?') + 'w=' + w : '');
+const thumb = (url, w) => (url ? url + (url.includes('?') ? '&' : '?') + 'w=' + (SAVER() ? Math.min(w, 240) : w) : '');
 const LOW_STOCK = 5;
 const CATS = { drinks: 'Drinks', snacks: 'Snacks' };
 const STATUS = { pending: 'Pending', packed: 'Packed', completed: 'Completed', cancelled: 'Cancelled' };
@@ -204,7 +220,7 @@ const arrangeCtl = (p) => `<div class="arr-ctl"><span class="grip" data-grip rol
 const productCard = (p) => {
   const off = Number(p.discount_percent) || 0;
   const note = bulkOn(p) ? `Buy ${p.bulk_min}+ and save ${p.bulk_percent}%` : (!p.is_sold_out && p.stock != null && p.stock <= LOW_STOCK ? `Only ${p.stock} left` : '');
-  return `<article class="card t has-fav${p.pinned ? ' pinned' : ''}" data-sid="${p.id}"><div class="img">${heartBtn(p.id)}${tagFor(p)}${lowBadge(p)}${p.pinned ? PINMARK : ''}${arrange && isRaven() ? arrangeCtl(p) : ''}${p.image_url ? `<img loading="lazy" decoding="async" src="${esc(thumb(p.image_url, 480))}" srcset="${esc(thumb(p.image_url, 240))} 240w, ${esc(thumb(p.image_url, 480))} 480w, ${esc(thumb(p.image_url, 800))} 800w" sizes="(max-width:380px) 100vw, (max-width:900px) 60vw, 40vw" alt="${esc(p.title)}">` : ''}${p.hidden ? '<span class="badge">Hidden from shop</span>' : p.is_sold_out ? '<span class="badge">Sold out</span>' : ''}${off ? `<span class="badge off chip" tabindex="0" aria-label="${off}% off, now ${money(fin(p))}"><i>-${off}% OFF</i><u>Now ${money(fin(p))}</u></span>` : ''}</div>` +
+  return `<article class="card t has-fav${p.pinned ? ' pinned' : ''}" data-sid="${p.id}"><div class="img">${heartBtn(p.id)}${shareBtn(p.id)}${tagFor(p)}${lowBadge(p)}${flashBadge(p)}${p.pinned ? PINMARK : ''}${arrange && isRaven() ? arrangeCtl(p) : ''}${p.image_url ? `<img loading="lazy" decoding="async" src="${esc(thumb(p.image_url, 480))}" srcset="${esc(thumb(p.image_url, 240))} 240w, ${esc(thumb(p.image_url, 480))} 480w, ${esc(thumb(p.image_url, 800))} 800w" sizes="(max-width:560px) 50vw, (max-width:900px) 60vw, 40vw" alt="${esc(p.title)}">` : ''}${p.hidden ? '<span class="badge">Hidden from shop</span>' : p.is_sold_out ? '<span class="badge">Sold out</span>' : ''}${off ? `<span class="badge off chip" tabindex="0" aria-label="${off}% off, now ${money(fin(p))}"><i>-${off}% OFF</i><u>Now ${money(fin(p))}</u></span>` : ''}</div>` +
     capHtml(esc(p.title), note, `${off ? `<span class="was">${money(p.price)}</span> ` : ''}<b>${money(fin(p))}</b>`, `data-act="add" data-id="${p.id}"`, p.is_sold_out, esc(p.description)) + '</article>';
 };
 const comboCard = (c) => {
@@ -265,7 +281,7 @@ function drawGrid() {
     ? shuffled(combos.filter((c) => !c.hidden && match({ title: c.title, description: `${c.description} ${c.items.map((x) => x.title).join(' ')}` })), (c) => 'c' + c.id) : [];
   const groups = Object.keys(CATS)
     .filter((c) => filter === 'all' || filter === 'favs' || filter === 'deals' || filter === c)
-    .map((c) => ({ c, list: shuffledPinned(products.filter((p) => !p.hidden && catOf(p) === c && match(p) && (filter !== 'favs' || favs.has(p.id)) && (filter !== 'deals' || dealOn(p)))) }))
+    .map((c) => ({ c, list: sortList(shuffledPinned(products.filter((p) => !p.hidden && catOf(p) === c && match(p) && (!inStockOnly || arranging || !p.is_sold_out) && (filter !== 'favs' || favs.has(p.id)) && (filter !== 'deals' || dealOn(p))))) }))
     .filter((g) => g.list.length);
   const who = sellerFilter != null && (pubSellers || []).find((x) => x.id === sellerFilter);
   el.innerHTML = (sellerFilter != null ? `<div class="sfilter glass"><span>Showing items from <b>${esc(who ? who.username : 'this seller')}</b></span><button type="button" class="sq" data-act="seller-clear">Show everyone</button></div>` : '') + (comboList.length ? `<h2 class="cat-title">Combos</h2><section class="grid">${comboList.map(comboCard).join('')}</section>` : '')
@@ -350,17 +366,19 @@ const CAT_IC = { all: '\u2728', combos: '\u{1F381}', drinks: '\u{1F964}', snacks
 function renderShop() {
   const tile = (id, label) => `<button class="tile${catFilter === id ? ' on' : ''}" data-act="cat" data-cat="${id}">${label}</button>`;
   $('#app').innerHTML = `<section class="hero"><h2>What are you craving?</h2><p>Fresh drinks and snacks. Pay cash when it is handed to you.</p>
-      <div id="herochips"></div><input id="search" type="search" placeholder="Search snacks and drinks..." value="${esc(searchText)}" autocomplete="off"><div id="heropics" aria-hidden="true"></div></section>
+      <div id="herochips"></div><input id="search" type="search" placeholder="Search snacks and drinks..." value="${esc(searchText)}" autocomplete="off" list="sugg"><datalist id="sugg">${products.filter((x) => !x.hidden).slice(0, 80).map((x) => `<option value="${esc(x.title)}"></option>`).join('')}</datalist><div id="heropics" aria-hidden="true"></div></section>
     <div class="divider" aria-hidden="true"></div>
     ${(() => { const msgs = ['Fresh drinks and snacks', 'Pay cash on delivery', 'New picks added often', 'Tap the heart to save your favorites', orderNote()].filter(Boolean), one = msgs.map((m) => `<span>\u2726 ${esc(m)}</span>`).join('');
       return `<div class="ticker" aria-hidden="true"><div class="ticker-track">${one}${one}</div></div>`; })()}
     <div id="slides"></div><div id="spot"></div><div id="banner"></div>
     <div class="cats">${tile('all', 'All')}${user ? tile('favs', '\u2665 Favorites') : ''}${products.some(dealOn) ? tile('deals', '\uD83D\uDD25 Deals') : ''}${tile('combos', 'Combos')}${Object.entries(CATS).map(([id, label]) => tile(id, label)).join('')}</div>
-    ${isRaven() ? arrBar() : ''}<div id="grid"></div><div id="recent"></div>`;
+    ${sortBarHtml()}${isRaven() ? arrBar() : ''}<div id="usual"></div><div id="grid"></div><div id="recent"></div>`;
   slidesHtml = spotHtml = recentHtml = ''; sellerFilter = null;
   fillBanner();
   fillGrid();
   updateCartBar();
+  fillUsual();
+  tickCutoff();
 }
 
 const adminRows = () => { const ix = (p) => Object.keys(CATS).indexOf(CATS[p.category] ? p.category : 'snacks'); const q = pSearch.trim().toLowerCase(), hit = (p) => !q || [p.title, p.description, p.category, ownerName(p.owner_id)].join(' ').toLowerCase().includes(q); return (isRaven() ? [...products].sort((a, b) => ix(a) - ix(b)) : products).filter(hit); }; // owner's list is grouped by section so rows can be dragged within it
@@ -370,9 +388,9 @@ const productTable = () => `<table${isRaven() && !pSearch.trim() ? ' data-sortli
     ${isRaven() ? `<td><span class="grip" data-grip role="button" tabindex="0" aria-label="Move ${esc(p.title)}: drag, or use the arrow keys">${GRIP_SVG}</span></td>` : ''}
     <td>${mine ? `<input type="checkbox" class="pick" value="${p.id}" ${selected.has(p.id) ? 'checked' : ''}>` : ''}</td>
     <td>${p.image_url ? `<img class="thumb" loading="lazy" decoding="async" width="52" height="52" src="${esc(thumb(p.image_url, 160))}" alt="">` : ''}</td>
-    <td><b>${esc(p.title)}</b>${p.pinned ? ' <span class="pill st-packed">Pinned</span>' : ''}<br>${money(p.price)}${p.discount_percent ? ` (-${p.discount_percent}%)` : ''}${bulkOn(p) ? ` | Bulk: ${p.bulk_min}+ = -${p.bulk_percent}%` : ''} | ${CATS[p.category] || 'Snacks'}${mine && costMap[p.id] != null ? ` | Profit ${money(fin(p) - Number(costMap[p.id]))} each` : ''}${p.stock != null ? ` | Stock: ${p.stock}${p.stock > 0 && p.stock <= LOW_STOCK ? ' (low!)' : ''}` : ''}${p.is_sold_out ? ' - sold out' : ''}${ownerName(p.owner_id) ? ` | by ${sTag(p.owner_id)}` : ''}</td>
+    <td><b>${esc(p.title)}</b>${stockCtl(p, mine)}${p.pinned ? ' <span class="pill st-packed">Pinned</span>' : ''}<br>${money(p.price)}${p.discount_percent ? ` (-${p.discount_percent}%)` : ''}${bulkOn(p) ? ` | Bulk: ${p.bulk_min}+ = -${p.bulk_percent}%` : ''} | ${CATS[p.category] || 'Snacks'}${mine && costMap[p.id] != null ? ` | Profit ${money(fin(p) - Number(costMap[p.id]))} each` : ''}${p.stock != null ? ` | Stock: ${p.stock}${p.stock > 0 && p.stock <= LOW_STOCK ? ' (low!)' : ''}` : ''}${p.is_sold_out ? ' - sold out' : ''}${ownerName(p.owner_id) ? ` | by ${sTag(p.owner_id)}` : ''}</td>
     <td>${mine ? `<div class="actions">
-      ${isRaven() ? `<button data-act="pin" data-id="${p.id}">${p.pinned ? 'Unpin' : 'Pin to top'}</button>` : ''}<button data-act="edit" data-id="${p.id}">Edit</button>
+      <button data-act="flash" data-id="${p.id}">Flash sale</button>${isRaven() ? `<button data-act="pin" data-id="${p.id}">${p.pinned ? 'Unpin' : 'Pin to top'}</button>` : ''}<button data-act="edit" data-id="${p.id}">Edit</button>
       <button data-act="toggle" data-id="${p.id}">${p.is_sold_out ? 'Mark available' : 'Mark sold out'}</button>
       <button class="danger" data-act="delete" data-id="${p.id}">Delete</button></div>` : '<span class="muted">View only</span>'}</td></tr>`;
 }).join('')}</table>`;
@@ -394,14 +412,14 @@ function fillProducts() {
 }
 
 const adminBtns = (o) => {
-  const btn = (st, label, cls) => `<button class="${cls}" data-act="setstatus" data-id="${o.id}" data-status="${st}">${label}</button>`;
+  const btn = (st, label, cls, extra = '') => `<button class="${cls}" data-act="setstatus" data-id="${o.id}" data-status="${st}"${extra}>${label}</button>`;
   const parts = o.parts || [];
   // On a shared order each owner approves their own part; otherwise the buttons change the order directly.
   const me = parts.length > 1 ? parts.find((x) => x.owner_id === user.id) : null;
   if (me && o.status === 'cancelled') return '';
   const st = me ? me.status : o.status;
-  if (st === 'pending') return btn('packed', me ? 'Approve: packed' : 'Mark packed', 'primary') + btn('cancelled', me ? 'Cancel my part' : 'Cancel', 'danger');
-  if (st === 'packed') return btn('completed', me ? 'Approve: complete' : 'Complete', 'primary') + btn('cancelled', me ? 'Cancel my part' : 'Cancel', 'danger');
+  if (st === 'pending') return btn('packed', me ? 'Approve: packed' : 'Mark packed', 'primary') + btn('cancelled', me ? 'Cancel my part' : 'Cancel', 'danger') + (me ? '' : btn('cancelled', 'Unable to deliver', 'danger', ' data-reason="ask"'));
+  if (st === 'packed') return btn('completed', me ? 'Approve: complete' : 'Complete', 'primary') + btn('cancelled', me ? 'Cancel my part' : 'Cancel', 'danger') + (me ? '' : btn('cancelled', 'Unable to deliver', 'danger', ' data-reason="ask"'));
   return '';
 };
 const partsLine = (o) => ((o.parts || []).length > 1
@@ -420,7 +438,8 @@ const statusOf = (o) => {
   return me ? me.status : o.status;
 };
 
-const forTag = (o) => {
+const forTag = (o) => forTag0(o) + (o.slot && ['pending', 'packed'].includes(statusOf(o)) ? `<span class="pill">${esc(SLOTS[o.slot] || o.slot)}</span>` : '');
+const forTag0 = (o) => {
   const t = (settings.order_window || {}).today;
   if (!t || !o.deliver_for || !['pending', 'packed'].includes(statusOf(o))) return '';
   return `<span class="pill">${o.deliver_for === t ? 'For today' : o.deliver_for > t ? 'For tomorrow' : 'Late: was ' + esc(o.deliver_for)}</span>`;
@@ -783,10 +802,10 @@ function drawBackupReminder() {
   if (!isRaven() || !backupInfo) { el.innerHTML = ''; return; }
   const t = backupInfo.last_safe_backup ? new Date(backupInfo.last_safe_backup).getTime() : null;
   const days = t ? Math.max(0, Math.floor((Date.now() - t) / 86400000)) : null;
-  if (days !== null && days < 3) { el.innerHTML = ''; return; }
+  if (days !== null && days < 1) { el.innerHTML = ''; return; }
   el.innerHTML = `<div class="note-banner ${days === null || days >= 7 ? 'bad' : 'warn'}"><span>${days === null
     ? '<b>No backup saved yet.</b> Render can delete the database, so download one now.'
-    : `<b>Last backup was ${days} days ago.</b> Download a fresh one so you never lose orders.`}</span><button class="primary" data-act="backup">Download backup</button></div>`;
+    : `<b>Last backup was ${days} day${days === 1 ? '' : 's'} ago.</b> Download a fresh one so you never lose orders.`}</span><button class="primary" data-act="backup">Download backup</button></div>`;
 }
 async function loadBackupInfo() {
   try { backupInfo = await api('/api/admin/backup-status'); } catch (e) { backupInfo = null; }
@@ -834,7 +853,7 @@ function renderAdmin() {
     `<button id="tab-${id}" class="${adminTab === id ? 'primary' : ''}" data-act="admintab" data-tab="${id}">${label}${extra}</button>`;
   const GROUPS = [
     ['dashboard', 'Dashboard', [['dashboard', 'Overview'], ['report', 'Report']]],
-    ['orders', 'Orders', [['orders', 'Orders', pendingCount ? ` (${pendingCount})` : ''], ['custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : ''], ['cash', 'Cash']]],
+    ['orders', 'Orders', [['orders', 'Orders', pendingCount ? ` (${pendingCount})` : ''], ['custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : ''], ['prep', 'Prep list'], ['cash', 'Cash']]],
     ['products', 'Catalog', [['products', 'Products'], ['combos', 'Combos'], ['promos', 'Promos'], ...(isRaven() ? [['popups', 'Pop-ups']] : [])]],
     ['customers', 'People', isRaven() ? [['customers', 'Customers'], ['sellers', 'Sellers']] : [['customers', 'Customers'], ['alerts', 'Alerts']]],
     ...(isRaven() ? [['backup', 'System', [['backup', 'Backup'], ['audit', 'Activity']]]] : []),
@@ -925,6 +944,8 @@ function renderAdmin() {
         <label>Message</label><textarea name="text" maxlength="300" rows="3" required></textarea>
         <label>Button text (optional)</label><input name="btn" maxlength="30">
         <label>Button link (optional: https://... or a path like /)</label><input name="url" maxlength="300">
+        <label>Show from (optional)</label><input name="from" type="datetime-local">
+        <label>Show until (optional)</label><input name="to" type="datetime-local">
         <button class="primary" type="submit">Add pop-up</button></form>
       <p class="muted">Visitors see one random pop-up that is switched on, a few seconds after the shop opens, at most once every 10 minutes. They can close it or choose not to see it again.</p></section>
     <section class="panel glass"><h2>Your pop-ups</h2><div id="popuplist"><p>Loading...</p></div></section>`;
@@ -995,7 +1016,7 @@ function renderAdmin() {
   const customersView = `<h2>Customers</h2>
     <p class="muted">Block people who abuse the shop (fake orders, not showing up). ${isRaven() ? 'Your block covers the whole shop.' : 'Your block stops them ordering your items only.'} The list shows the most cancelled orders first.</p>
     <div id="custlist"><p>Loading...</p></div>`;
-  $('#app').innerHTML = tabs + subtabs + '<div id="attn"></div><div id="adminnotes"></div>' + (adminTab === 'dashboard' ? '<section class="dash" id="dashbox"><p class="panel glass muted">Loading your numbers...</p></section>' : adminTab === 'report' ? reportView : adminTab === 'cash' ? cashView : adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'audit' && isRaven() ? auditView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'alerts' && !isRaven() ? alertsView : adminTab === 'combos' ? combosView : adminTab === 'popups' && isRaven() ? popupsView : adminTab === 'promos' ? promosView : adminTab === 'customers' ? customersView : productsView);
+  $('#app').innerHTML = tabs + subtabs + '<div id="attn"></div><div id="adminnotes"></div>' + (adminTab === 'dashboard' ? '<section class="dash" id="dashbox"><p class="panel glass muted">Loading your numbers...</p></section>' : adminTab === 'report' ? reportView : adminTab === 'cash' ? cashView : adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'audit' && isRaven() ? auditView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'alerts' && !isRaven() ? alertsView : adminTab === 'combos' ? combosView : adminTab === 'popups' && isRaven() ? popupsView : adminTab === 'prep' ? '<div id="prepbox"></div>' : adminTab === 'promos' ? promosView : adminTab === 'customers' ? customersView : productsView);
   fillProducts();
   comboAdminHtml = ''; refreshAdminCombos().catch(() => {});
   promoAdminHtml = ''; refreshAdminPromos().catch(() => {});
@@ -1010,6 +1031,7 @@ function renderAdmin() {
   refreshAttention().catch(() => {});
   if (isRaven() && adminTab === 'backup') refreshBackup().catch(() => {});
   if (isRaven() && adminTab === 'popups') refreshPopups().catch(() => {});
+  if (adminTab === 'prep') { drawPrep(); refreshOrders().then(drawPrep).catch(() => {}); }
   if (isRaven() && adminTab === 'audit') refreshAudit(false).catch(() => {});
   if (isRaven()) loadBackupInfo();
   if (isRaven()) refreshSellers().catch(() => {}); else loadAlerts().catch(() => {});
@@ -1018,7 +1040,11 @@ function renderAdmin() {
 async function loadMine() {
   const orders = await api('/api/orders/mine');
   if (statusMap) orders.forEach((o) => {
-    if (statusMap[o.id] && statusMap[o.id] !== o.status && o.status === 'packed') toast(`Order #${o.id} is packed and ready.`);
+    if (statusMap[o.id] && statusMap[o.id] !== o.status) {
+      if (o.status === 'packed') { toast(`Order #${o.id} is packed and ready.`); SFX.ding(); }
+      else if (o.status === 'completed') { toast(`Order #${o.id} is delivered. Enjoy!`); SFX.order(); }
+      else if (o.status === 'cancelled') { toast(o.cancel_reason ? `Order #${o.id} was cancelled: ${o.cancel_reason}` : `Order #${o.id} was cancelled.`); SFX.error2(); }
+    }
   });
   statusMap = Object.fromEntries(orders.map((o) => [o.id, o.status]));
   return orders;
@@ -1038,15 +1064,16 @@ async function fillMine() {
   if (!el) return;
   const goal = 10, done = orders.filter((o) => o.status === 'completed').length, stamps = done % goal;
   const card = isAdmin() ? '' : `<section class="panel glass"><b>Stamp card</b>
-      <p class="stamps">${'●'.repeat(stamps)}${'○'.repeat(goal - stamps)}</p>
+      <div class="stamps${done && !stamps ? ' ready' : ''}">${Array.from({ length: goal }, (_, i) => `<span class="stp${i < stamps || (done && !stamps) ? ' on' : ''}" style="--i:${i}"></span>`).join('')}</div>
       <p class="muted" style="margin:0">${done && !stamps
         ? `Reward ready! Show this to the seller to get ${esc(settings.stamp_reward)}.`
         : `${goal - stamps} more completed order${goal - stamps === 1 ? '' : 's'} to earn ${esc(settings.stamp_reward)}.`}</p></section>`;
   const html = card + (orders.map((o) => `
     <section class="panel glass">
       <div class="between"><b>Order #${o.id}</b><span class="pill st-${o.status}">${STATUS[o.status] || esc(o.status)}</span></div>
-      <p class="muted" style="margin:2px 0 10px">${new Date(o.created_at).toLocaleString()}</p>
+      <p class="muted" style="margin:2px 0 10px">${new Date(o.created_at).toLocaleString()}${o.slot ? ' \u00b7 ' + esc(SLOTS[o.slot] || o.slot) : ''}</p>
       ${o.status !== 'cancelled' ? tracker(o.status) : ''}
+      ${o.status === 'cancelled' && o.cancel_reason ? `<p class="cancel-why">${esc(o.cancel_reason)}</p>` : ''}
       ${o.status === 'packed' ? '<p class="ready">Your order is packed and ready!</p>' : ''}
       ${orderLines(o)}
       ${o.note ? `<p class="muted" style="margin:8px 0 0">Your note: ${esc(o.note)}</p>` : ''}
@@ -1132,6 +1159,7 @@ async function loadProductsQuiet() {
   const got = pre ? await pre.catch(() => null) : null;
   [products, combos, settings] = got || await Promise.all([api('/api/products'), api('/api/combos'), api('/api/settings')]);
   sig = JSON.stringify([products, combos, settings]);
+  stockWatch();
 }
 async function loadProducts() {
   await loadProductsQuiet();
@@ -1207,6 +1235,7 @@ function cartLines() {
     return { key, title: p.title, price: unitFor(p, q), q, owner: p.owner_id, note, img: p.image_url || '', list: Number(p.price) };
   }).filter(Boolean);
 }
+let cartSlot = '';
 let cartUndo = null; // { items, label }: what the last Remove / Clear took out, so it can be put back
 const undoBanner = () => cartUndo ? `<div class="cart-undo"><span>${esc(cartUndo.label)}</span><button type="button" data-act="cart-undo">Undo</button></div>` : '';
 const saveLine = (lines) => { const s = lines.reduce((t, l) => t + (l.list ? Math.max(0, l.list - l.price) * l.q : 0), 0); return s > 0.004 ? `<p class="cart-save">You are saving ${money(s)} with deals</p>` : ''; };
@@ -1239,6 +1268,7 @@ function cartDialog() {
       <div class="actions"><input id="promoin" value="${esc(promo ? promo.code : '')}" placeholder="Enter code" style="flex:1;margin:0"><button data-act="applypromo">Apply</button></div>
       <label style="display:block;margin-top:12px">Note for the seller (your name, seat, anything helpful)</label>
       <input id="ordernote" maxlength="300" value="${esc(cartNote)}">
+      <label style="display:block;margin-top:12px">Delivery time (optional)</label><select id="slotsel"><option value="">Any time</option>${Object.entries(SLOTS).map(([k, v]) => `<option value="${k}" ${cartSlot === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
       <div class="cart-chips">${['Please pack separately', 'Call me when ready', 'No need for change'].map((t) => `<button type="button" data-act="note-chip" data-t="${esc(t)}">${esc(t)}</button>`).join('')}</div></div>
       ${suggestHtml(lines)}` : ''}</div>
     <div class="cart-foot">${saveLine(lines)}
@@ -1554,8 +1584,12 @@ const actions = {
     await refreshCash(); toast('Recorded.');
   },
   setstatus: async (id, d) => {
-    if (d.status === 'cancelled' && !confirm('Cancel this order?')) return;
-    const r = await api(`/api/orders/${id}/status`, { method: 'PATCH', json: { status: d.status } });
+    let reason = '';
+    if (d.status === 'cancelled') {
+      if (d.reason === 'ask') { const why = prompt("Why can't this order be delivered? The customer will see this.", 'Out of stock today'); if (why === null) return; reason = why; }
+      else if (!confirm('Cancel this order?')) return;
+    }
+    const r = await api(`/api/orders/${id}/status`, { method: 'PATCH', json: { status: d.status, reason } });
     const o0 = ordersCache.find((x) => x.id == id);
     if (d.status === 'completed' && o0 && !o0.paid_by && confirm('Did you collect the cash?\nOK = tick Paid. Cancel = not yet.')) {
       try { await api(`/api/orders/${id}/paid`, { method: 'PATCH', json: { paid: true } }); } catch (e) { toast(e.message); }
@@ -1590,6 +1624,19 @@ const actions = {
     if (row && !matchMedia('(prefers-reduced-motion: reduce)').matches) { row.closest('.cline').classList.add('leaving'); setTimeout(go, 260); } else go();
   },
   'cart-clear': () => { if (!Object.keys(cart).length) return; cartUndo = { items: { ...cart }, label: 'Cart cleared.' }; cart = {}; SFX.clear(); saveCart(); cartDialog(); },
+  flash: (id) => flashDialog(id),
+  surprise: () => surprise(),
+  stock: async (id, d) => {
+    const r = await api(`/api/products/${id}/stock`, { method: 'PATCH', json: { delta: Number(d.d) } });
+    const pr = products.find((x) => x.id == id); if (pr) { pr.stock = r.stock; pr.is_sold_out = r.is_sold_out; }
+    const b = document.querySelector(`.stk[data-id="${id}"] b`); if (b) b.textContent = r.stock;
+  },
+  'flash-end': async (id) => { await api(`/api/products/${id}/flash`, { method: 'PATCH', json: { percent: 0, minutes: 0 } }); $('#dlg').close(); await loadProducts(); toast('Flash sale ended.'); },
+  share: async (id) => {
+    const pr = products.find((x) => x.id == id); if (!pr) return;
+    const url = location.origin + location.pathname + '?p=' + id;
+    try { if (navigator.share) await navigator.share({ title: pr.title, text: `${pr.title} at Snackify`, url }); else { await navigator.clipboard.writeText(url); toast('Link copied.'); } } catch (er) { /* cancelled */ }
+  },
   'popup-prev': (id) => { const p = popupAdmin.find((x) => x.id === id); if (p) showPopup(p); },
   'popup-on': async (id) => { const p = popupAdmin.find((x) => x.id === id); if (p) { p.on = !p.on; await savePopups(); } },
   'popup-del': async (id) => { if (!confirm('Delete this pop-up?')) return; popupAdmin = popupAdmin.filter((x) => x.id !== id); await savePopups(); toast('Pop-up deleted.'); },
@@ -1614,9 +1661,9 @@ const actions = {
     const items = cartLines().map((l) => (l.key[0] === 'c' ? { combo_id: l.key.slice(1), quantity: l.q } : { product_id: l.key, quantity: l.q }));
     const fx = orderProgress(); // a ring fills while the order is sent, turns into a check, then glows
     let o;
-    try { [o] = await Promise.all([api('/api/orders', { method: 'POST', json: { items, promo: promo ? promo.code : '', note: cartNote } }), new Promise((r) => setTimeout(r, 900))]); }
+    try { [o] = await Promise.all([api('/api/orders', { method: 'POST', json: { items, promo: promo ? promo.code : '', note: cartNote, slot: cartSlot } }), new Promise((r) => setTimeout(r, 900))]); }
     catch (e) { fx.fail(); throw e; }
-    cart = {}; promo = null; cartNote = ''; saveCart(); $('#dlg').close(); toast(`Order #${o.id} placed.`); burst(); fx.done(o.id); view = 'orders'; render();
+    cart = {}; promo = null; cartNote = ''; cartSlot = ''; usualIds = null; saveCart(); $('#dlg').close(); toast(`Order #${o.id} placed.`); burst(); fx.done(o.id); view = 'orders'; render();
   },
   toggle: async (id) => { await api(`/api/products/${id}/sold-out`, { method: 'PATCH' }); await loadProducts(); },
   delete: async (id) => { if (confirm('Delete this product?')) { await api(`/api/products/${id}`, { method: 'DELETE' }); await loadProducts(); toast('Deleted.'); } },
@@ -1696,8 +1743,13 @@ document.addEventListener('submit', async (e) => {
       await api('/api/promos', { method: 'POST', json: { ...Object.fromEntries(new FormData(e.target)), product_ids: [...e.target.querySelectorAll('input[name="pid"]:checked')].map((b) => Number(b.value)), shop_wide: !!e.target.querySelector('[name="shop_wide"]:checked') } });
       e.target.reset(); await refreshAdminPromos(); toast('Promo code created.');
     } else if (e.target.id === 'popup-form') {
-      popupAdmin.push({ ...Object.fromEntries(new FormData(e.target)), on: true });
+      const pf = Object.fromEntries(new FormData(e.target)); pf.from = pf.from ? new Date(pf.from).toISOString() : ''; pf.to = pf.to ? new Date(pf.to).toISOString() : '';
+      popupAdmin.push({ ...pf, on: true });
       await savePopups(); e.target.reset(); toast('Pop-up added.');
+    } else if (e.target.id === 'flash-form') {
+      const ff = Object.fromEntries(new FormData(e.target));
+      await api(`/api/products/${e.target.dataset.id}/flash`, { method: 'PATCH', json: { percent: ff.percent, minutes: ff.minutes } });
+      $('#dlg').close(); await loadProducts(); toast('Flash sale started.');
     } else if (e.target.id === 'settings-form') {
       await api('/api/admin/settings', { method: 'PUT', json: Object.fromEntries(new FormData(e.target)) });
       await loadProductsQuiet(); toast('Saved.');
@@ -1747,6 +1799,7 @@ document.addEventListener('change', (e) => {
 document.addEventListener('input', (e) => {
   if (e.target.id === 'search') { searchText = e.target.value; fillGrid(); }
   else if (e.target.id === 'ordernote') cartNote = e.target.value;
+    else if (e.target.id === 'slotsel') cartSlot = e.target.value;
   else if (e.target.closest('#combo-form')) updateComboSum();
 });
 
@@ -2083,6 +2136,7 @@ function drawDash() {
   el.innerHTML = `<div class="kpis">${kpi('Sales, last 30 days', S, true, `${O} completed order${O === 1 ? '' : 's'}`)}${kpi('Profit, last 30 days', P, true, S ? `${Math.round((P / S) * 100)}% margin` : '')}${kpi('Today', td.revenue, true, `${td.orders} completed order${td.orders === 1 ? '' : 's'}`)}${kpi('Average order', O ? S / O : 0, true, 'last 30 days')}</div>
     <div class="dgrid"><section class="panel glass"><h3>Sales and profit</h3><p class="legendline"><i style="background:${PALETTE[0]}"></i>Sales <i style="background:${PALETTE[1]}"></i>Profit</p>${lineChart(days, [{ name: 'Sales', color: PALETTE[0], vals: rev }, { name: 'Profit', color: PALETTE[1], vals: prof }])}</section>
       <section class="panel glass"><h3>Where the sales come from</h3>${donut(rest > 0 ? [...top5, { label: 'Everything else', v: rest }] : top5)}</section>
+      <section class="panel glass"><h3>This week vs last week</h3><p class="legendline"><i style="background:${PALETTE[0]}"></i>This week <i style="background:${PALETTE[2] || PALETTE[1]}"></i>Last week</p>${lineChart(days.slice(-7).map((d) => new Date(d + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'short' })), [{ name: 'This week', color: PALETTE[0], vals: rev.slice(-7) }, { name: 'Last week', color: PALETTE[2] || PALETTE[1], vals: rev.slice(-14, -7) }])}<p class="muted" style="margin:6px 0 0">${(() => { const a1 = sum(rev.slice(-7)), a0 = sum(rev.slice(-14, -7)); return a0 ? `${a1 >= a0 ? 'Up' : 'Down'} ${Math.abs(Math.round(((a1 - a0) / a0) * 100))}% on last week.` : 'No sales last week to compare with yet.'; })()}</p></section>
       <section class="panel glass"><h3>Orders per day</h3>${barChart(days, ord)}</section>
       <section class="panel glass"><h3>Best sellers</h3>${hBars(items.slice(0, 6).map((i) => ({ label: `${i.title} (${i.qty})`, v: i.revenue })))}${isRaven() && people.length ? `<h3 class="sub">Income per seller</h3>${hBars(people)}` : ''}</section></div>
     <p class="muted dnote">Completed orders only. Profit needs a cost price on each product.</p>`;
@@ -2240,7 +2294,29 @@ function orderCelebrate(id) {
   const ON = '<svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9zM16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11"/></svg>', OFF = '<svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9zM17 9l5 6M22 9l-5 6"/></svg>';
   const paint = () => { if (!btn) return; btn.innerHTML = SFX.muted ? OFF : ON; btn.title = SFX.muted ? 'Sounds are off' : 'Sounds are on'; btn.setAttribute('aria-pressed', String(!SFX.muted)); };
   paint();
-  if (btn) btn.addEventListener('click', () => { SFX.toggle(); paint(); });
+  if (btn) btn.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    const old = $('#sfxpanel'); if (old) { old.remove(); return; }
+    const r = btn.getBoundingClientRect(), pn = document.createElement('div'); pn.id = 'sfxpanel'; pn.className = 'glass';
+    pn.style.top = (r.bottom + 10) + 'px'; pn.style.right = Math.max(12, innerWidth - r.right) + 'px';
+    pn.innerHTML = `<label class="sp-row"><span>Sounds</span><input type="checkbox" id="sfx-on" ${SFX.muted ? '' : 'checked'}></label><label class="sp-row"><span>Volume</span><input type="range" id="sfx-vol" min="0" max="150" value="${Math.round(SFX.vol * 100)}"></label><label class="sp-row"><span>Vibration</span><input type="checkbox" id="hap-on" ${HAPTICS() ? 'checked' : ''}></label>
+      <div class="sp-row"><span>Colour</span><span class="sws">${ACCENTS.map((c, i) => `<button type="button" class="sw${Number(LS('accent', 0)) === i ? ' on' : ''}" data-i="${i}" aria-label="${c[0]} colours" style="background:linear-gradient(135deg,${c[1] || '#0a84ff'},${c[2] || '#bf5af2'})"></button>`).join('')}</span></div>
+      <div class="sp-row"><span>Text size</span><span class="fzs"><button type="button" data-fz="-10" aria-label="Smaller text">A-</button><b id="fz-val">${Number(LS('fz', 100))}%</b><button type="button" data-fz="10" aria-label="Larger text">A+</button></span></div>
+      <label class="sp-row"><span>Data saver</span><input type="checkbox" id="saver-on" ${SAVER() ? 'checked' : ''}></label>`;
+    document.body.appendChild(pn);
+    pn.addEventListener('click', (e2) => e2.stopPropagation());
+    $('#sfx-on').onchange = (e2) => { if (e2.target.checked === SFX.muted) SFX.toggle(); paint(); };
+    $('#sfx-vol').oninput = (e2) => { SFX.vol = Number(e2.target.value) / 100; };
+    $('#sfx-vol').onchange = () => SFX.tickUp();
+    $('#hap-on').onchange = (e2) => { try { localStorage.haptics = e2.target.checked ? 'on' : 'off'; } catch (er) {} if (e2.target.checked) try { navigator.vibrate && navigator.vibrate(15); } catch (er) {} };
+    pn.querySelectorAll('.sw').forEach((b) => { b.onclick = () => { try { localStorage.accent = b.dataset.i; } catch (er) {} applyAccent(Number(b.dataset.i)); pn.querySelectorAll('.sw').forEach((x) => x.classList.toggle('on', x === b)); }; });
+    pn.querySelectorAll('[data-fz]').forEach((b) => { b.onclick = () => { const nx = Math.max(90, Math.min(130, Number(LS('fz', 100)) + Number(b.dataset.fz))); try { localStorage.fz = String(nx); } catch (er) {} document.documentElement.style.fontSize = nx === 100 ? '' : nx + '%'; $('#fz-val').textContent = nx + '%'; }; });
+    $('#saver-on').onchange = (e2) => {
+      try { localStorage.saver = e2.target.checked ? 'on' : 'off'; if (e2.target.checked) { localStorage.glass = 'lite'; document.documentElement.dataset.glass = 'lite'; } else { localStorage.removeItem('glass'); delete document.documentElement.dataset.glass; } } catch (er) {}
+      toast(e2.target.checked ? 'Data saver on. Pictures are smaller.' : 'Data saver off.'); try { render(); } catch (er) {}
+    };
+    setTimeout(() => document.addEventListener('click', function off() { const q = $('#sfxpanel'); if (q) q.remove(); document.removeEventListener('click', off); }), 0);
+  });
   // A click starts audio on phones (they only allow sound after a tap); the capture phase means it runs for every button.
   document.addEventListener('click', (e) => {
     const b = e.target.closest && e.target.closest('button');
@@ -2330,12 +2406,13 @@ async function refreshPopups() {
   popupAdmin = await api('/api/admin/popups');
   const box = $('#popuplist'); if (!box) return;
   box.innerHTML = popupAdmin.length ? popupAdmin.map((p) => `<div class="req"><div class="between"><b>${esc(p.title)}</b><span class="muted">${p.on ? 'On' : 'Off'}</span></div>
-    <p style="margin:4px 0 8px">${esc(p.text)}${p.btn ? `<br><span class="muted">Button: ${esc(p.btn)}${p.url ? ' to ' + esc(p.url) : ''}</span>` : ''}</p>
+    <p style="margin:4px 0 8px">${esc(p.text)}${p.btn ? `<br><span class="muted">Button: ${esc(p.btn)}${p.url ? ' to ' + esc(p.url) : ''}</span>` : ''}${p.from || p.to ? `<br><span class="muted">${p.from ? 'From ' + esc(new Date(p.from).toLocaleString()) : ''}${p.to ? ' until ' + esc(new Date(p.to).toLocaleString()) : ''}</span>` : ''}</p>
     <div class="actions"><button data-act="popup-prev" data-id="${esc(p.id)}">Preview</button><button data-act="popup-on" data-id="${esc(p.id)}">${p.on ? 'Turn off' : 'Turn on'}</button><button data-act="popup-del" data-id="${esc(p.id)}">Delete</button></div></div>`).join('') : '<p>No pop-ups yet. Add one above.</p>';
 }
 async function savePopups() { popupAdmin = await api('/api/admin/popups', { method: 'PUT', json: { popups: popupAdmin } }); await refreshPopups(); loadProductsQuiet().catch(() => {}); }
 
 let popupTimer = null;
+const popupLive = (p) => (!p.from || Date.now() >= Date.parse(p.from)) && (!p.to || Date.now() <= Date.parse(p.to));
 const popupHidden = () => { try { return JSON.parse(localStorage.popupHide || '[]'); } catch (e) { return []; } };
 function showPopup(p) {
   const old = document.querySelector('.site-pop'); if (old) old.remove();
@@ -2351,14 +2428,14 @@ function showPopup(p) {
   setTimeout(() => { if (el.isConnected && !el.matches(':hover')) close(); }, 15000);
 }
 function popupSchedule() {
-  const list = (settings.popups || []).filter((p) => p.on !== false);
+  const list = (settings.popups || []).filter((p) => p.on !== false && popupLive(p));
   if (!list.length || popupTimer) return;
   try { if (Date.now() - Number(localStorage.popupAt || 0) < 600000) return; } catch (e) {}
   popupTimer = setTimeout(function tryShow() {
     if (document.getElementById('gw') || document.querySelector('dialog[open], .site-pop') || view === 'admin') return (popupTimer = setTimeout(tryShow, 3000));
     popupTimer = null;
     let seen = []; try { seen = JSON.parse(sessionStorage.popupSeen || '[]'); } catch (e) {}
-    const hide = popupHidden(), pool = (settings.popups || []).filter((p) => p.on !== false && !hide.includes(p.id) && !seen.includes(p.id));
+    const hide = popupHidden(), pool = (settings.popups || []).filter((p) => p.on !== false && popupLive(p) && !hide.includes(p.id) && !seen.includes(p.id));
     if (!pool.length) return;
     const p = pool[Math.floor(Math.random() * pool.length)];
     try { sessionStorage.popupSeen = JSON.stringify([...seen, p.id]); localStorage.popupAt = String(Date.now()); } catch (e) {}
@@ -2367,3 +2444,163 @@ function popupSchedule() {
 }
 window.addEventListener('bootdone', popupSchedule);
 setTimeout(popupSchedule, 1500);
+
+/* ===== v25: your usual, share links, flash sales, prep list, stock alerts, offline banner ===== */
+async function fillUsual() {
+  const el = $('#usual'); if (!el || !user || isAdmin()) return;
+  try {
+    if (!usualIds || usualUser !== user.id) {
+      const os = await loadMine(), n = {};
+      os.filter((o) => o.status !== 'cancelled').forEach((o) => (o.items || []).forEach((i) => { if (i.product_id) n[i.product_id] = (n[i.product_id] || 0) + i.quantity; }));
+      usualIds = Object.entries(n).sort((x, y) => y[1] - x[1]).slice(0, 4).map((x) => Number(x[0])); usualUser = user.id;
+    }
+  } catch (e) { return; }
+  const list = usualIds.map((id) => products.find((x) => x.id == id)).filter((x) => x && !x.is_sold_out);
+  const box = $('#usual'); if (!box || !list.length) return;
+  box.innerHTML = `<h2 class="cat-title">Your usual</h2><div class="rv">${list.map((x) => `<article class="rv-card">${x.image_url ? `<img loading="lazy" decoding="async" src="${esc(thumb(x.image_url, 240))}" alt="">` : '<div class="ph"></div>'}<div class="rv-b"><b>${esc(x.title)}</b><span>${money(fin(x))}</span></div><button type="button" class="primary add" data-act="add" data-id="${x.id}" aria-label="Add ${esc(x.title)} to cart">+</button></article>`).join('')}</div>`;
+}
+
+function shareBtn(id) { return `<button type="button" class="share" data-act="share" data-id="${id}" aria-label="Share"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V3M8 7l4-4 4 4M5 12v7h14v-7"/></svg></button>`; }
+function openDeepLink() {
+  if (deepDone) return; const id = new URLSearchParams(location.search).get('p'); if (!id) return; deepDone = true;
+  try { history.replaceState(null, '', location.pathname); } catch (e) {}
+  if (view === 'shop') { searchText = ''; catFilter = 'all'; try { fillGrid(); } catch (e) {} }
+  setTimeout(() => {
+    const el = document.querySelector(`.card[data-sid="${String(id).replace(/[^0-9]/g, '')}"]`);
+    if (!el) return toast('That item is not available right now.');
+    if (window.smoothTo) window.smoothTo(el, { block: 'center' }); else el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    el.classList.add('deep-hi'); setTimeout(() => el.classList.remove('deep-hi'), 4500);
+  }, 500);
+}
+window.addEventListener('bootdone', () => setTimeout(openDeepLink, 700));
+setTimeout(() => { if (!document.getElementById('gw')) openDeepLink(); }, 2500);
+
+function flashLeft(pr) {
+  const t = pr.discount_until ? Date.parse(pr.discount_until) - Date.now() : 0; if (t <= 0) return '';
+  const s = Math.floor(t / 1000), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  return h >= 24 ? `${Math.floor(h / 24)}d ${h % 24}h` : h ? `${h}h ${String(m).padStart(2, '0')}m` : `${m}:${String(s % 60).padStart(2, '0')}`;
+}
+function flashBadge(pr) { const l = Number(pr.discount_percent) > 0 && pr.discount_until ? flashLeft(pr) : ''; return l ? `<span class="flash-badge" data-until="${esc(pr.discount_until)}"><b>Flash -${pr.discount_percent}%</b> <i>${l}</i></span>` : ''; }
+setInterval(() => {
+  document.querySelectorAll('.flash-badge').forEach((el) => {
+    const l = flashLeft({ discount_until: el.dataset.until });
+    if (l) { const i = el.querySelector('i'); if (i) i.textContent = l; return; }
+    el.remove();
+    if (!flashBusy) { flashBusy = true; loadProductsQuiet().then(() => { if (view === 'shop') fillGrid(); }).catch(() => {}).finally(() => setTimeout(() => { flashBusy = false; }, 5000)); }
+  });
+}, 1000);
+function flashDialog(id) {
+  const pr = products.find((x) => x.id == id); if (!pr) return;
+  const on = pr.discount_until && Number(pr.discount_percent) > 0, dlg = $('#dlg');
+  delete dlg.dataset.kind;
+  dlg.innerHTML = `<h2>Flash sale: ${esc(pr.title)}</h2><p class="muted">A timed discount. When the time is up, the price goes back to normal by itself.</p>
+    <form id="flash-form" data-id="${pr.id}"><label>Discount (%)</label><input name="percent" type="number" min="1" max="90" value="${on ? pr.discount_percent : 20}" required>
+    <label>Lasts</label><select name="minutes">${[[30, '30 minutes'], [60, '1 hour'], [180, '3 hours'], [1440, '1 day'], [4320, '3 days']].map(([m, l]) => `<option value="${m}">${l}</option>`).join('')}</select>
+    <button class="primary">${on ? 'Restart the sale' : 'Start flash sale'}</button>${on ? `<button type="button" data-act="flash-end" data-id="${pr.id}">End it now</button>` : ''}<button type="button" data-act="close">Cancel</button></form>`;
+  dlg.showModal();
+}
+
+function drawPrep() {
+  const el = $('#prepbox'); if (!el) return;
+  const open = (ordersCache || []).filter((o) => ['pending', 'packed'].includes(statusOf(o)));
+  if (!open.length) { el.innerHTML = '<section class="panel glass"><h2>Prep list</h2><p class="muted">No open orders to prepare right now.</p></section>'; return; }
+  const groups = {}; open.forEach((o) => { (groups[o.slot || ''] ||= []).push(o); });
+  el.innerHTML = '<section class="panel glass"><h2>Prep list</h2><p class="muted">What to pack for open orders, grouped by delivery time.</p></section>' + ['recess', 'lunch', 'dismissal', ''].filter((k) => groups[k]).map((k) => {
+    const tot = {};
+    groups[k].forEach((o) => (o.items || []).forEach((i) => { const key = i.title + (isRaven() && i.owner_id && ownerName(i.owner_id) ? ` (${ownerName(i.owner_id)})` : ''); tot[key] = (tot[key] || 0) + i.quantity; }));
+    return `<section class="panel glass"><div class="between"><h3>${k ? esc(SLOTS[k]) : 'No time chosen'}</h3><span class="muted">${groups[k].length} order${groups[k].length === 1 ? '' : 's'}</span></div><ul class="lines">${Object.entries(tot).sort((x, y) => y[1] - x[1]).map(([t, q]) => `<li><span>${esc(t)}</span><b>${q}</b></li>`).join('')}</ul><p class="muted" style="margin:6px 0 0">${groups[k].map((o) => '#' + o.id + ' ' + esc(o.username)).join(', ')}</p></section>`;
+  }).join('');
+}
+
+function stockWatch() {
+  if (!user || !isAdmin()) { stockSeen = null; return; }
+  const cur = {}; products.forEach((x) => { if (x.stock != null && (isRaven() || x.owner_id === user.id)) cur[x.id] = x.stock; });
+  if (stockSeen) for (const [id, n] of Object.entries(cur)) {
+    const prev = stockSeen[id];
+    if (prev !== undefined && n < prev && n <= LOW_STOCK) { const x = products.find((q) => q.id == id); toast(n === 0 ? `Sold out: ${x.title}` : `Low stock: ${x.title} (${n} left)`); SFX.ding(); }
+  }
+  stockSeen = cur;
+}
+setInterval(stockWatch, 15000);
+
+(() => {
+  const bar = document.createElement('div'); bar.id = 'offline'; bar.className = 'glass'; bar.setAttribute('role', 'status'); bar.hidden = true;
+  bar.textContent = 'You are offline. Reconnecting...'; document.body.appendChild(bar);
+  const set = (off) => { bar.hidden = !off; if (!off) { toast('Back online.'); loadProductsQuiet().catch(() => {}); } };
+  addEventListener('offline', () => set(true)); addEventListener('online', () => set(false)); if (!navigator.onLine) bar.hidden = false;
+})();
+
+/* ===== v26: sort and filter, surprise me, quick view, shortcuts, back to top, order countdown, quick stock ===== */
+function sortBarHtml() {
+  return `<div class="sortbar"><label class="sb-f"><span>Sort</span><select id="sortsel">${[['featured', 'Featured'], ['new', 'Newest'], ['low', 'Price: low to high'], ['high', 'Price: high to low']].map(([v, l]) => `<option value="${v}" ${sortMode === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label><label class="sb-c"><input type="checkbox" id="instock" ${inStockOnly ? 'checked' : ''}> In stock only</label><button type="button" class="sb-s" data-act="surprise">Surprise me</button><span id="cutoffpill" class="pill" hidden></span></div>`;
+}
+function sortList(list) {
+  if (sortMode === 'featured' || (arrange && isRaven())) return list;
+  const l = [...list];
+  if (sortMode === 'low') l.sort((x, y) => fin(x) - fin(y)); else if (sortMode === 'high') l.sort((x, y) => fin(y) - fin(x));
+  else l.sort((x, y) => new Date(y.created_at) - new Date(x.created_at));
+  return l;
+}
+document.addEventListener('change', (e) => {
+  if (e.target.id === 'sortsel') { sortMode = e.target.value; SFX.tickUp(); fillGrid(); }
+  else if (e.target.id === 'instock') { inStockOnly = e.target.checked; SFX.tickUp(); fillGrid(); }
+});
+function surprise() {
+  const list = products.filter((x) => !x.hidden && !x.is_sold_out);
+  if (!list.length) return toast('Nothing in stock right now.');
+  SFX.pop(); quickView(list[Math.floor(Math.random() * list.length)].id);
+}
+function quickView(id) {
+  const pr = products.find((x) => x.id == id); if (!pr) return;
+  const room = Math.min(99, pr.stock != null ? pr.stock - (cart[pr.id] || 0) : 99 - (cart[pr.id] || 0)), off = Number(pr.discount_percent) > 0, dlg = $('#dlg');
+  delete dlg.dataset.kind;
+  dlg.innerHTML = `${pr.image_url ? `<img class="qv-img" src="${esc(thumb(pr.image_url, 800))}" alt="${esc(pr.title)}">` : ''}<div class="between"><h2 style="margin:0">${esc(pr.title)}</h2><span class="qv-price">${off ? `<s class="muted">${money(pr.price)}</s> ` : ''}<b>${money(fin(pr))}</b></span></div>
+    ${pr.description ? `<p class="muted">${esc(pr.description)}</p>` : ''}
+    ${pr.stock != null && pr.stock <= LOW_STOCK && !pr.is_sold_out ? `<p class="muted">Only ${pr.stock} left.</p>` : ''}
+    ${bulkOn(pr) ? `<p class="muted">Buy ${pr.bulk_min}+ and save ${pr.bulk_percent}% on each.</p>` : ''}
+    ${pr.is_sold_out ? '<p class="cancel-why">Sold out right now.</p>' : room < 1 ? '<p class="muted">You already have the most you can in your cart.</p>' : `<form data-form="qty" data-key="${pr.id}"><div style="display:flex;justify-content:center;align-items:center;gap:12px;margin:10px 0"><button type="button" data-act="qty-step" data-d="-1">-</button><input name="qty" id="qtyin" type="number" min="1" max="${room}" value="1" inputmode="numeric" style="width:90px;text-align:center;font-size:1.3rem"><button type="button" data-act="qty-step" data-d="1">+</button></div><button class="primary">Add to cart</button></form>`}
+    <div class="qv-actions">${user ? `<button type="button" data-act="fav" data-id="${pr.id}">${favs.has(pr.id) ? 'Unfavorite' : 'Favorite'}</button>` : ''}<button type="button" data-act="share" data-id="${pr.id}">Share</button><button type="button" data-act="close">Close</button></div>`;
+  dlg.showModal();
+}
+document.addEventListener('click', (e) => { // tap a product card to see it bigger
+  const card = e.target.closest && e.target.closest('.card[data-sid]');
+  if (!card || e.target.closest('button,a,input,select,textarea,.arr-ctl') || (arrange && isRaven()) || document.querySelector('dialog[open]')) return;
+  quickView(card.dataset.sid);
+});
+function shortcutsDialog() {
+  const dlg = $('#dlg'); delete dlg.dataset.kind;
+  dlg.innerHTML = '<h2>Keyboard shortcuts</h2><ul class="lines"><li><span>Search</span><b>/</b></li><li><span>Open the cart</span><b>C</b></li><li><span>Surprise me</span><b>S</b></li><li><span>This list</span><b>?</b></li><li><span>Close a pop-up</span><b>Esc</b></li></ul><button type="button" class="primary" data-act="close">Got it</button>';
+  dlg.showModal();
+}
+document.addEventListener('keydown', (e) => {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const t = e.target; if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+  if (e.key === '?') { e.preventDefault(); if (!document.querySelector('dialog[open]')) shortcutsDialog(); return; }
+  if (document.querySelector('dialog[open]') || !document.querySelector('#app')) return;
+  if (e.key === '/') { const s = $('#search'); if (s) { e.preventDefault(); s.focus(); } }
+  else if (e.key === 'c' || e.key === 'C') cartDialog();
+  else if ((e.key === 's' || e.key === 'S') && view === 'shop') surprise();
+});
+
+(() => { // back to top, with a ring that fills as you scroll
+  const b = document.createElement('button'); b.id = 'totop'; b.type = 'button'; b.setAttribute('aria-label', 'Back to top');
+  b.innerHTML = '<svg viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="24" r="21" class="tt-bg"/><circle cx="24" cy="24" r="21" class="tt-fg"/></svg><svg viewBox="0 0 24 24" class="tt-arrow" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"/></svg>';
+  document.body.appendChild(b);
+  const fg = b.querySelector('.tt-fg'); let raf = 0;
+  const upd = () => { raf = 0; const max = document.documentElement.scrollHeight - innerHeight, r = max > 0 ? Math.min(1, scrollY / max) : 0; b.classList.toggle('show', scrollY > 600); fg.style.strokeDashoffset = String(132 * (1 - r)); };
+  addEventListener('scroll', () => { if (!raf) raf = requestAnimationFrame(upd); }, { passive: true });
+  b.onclick = () => { if (window.__lenis) window.__lenis.scrollTo(0); else scrollTo({ top: 0, behavior: 'smooth' }); };
+})();
+
+function tickCutoff() {
+  const el = $('#cutoffpill'); if (!el) return;
+  const w = settings.order_window;
+  if (!w || !w.cutoff || w.closed || w.label === 'tomorrow') { el.hidden = true; return; }
+  const [h, m] = String(w.cutoff).split(':').map(Number), now = new Date(), mins = h * 60 + m - (now.getHours() * 60 + now.getMinutes());
+  if (!(mins > 0)) { el.hidden = true; return; }
+  el.hidden = false; el.textContent = 'Orders close in ' + (mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins} min`); el.classList.toggle('urgent', mins <= 30);
+}
+setInterval(tickCutoff, 20000);
+function stockCtl(pr, mine) {
+  return mine && pr.stock != null ? `<span class="stk" data-id="${pr.id}"><button type="button" data-act="stock" data-id="${pr.id}" data-d="-1" aria-label="One less in stock">-</button><b>${pr.stock}</b><button type="button" data-act="stock" data-id="${pr.id}" data-d="1" aria-label="One more in stock">+</button></span>` : '';
+}
