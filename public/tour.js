@@ -1,110 +1,180 @@
-/* Interactive tutorial: a floating card that highlights real buttons and
-   moves on by itself when the visitor actually does each step. */
-(() => {
-  const $ = (s, r = document) => {
-    const all = [...r.querySelectorAll(s)];
-    return all.find((e) => e.offsetParent !== null) || all[0] || null;
-  };
-  const dlg = $('#dlg');
-  const loggedIn = () => !!$('[data-act="logout"]');
-  const isAdminUser = () => !!$('[data-act="admin"]');
-  const cartCount = () => +((($('[data-act="cart"]') || {}).textContent || '').match(/\((\d+)\)/) || [])[1] || 0;
-  const firstAdd = () => $('.grid [data-act="add"]:not(:disabled)');
-  const authOpen = () => dlg.open && !!$('input[name="username"]', dlg);
-  const cartOpen = () => dlg.open && dlg.textContent.includes('Your cart');
-  const onOrders = () => !!$('#mine');
-
-  const S = [
-    { t: 'Welcome!', x: 'This quick tour shows you how to create an account, log in and order. You will try each step on the real site, so click along. The tour moves on by itself when you do.' },
-    { t: 'Browse the products', x: 'Each product shows its photo, price and description. Items marked Sold out are greyed out and cannot be ordered.', target: () => $('.grid .card') },
-    { when: () => !isAdminUser(), t: 'Custom orders', x: 'Cannot find what you want? Use Custom order to describe it. The shop replies with a price or tells you it cannot provide it. Some external charges may apply, and nothing is ordered until you accept the price.', target: () => $('[data-act="custom"]') },
-    { when: () => !loggedIn(), t: 'Step 1: open the sign-up window', x: 'Click Log in / Sign up in the top bar.', target: () => $('[data-act="auth"]'), wait: authOpen },
-    { when: () => !loggedIn(), t: 'Step 2: create your account or log in',
-      x: 'New here? Pick a username (letters, numbers or _) and a password of 8+ characters, then press Create account. Already registered? Type your details and press Log in.',
-      target: () => $('[data-mode="signup"]', dlg), wait: loggedIn },
-    { when: loggedIn, t: 'You are logged in', x: 'Your name now shows in the top bar. Press Log out there when you are finished, and use Log in next time with the same username and password.', target: () => $('#nav .pill, #acct .pill') },
-    { when: () => !!firstAdd() || cartCount() > 0, t: 'Add something to your cart', x: 'Tap the round + button on any product.', target: firstAdd, wait: () => cartCount() > 0 },
-    { t: 'Open your cart', x: 'Click Cart in the top bar to see what you picked.', target: () => $('[data-act="cart"]'), wait: cartOpen },
-    { t: 'Place your order', x: 'Check the items and total. Press Place order to send it to the shop (this is a real order). Or press Next to carry on without ordering.',
-      target: () => $('[data-act="checkout"]', dlg), wait: onOrders },
-    { when: () => !isAdminUser(), t: 'See your orders', x: 'Close the cart if it is open, then click My orders to see every order and its status.', target: () => $('[data-act="orders"]'), wait: onOrders },
-    { when: () => !isAdminUser(), t: 'What the statuses mean', x: 'Pending: the shop received your order. Packed - ready: it is ready, and you get a popup when that happens. Completed: all done. You can press Cancel order only while it is Pending.', target: () => $('#mine .panel') },
-    { t: 'Light or dark', x: 'Switch between light and dark mode here. The shop remembers your choice.', target: () => $('#theme, #foot-theme') },
-    { t: 'You are all set!', x: 'Open this tour again any time with the Tutorial button.' },
-  ];
-
-  let i = -1, card = null, hl = null, timer = null, armed = false, pending = false;
-  const ok = (s) => !s.when || s.when();
-
-  function go(dir) {
-    let j = i + dir;
-    while (S[j] && !ok(S[j])) j += dir;
-    if (j < 0) return;
-    if (j >= S.length) return finish();
-    i = j; armed = !(S[i].wait && S[i].wait()); draw();
-  }
-
-  function draw() {
-    const s = S[i], last = i === S.length - 1;
-    card.innerHTML = `
-      <div class="tour-bar"><i style="width:${((i + 1) / S.length) * 100}%"></i></div>
-      <h3>${s.t}</h3><p>${s.x}</p>
-      ${s.wait && armed ? '<p class="tour-hint">Try it now. The tour continues when you do, or press Next to skip this step.</p>' : ''}
-      <div class="tour-actions">
-        ${last ? '' : '<button type="button" data-t="skip">Skip tour</button>'}
-        ${i > 0 ? '<button type="button" data-t="back">Back</button>' : ''}
-        <button type="button" class="primary" data-t="next">${i === 0 ? 'Start' : last ? 'Finish' : 'Next'}</button>
-      </div>`;
-    tick();
-  }
-
-  function tick() {
-    if (!card) return;
-    const s = S[i];
-    const host = dlg.open ? dlg : document.body;
-    if (card.parentNode !== host) host.appendChild(card);
-    card.classList.toggle('in-dlg', dlg.open);
-
-    const el = s.target ? s.target() : null;
-    if (el !== hl) {
-      if (hl) hl.classList.remove('tour-hl');
-      hl = el;
-      if (el) {
-        el.classList.add('tour-hl');
-        if (!dlg.contains(el)) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Snackify</title>
+  <script>
+    try {
+      document.documentElement.dataset.theme =
+        localStorage.theme || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+      if (localStorage.glass === 'lite') document.documentElement.dataset.glass = 'lite'; // lite mode is only on when the person chose it (boost.js asks on slow devices)
+    } catch (e) {}
+  </script>
+  <script>
+    // Start fetching the shop's products and photos right away, while the page and the startup animation are still loading.
+    // A free server that was asleep can fail or stall on the first try, so each request is retried a few times quietly.
+    (function () {
+      function get(u, left) {
+        return fetch(u).then(function (r) { if (!r.ok) throw 0; return r.json(); })
+          .catch(function (e) { if (left <= 0) throw e; return new Promise(function (ok) { setTimeout(ok, 1800 + (4 - left) * 1500); }).then(function () { return get(u, left - 1); }); });
       }
-    }
-    if (s.wait && armed && !pending && s.wait()) {
-      pending = true;
-      const cur = i;
-      setTimeout(() => { pending = false; if (i === cur) go(1); }, 700);
-    }
-  }
-
-  function finish() {
-    clearInterval(timer);
-    if (hl) hl.classList.remove('tour-hl');
-    if (card) card.remove();
-    card = hl = null; i = -1;
-    try { localStorage.tourDone = '1'; } catch (e) {}
-  }
-
-  function start() {
-    finish();
-    card = document.createElement('div');
-    card.id = 'tour'; card.className = 'glass'; card.setAttribute('role', 'dialog'); card.setAttribute('aria-live', 'polite');
-    card.addEventListener('click', (e) => {
-      const b = e.target.closest('[data-t]');
-      if (!b) return;
-      if (b.dataset.t === 'next') go(1); else if (b.dataset.t === 'back') go(-1); else finish();
-    });
-    document.body.appendChild(card);
-    timer = setInterval(tick, 300);
-    go(1);
-  }
-
-  $('#tour-btn').addEventListener('click', start);
-  let seen = false, hasToken = false;
-  try { seen = !!localStorage.tourDone; hasToken = !!localStorage.token; } catch (e) {}
-  if (!seen && !hasToken) setTimeout(() => { if (!isAdminUser()) start(); }, 900);
-})();
+      var data = Promise.all([get('/api/products', 4), get('/api/combos', 4), get('/api/settings', 4)]);
+      window.__pre = data; // app.js picks this up instead of asking the server again
+      data.catch(function () {});
+      function thumb(u, w) { return u + (u.indexOf('?') < 0 ? '?' : '&') + 'w=' + w; }
+      window.__preReady = data.then(function (d) {
+        var urls = [];
+        d[0].forEach(function (p) { if (p.image_url) urls.push(thumb(p.image_url, 640)); });
+        d[1].forEach(function (c) { (c.items || []).slice(0, 4).forEach(function (x) { var t = x.image_url && thumb(x.image_url, 480); if (t && urls.indexOf(t) < 0) urls.push(t); }); });
+        var first = urls.slice(0, 8), rest = urls.slice(8, 24); // wait for the first screenful only; the rest loads as people scroll
+        return Promise.all(first.map(function (u) { return new Promise(function (ok) { var i = new Image(); i.onload = i.onerror = ok; i.src = u; setTimeout(ok, 4000); }); }))
+          .then(function () { rest.forEach(function (u) { new Image().src = u; }); });
+      }).catch(function () {});
+    })();
+  </script>
+  <link rel="stylesheet" href="style.css?v=24">
+  <link rel="stylesheet" href="boost.css">
+  <link rel="preload" href="app.js" as="script">
+  <link rel="preload" href="tour.js" as="script">
+  <link rel="icon" href="/favicon.ico?v=3" sizes="any">
+  <link rel="shortcut icon" href="/favicon.ico?v=3">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=3">
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png?v=3">
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="/icon-180.png?v=3">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Snackify">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="theme-color" content="#070a1c">
+  <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;500;600;700;800&display=swap" media="print" onload="this.media='all'">
+  <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;500;600;700;800&display=swap"></noscript>
+  <meta name="description" content="Snackify: drinks, snacks and combos, ordered in a few taps.">
+  <meta name="color-scheme" content="dark light">
+  <meta property="og:title" content="Snackify"><meta property="og:type" content="website"><meta property="og:image" content="/icon-512.png">
+</head>
+<body>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><filter id="liquid-lens" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB"><feTurbulence type="fractalNoise" baseFrequency="0.006 0.01" numOctaves="2" seed="7" result="n"/><feDisplacementMap in="SourceGraphic" in2="n" scale="16" xChannelSelector="R" yChannelSelector="G"/></filter></svg>
+  <div id="gw" role="status" aria-live="polite">
+    <div class="gw-cols" aria-hidden="true"></div><div class="gw-rows" aria-hidden="true"></div><div class="gw-shine" aria-hidden="true"></div><div class="gw-ribbons" aria-hidden="true"><i></i><i></i><i></i></div>
+    <div class="gw-wipe" style="--w:0" aria-hidden="true"></div><div class="gw-wipe" style="--w:1" aria-hidden="true"></div><div class="gw-wipe" style="--w:2" aria-hidden="true"></div>
+    <div class="gw-center">
+      <div class="gw-tv" aria-hidden="true"><i style="--k:0"></i><i style="--k:1"></i><i style="--k:2"></i><i style="--k:3"></i></div>
+      <div class="gw-title" aria-label="Snackify"><span style="--i:0">S</span><span style="--i:1">n</span><span style="--i:2">a</span><span style="--i:3">c</span><span style="--i:4">k</span><span style="--i:5">i</span><span style="--i:6">f</span><span style="--i:7">y</span></div>
+            <p class="gw-msg" id="gw-msg"></p>
+    </div>
+  </div>
+  <script>
+    // Startup: sheets of glass slide in, drift and shine while the shop loads, then a stack of glass wipes sweeps away to reveal the page.
+    // It stays up until the shop's products and first photos have really loaded, so nobody stares at a blank page. If the free server is still
+    // waking up it says so, and after a very long wait it offers a retry button. Tap anywhere to skip. Skipped for reduced-motion.
+    (function () {
+      var b = document.getElementById('gw'), msg = document.getElementById('gw-msg'), body = document.body, seen = false, shown = false, minDone = false, ready = false;
+      try { seen = sessionStorage.boot === '1'; sessionStorage.boot = '1'; } catch (e) {}
+      if (matchMedia('(prefers-reduced-motion: reduce)').matches) { b.remove(); return; }
+      function fill(sel, n, fn) { var s = ''; for (var k = 0; k < n; k++) s += fn(k); b.querySelector(sel).innerHTML = s; }
+      function dir(k) { return k % 2 ? -1 : 1; }
+      fill('.gw-cols', 14, function (k) { return '<i style="--i:' + k + ';--s:' + dir(k) + '"></i>'; });
+      fill('.gw-rows', 9, function (k) { return '<i style="--i:' + k + ';--s:' + dir(k) + '"></i>'; });
+      body.classList.add('booting'); // hides the page underneath so the phone only has the animation to draw
+      function say(t) { msg.textContent = t; msg.classList.add('on'); }
+      function lift(cls, ms) {
+        if (shown) return; shown = true;
+        b.classList.add(cls);
+        body.classList.remove('booting'); // the page is already there underneath while the glass wipes away
+        window.dispatchEvent(new Event('bootdone'));
+        setTimeout(function () { b.remove(); }, ms);
+      }
+      function check() { if (minDone && ready) lift('out', 1500); }
+      b.onclick = function (e) { if (e.target.closest && e.target.closest('button')) return; lift('skip', 400); };
+      // Start the clock only after the browser has painted the first frame, so a slow phone doesn't lose the first half second.
+      requestAnimationFrame(function () { requestAnimationFrame(function () {
+        b.classList.add('go');
+        setTimeout(function () { minDone = true; check(); }, seen ? 1800 : 2600);
+        setTimeout(function () { if (!shown && !ready) { b.classList.add('slow'); say('Waking the shop up. The server sleeps when it is quiet, so this can take up to a minute the first time.'); } }, 4000);
+      }); });
+      (window.__pre || Promise.resolve()).then(function () { return window.__preReady; }).then(function () { ready = true; check(); }, function () {
+        // Every retry failed: say so, and let the person try again or carry on without data.
+        b.classList.remove('slow');
+        msg.innerHTML = 'Cannot reach the shop right now.<br><button type="button" class="primary" id="gw-retry">Try again</button>';
+        msg.classList.add('on');
+        document.getElementById('gw-retry').onclick = function () { location.reload(); };
+      });
+      setTimeout(function () { lift('skip', 0); }, 120000); // safety net
+    })();
+  </script>
+  <header class="glass nav">
+    <h1><img class="logo" src="icon-192.png" alt="" width="36" height="36">Shop</h1>
+    <div class="tools">
+      <nav id="nav"></nav>
+      <button id="tour-btn" type="button" title="Tutorial" aria-label="Tutorial"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.5a2.5 2.5 0 1 1 3.4 2.3c-.7.3-1 .8-1 1.5M12 17v.01"/></svg></button>
+      <button id="sfx-btn" type="button" title="Sounds" aria-label="Sounds"></button>
+      <button id="theme" type="button"></button>
+    </div>
+  </header>
+  <main id="app"><div class="grid" aria-hidden="true"><div class="sk"></div><div class="sk"></div><div class="sk"></div><div class="sk"></div></div></main>
+  <dialog id="dlg" class="glass"></dialog>
+  <div id="toast" class="glass" role="status"></div>
+  <script>
+    const tb = document.getElementById('theme');
+    const MOON = '<svg viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/></svg>', SUN = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4L7 17M17 7l1.4-1.4"/></svg>';
+    const label = () => { const d = document.documentElement.dataset.theme === 'dark'; tb.innerHTML = d ? SUN : MOON; tb.title = tb.ariaLabel = d ? 'Light mode' : 'Dark mode'; };
+    tb.onclick = (ev) => {
+      const root = document.documentElement, t = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      const apply = () => { root.dataset.theme = t; try { localStorage.theme = t; } catch (e) {} label(); };
+      const r = tb.getBoundingClientRect(), none = !r.width; // the phone's footer button clicks this one while it is hidden: then the wave starts at the bottom middle
+      const x = ev && ev.clientX ? ev.clientX : none ? innerWidth / 2 : r.left + r.width / 2, y = ev && ev.clientY ? ev.clientY : none ? innerHeight : r.top + r.height / 2;
+      root.style.setProperty('--tx', x + 'px'); root.style.setProperty('--ty', y + 'px');
+      root.style.setProperty('--tr', Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y)) + 'px');
+      if (document.startViewTransition && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        // A circle of the new colours grows out from the button. The old colour sits underneath it the whole time, so no frame can ever flash plain white or black.
+        root.style.setProperty('--vt-old', getComputedStyle(root).getPropertyValue('--bg').trim() || 'transparent');
+        try { window.__vt && window.__vt.skipTransition(); } catch (e) {}
+        const vt = window.__vt = document.startViewTransition(apply);
+        setTimeout(() => { try { vt.skipTransition(); } catch (e) {} }, 2000); // safety: never leave a transition hanging
+      } else { root.classList.add('theme-anim'); apply(); clearTimeout(window.__themeT); window.__themeT = setTimeout(() => root.classList.remove('theme-anim'), 900); } // browsers without it: a smooth colour fade
+    };
+    label();
+  </script>
+  <script>
+    // The app's scripts start a moment after the startup animation does, so they can't freeze it.
+    (function () {
+      function load(src, cb) { var s = document.createElement('script'); s.src = src; if (cb) s.onload = cb; document.body.appendChild(s); }
+      function start() { load('app.js', function () { load('tour.js'); load('admin-plus.js'); load('boost.js'); load('site-guard.js'); load('messages.js'); }); }
+      if (document.getElementById('gw')) setTimeout(start, 300); else start();
+      // Smooth scrolling (Lenis). Skipped for reduced-motion and lite mode. If the script cannot load, the page just scrolls normally.
+      if (!matchMedia('(prefers-reduced-motion: reduce)').matches && document.documentElement.dataset.glass !== 'lite') {
+        setTimeout(function () {
+          load('/vendor/lenis.min.js', function () {
+            try {
+              window.__lenis = new Lenis({
+                autoRaf: true,
+                duration: 1.1,
+                prevent: function (n) { return !!(n.closest && n.closest('dialog, .picks, [data-lenis-prevent]')); } // popups and inner lists keep their own scrolling
+              });
+            } catch (e) {}
+          });
+        }, 600);
+      }
+    })();
+  </script>
+  <script>
+    // One helper for "scroll to this element", used by app.js and tour.js: smooth through Lenis when it is running, native otherwise.
+    window.smoothTo = function (el, o) {
+      o = o || {};
+      var l = window.__lenis;
+      if (l) l.scrollTo(el, { offset: o.block === 'center' ? el.offsetHeight / 2 - innerHeight / 2 : 0 });
+      else el.scrollIntoView({ behavior: 'smooth', block: o.block || 'start' });
+    };
+  </script>
+  <script>
+    // Specular glow follows the pointer on cards and buttons (visionOS-style hover highlight).
+    document.addEventListener('pointermove', function (e) {
+      var t = e.target.closest && e.target.closest('.card, button'); if (!t) return;
+      var r = t.getBoundingClientRect();
+      t.style.setProperty('--mx', (e.clientX - r.left) + 'px'); t.style.setProperty('--my', (e.clientY - r.top) + 'px');
+    }, { passive: true });
+  </script>
+</body>
+</html>
