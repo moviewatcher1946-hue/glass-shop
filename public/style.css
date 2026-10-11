@@ -980,3 +980,53 @@ dialog[data-kind=cart][open].closing{animation:cartFullOut .26s ease-in forwards
 @keyframes spIn{from{opacity:0;transform:translateY(40px) scale(.92)}}
 @keyframes spOut{to{opacity:0;transform:translateY(30px) scale(.94)}}
 @media(max-width:640px){.site-pop{left:12px;right:12px;width:auto;bottom:calc(96px + env(safe-area-inset-bottom))}}
+
+/* v24: no grid in the boot (the strips and bars are gone); the whole screen just fades out after the wipes */
+#gw.out{background:var(--bg);animation:gwFade .7s ease .12s forwards}
+
+/* ===== v25 ===== */
+.share{position:absolute;top:54px;right:10px;z-index:3;width:34px;height:34px;min-height:0;padding:0;border-radius:50%;display:grid;place-items:center}
+.share svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+@media(max-width:520px){.share{top:48px;right:8px}}
+.flash-badge{position:absolute;left:10px;bottom:10px;z-index:3;display:flex;align-items:center;gap:8px;padding:5px 12px;font-size:.78rem;font-weight:700;color:#fff;background:linear-gradient(120deg,#ff375f,#ff9f0a);border-radius:999px;box-shadow:0 6px 18px rgba(255,55,95,.45);animation:flashPulse 1.6s ease-in-out infinite}
+.flash-badge i{font-style:normal;font-variant-numeric:tabular-nums;opacity:.95}
+@keyframes flashPulse{50%{box-shadow:0 6px 26px rgba(255,159,10,.75)}}
+.deep-hi{animation:deepHi 1.4s ease 3}
+@keyframes deepHi{50%{box-shadow:0 0 0 4px rgba(10,132,255,.7),0 0 40px rgba(10,132,255,.55)}}
+.cancel-why{margin:8px 0;padding:8px 12px;font-size:.88rem;color:var(--bad);background:var(--field);border:1px solid var(--edge);border-radius:14px}
+.stamps{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0;font-size:inherit;letter-spacing:0}
+.stp{width:24px;height:24px;border-radius:50%;border:2px solid var(--edge);background:var(--field)}
+.stp.on{border-color:transparent;background:linear-gradient(135deg,#0a84ff,#bf5af2);box-shadow:0 0 14px rgba(125,107,255,.6);animation:stpPop .55s var(--spring) calc(var(--i) * 70ms) backwards}
+.stamps.ready .stp{animation:stpPop .55s var(--spring) calc(var(--i) * 70ms) backwards,stpGlow 1.8s ease-in-out calc(1s + var(--i) * 90ms) infinite}
+@keyframes stpPop{from{transform:scale(0) rotate(-90deg);opacity:0}}
+@keyframes stpGlow{50%{box-shadow:0 0 24px rgba(48,209,88,.9);filter:brightness(1.2)}}
+#sfxpanel{position:fixed;z-index:300;width:230px;padding:14px 16px;border-radius:20px;animation:dlgIn .2s var(--ease)}
+.sp-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 0;font-size:.9rem;font-weight:600}
+.sp-row input[type=range]{width:110px;margin:0}.sp-row input[type=checkbox]{width:20px;height:20px;margin:0}
+#offline{position:fixed;left:50%;top:12px;z-index:400;transform:translateX(-50%);padding:10px 20px;font-size:.88rem;font-weight:600;border-radius:999px;animation:spIn .4s var(--spring)}
+#offline[hidden]{display:none}
+/* boot colours follow the theme */
+:root[data-theme=dark] .gw-ribbons i{mix-blend-mode:screen}
+:root:not([data-theme=dark]) .gw-ribbons i{mix-blend-mode:multiply;opacity:0}
+:root:not([data-theme=dark]) .gw-tv i{box-shadow:0 6px 16px currentColor}
+
+/* ===== v26 ===== */
+.sortbar{display:flex;flex-wrap:wrap;align-items:center;gap:12px 16px;margin:0 0 18px}
+.sb-f{display:flex;align-items:center;gap:8px;font-weight:600}.sb-f select{width:auto;margin:0;min-height:40px}
+.sb-c{display:flex;align-items:center;gap:8px;font-weight:600}.sb-c input{width:20px;height:20px;margin:0}
+.sb-s{min-height:40px;padding:8px 18px}
+#cutoffpill.urgent{color:#fff;background:linear-gradient(120deg,#ff375f,#ff9f0a);animation:flashPulse 1.6s ease-in-out infinite}
+.qv-img{width:100%;max-height:300px;object-fit:cover;border-radius:22px;margin-bottom:14px}
+.qv-price{font-size:1.2rem;white-space:nowrap}.qv-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.stk{display:inline-flex;align-items:center;gap:6px;margin-left:10px;vertical-align:middle}
+.stk button{width:28px;min-width:28px;min-height:28px;height:28px;padding:0;border-radius:50%;line-height:1}.stk b{min-width:2ch;text-align:center}
+.sws{display:flex;gap:6px}.sw{width:26px;min-width:26px;height:26px;min-height:26px;padding:0;border-radius:50%;border:2px solid transparent}.sw.on{border-color:var(--txt)}
+.fzs{display:flex;align-items:center;gap:6px}.fzs button{min-height:32px;padding:4px 10px}
+#sfxpanel{width:270px}
+#totop{position:fixed;left:16px;bottom:24px;z-index:44;width:48px;height:48px;min-height:0;padding:0;border-radius:50%;display:grid;place-items:center;opacity:0;pointer-events:none;transform:translateY(14px) scale(.9);transition:opacity .3s,transform .4s var(--spring)}
+#totop.show{opacity:1;pointer-events:auto;transform:none}
+#totop svg{position:absolute;inset:0;width:100%;height:100%;fill:none}
+#totop .tt-bg{stroke:var(--edge);stroke-width:3}#totop .tt-fg{stroke:var(--a1);stroke-width:3;stroke-linecap:round;stroke-dasharray:132;stroke-dashoffset:132;transform:rotate(-90deg);transform-origin:24px 24px}
+#totop .tt-arrow{inset:12px;width:24px;height:24px;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+body:has(dialog[open]) #totop{display:none}
+@media(max-width:640px){#totop{bottom:calc(96px + env(safe-area-inset-bottom))}}
