@@ -4,16 +4,22 @@ if (navigator.vibrate) { const v = navigator.vibrate.bind(navigator); navigator.
 let usualIds = null, usualUser = null, stockSeen = null, deepDone = false, flashBusy = false;
 const LS = (k, d) => { try { return localStorage[k] ?? d; } catch (e) { return d; } };
 const SAVER = () => LS('saver', 'off') === 'on';
-const ACCENTS = [['Ocean', '', ''], ['Grape', '#8e5bff', '#ff5bd6'], ['Sunset', '#ff7a18', '#ff375f'], ['Mint', '#00a67e', '#0a84ff'], ['Rose', '#ff375f', '#ff9f0a']];
+const ACCENTS = [['Ocean', '', ''], ['Grape', '#8e5bff', '#ff5bd6'], ['Sunset', '#ff7a18', '#ff375f'], ['Mint', '#00a67e', '#0a84ff'], ['Rose', '#ff375f', '#ff9f0a'], ['Forest', '#16a34a', '#0d9488'], ['Slate', '#475569', '#7c3aed']];
 function applyAccent(i) {
   const r = document.documentElement.style, c = ACCENTS[i] || ACCENTS[0];
-  if (!c[1]) ['--a1', '--a2', '--acc'].forEach((k) => r.removeProperty(k));
-  else { r.setProperty('--a1', c[1]); r.setProperty('--a2', c[2]); r.setProperty('--acc', `linear-gradient(135deg,${c[1]},${c[2]})`); }
+  let glow = document.getElementById('accent-glow');
+  if (!c[1]) { ['--a1', '--a2', '--acc'].forEach((k) => r.removeProperty(k)); if (glow) glow.remove(); return; }
+  r.setProperty('--a1', c[1]); r.setProperty('--a2', c[2]); r.setProperty('--acc', `linear-gradient(135deg,${c[1]},${c[2]})`);
+  // The soft coloured glow behind the page follows the colour too (dark and light themes have their own strength). Skipped on browsers too old to mix colours.
+  if (window.CSS && CSS.supports && CSS.supports('color', 'color-mix(in srgb, red 50%, transparent)')) {
+    if (!glow) { glow = document.createElement('style'); glow.id = 'accent-glow'; document.head.appendChild(glow); }
+    const mix = (v, p) => `color-mix(in srgb,var(${v}) ${p}%,transparent)`;
+    glow.textContent = `:root{--o1:${mix('--a1', 34)};--o2:${mix('--a2', 30)};--o3:${mix('--a1', 22)}}:root[data-theme=light]{--o1:${mix('--a1', 50)};--o2:${mix('--a2', 42)};--o3:${mix('--a1', 30)}}`;
+  }
 }
 applyAccent(Number(LS('accent', 0)));
 { const fz = Number(LS('fz', 100)); if (fz !== 100) document.documentElement.style.fontSize = fz + '%'; }
 let sortMode = 'featured', inStockOnly = false;
-const SLOTS = { recess: 'Recess', lunch: 'Lunch', dismissal: 'Dismissal' };
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const CURRENCY = '₱';
 const money = (n) => CURRENCY + Number(n).toFixed(2);
@@ -85,9 +91,13 @@ const CATS = { drinks: 'Drinks', snacks: 'Snacks' };
 const STATUS = { pending: 'Pending', packed: 'Packed', completed: 'Completed', cancelled: 'Cancelled' };
 const CR_STATUS = { pending: 'Waiting for a price', quoted: 'Price offered', accepted: 'Accepted', declined: 'Declined', unavailable: "Can't provide" };
 
-let token = localStorage.token || '';
-let user = JSON.parse(localStorage.user || 'null');
-let cart = JSON.parse(localStorage.cart || '{}');
+// Bug fix: private mode, blocked storage or a damaged saved value used to throw here and leave a blank page. Now the app just starts fresh.
+const saved = (k, d) => { try { const v = localStorage.getItem(k); if (v == null || v === '') return d; const p = JSON.parse(v); return p == null ? d : p; } catch (e) { return d; } };
+let token = ''; try { token = localStorage.getItem('token') || ''; } catch (e) {}
+let user = saved('user', null);
+if (!user || typeof user !== 'object' || !user.username) user = null;
+let cart = saved('cart', {});
+if (!cart || typeof cart !== 'object' || Array.isArray(cart)) cart = {};
 let products = [];
 let view = 'shop';
 let searchText = '', catFilter = 'all';
@@ -117,8 +127,17 @@ async function api(url, { json, ...opt } = {}) {
   const r = await fetch(url, { ...opt, headers });
   const d = r.status === 204 ? {} : await r.json().catch(() => ({}));
   if (r.status === 403 && /new password first/i.test(d.error || '')) changePwDialog();
+  // Only the server's own "not logged in" answer counts (a wrong admin password also answers 401 and must not sign anyone out).
+  if (r.status === 401 && token && d.error === 'Log in to continue.') sessionEnded();
   if (!r.ok) throw new Error(d.error || 'Request failed.');
   return d;
+}
+// The login stopped working (it expired, or the password was changed on another device): sign out, say so once, and show the shop.
+let endedAt = 0;
+function sessionEnded() {
+  if (Date.now() - endedAt < 3000) return; endedAt = Date.now();
+  try { clearSession(); view = 'shop'; render(); } catch (e) { /* the page will refresh itself */ }
+  toast('Your login ended. Please log in again.');
 }
 function toast(msg) {
   const t = $('#toast');
@@ -142,8 +161,8 @@ function animateApp() {
 }
 const bumpCart = () => document.querySelectorAll('[data-act="cart"]').forEach((b) => { b.classList.remove('bump'); void b.offsetWidth; b.classList.add('bump'); });
 const saveCart = () => { localStorage.cart = JSON.stringify(cart); renderNav(); bumpCart(); };
-const setSession = (t, u) => { token = t; user = u; favs = new Set(); loadFavs(); statusMap = null; crMap = null; revSig = ''; localStorage.token = t; localStorage.user = JSON.stringify(u); };
-const clearSession = () => { token = ''; user = null; favs = new Set(); if (catFilter === 'favs') catFilter = 'all'; statusMap = null; crMap = null; revSig = ''; localStorage.removeItem('token'); localStorage.removeItem('user'); };
+const setSession = (t, u) => { token = t; user = u; favs = new Set(); loadFavs(); statusMap = null; crMap = null; revSig = ''; try { localStorage.token = t; localStorage.user = JSON.stringify(u); } catch (e) { /* storage blocked: the login lasts until the page is closed */ } };
+const clearSession = () => { token = ''; user = null; favs = new Set(); if (catFilter === 'favs') catFilter = 'all'; statusMap = null; crMap = null; revSig = ''; try { localStorage.removeItem('token'); localStorage.removeItem('user'); } catch (e) {} };
 // isAdmin = any staff account (raven or a seller); isRaven = the main admin, who controls everything.
 const isAdmin = () => user && (user.role === 'admin' || user.role === 'seller');
 const isRaven = () => user && user.role === 'admin';
@@ -438,7 +457,7 @@ const statusOf = (o) => {
   return me ? me.status : o.status;
 };
 
-const forTag = (o) => forTag0(o) + (o.slot && ['pending', 'packed'].includes(statusOf(o)) ? `<span class="pill">${esc(SLOTS[o.slot] || o.slot)}</span>` : '');
+const forTag = (o) => forTag0(o);
 const forTag0 = (o) => {
   const t = (settings.order_window || {}).today;
   if (!t || !o.deliver_for || !['pending', 'packed'].includes(statusOf(o))) return '';
@@ -645,6 +664,20 @@ async function refreshAudit(more) {
   box.insertAdjacentHTML('beforeend', html);
   if (!box.children.length) box.innerHTML = '<p>Nothing recorded yet. Changes made from now on will show here.</p>';
   $('#auditmore').innerHTML = rows.length >= 50 ? '<button data-act="auditmore">Load older</button>' : '';
+}
+const SEC_LABELS = { login_failed: 'Wrong password', lockout: 'Address locked out', login_blocked: 'Blocked while locked out', staff_login: 'Staff sign-in', password_changed: 'Password changed', rate_limited: 'Too many requests', fake_picture: 'Fake picture refused' };
+async function refreshSecurity() {
+  const box = $('#secbox'); if (!box) return;
+  const d = await api('/api/admin/security');
+  const checks = d.checks.map((c) => `<li style="margin:6px 0">${c.ok ? '\u2705' : '\u26a0\ufe0f'} <span${c.ok ? '' : ' style="color:var(--bad);font-weight:700"'}>${esc(c.label)}</span></li>`).join('');
+  const rows = d.events.length ? d.events.map((e) => `<div class="req"><div class="between"><b>${esc(SEC_LABELS[e.type] || e.type)}</b><span class="muted">${new Date(e.at).toLocaleString()}</span></div>
+    <p style="margin:2px 0 0" class="muted">${e.ip ? 'Address ' + esc(e.ip) : ''}${e.user ? ' \u00b7 ' + esc(e.user) : ''}${e.detail ? '<br>' + esc(e.detail) : ''}</p></div>`).join('')
+    : '<p>Nothing suspicious recorded since the shop last started.</p>';
+  box.innerHTML = `<section class="panel glass"><h2>Security</h2>
+    <p class="muted">The shop checks every request: it limits floods, locks out guessing, refuses fake pictures, and ends old logins when a password changes.</p>
+    <ul style="list-style:none;padding:0;margin:10px 0">${checks}</ul>
+    <div class="stats"><div class="stat glass"><b>${d.failed24h}</b><span>wrong passwords (24 h)</span></div><div class="stat glass"><b>${d.locked}</b><span>addresses locked out now</span></div></div></section>
+    <section class="panel glass"><h3>Recent events</h3><p class="muted">Newest first. This list resets when the server restarts; the server log keeps the full history.</p>${rows}</section>`;
 }
 async function refreshOrders() {
   const want = finishedWanted();
@@ -856,7 +889,7 @@ function renderAdmin() {
     ['orders', 'Orders', [['orders', 'Orders', pendingCount ? ` (${pendingCount})` : ''], ['custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : ''], ['prep', 'Prep list'], ['cash', 'Cash']]],
     ['products', 'Catalog', [['products', 'Products'], ['combos', 'Combos'], ['promos', 'Promos'], ...(isRaven() ? [['popups', 'Pop-ups']] : [])]],
     ['customers', 'People', isRaven() ? [['customers', 'Customers'], ['sellers', 'Sellers']] : [['customers', 'Customers'], ['alerts', 'Alerts']]],
-    ...(isRaven() ? [['backup', 'System', [['backup', 'Backup'], ['audit', 'Activity']]]] : []),
+    ...(isRaven() ? [['backup', 'System', [['backup', 'Backup'], ['audit', 'Activity'], ['security', 'Security']]]] : []),
   ];
   const cur = GROUPS.find((g) => g[2].some((x) => x[0] === adminTab)) || GROUPS[0];
   const badge = (g) => { const n = g[0] === 'orders' ? pendingCount + pendingCustom : 0; return n ? ` (${n})` : ''; };
@@ -1016,7 +1049,7 @@ function renderAdmin() {
   const customersView = `<h2>Customers</h2>
     <p class="muted">Block people who abuse the shop (fake orders, not showing up). ${isRaven() ? 'Your block covers the whole shop.' : 'Your block stops them ordering your items only.'} The list shows the most cancelled orders first.</p>
     <div id="custlist"><p>Loading...</p></div>`;
-  $('#app').innerHTML = tabs + subtabs + '<div id="attn"></div><div id="adminnotes"></div>' + (adminTab === 'dashboard' ? '<section class="dash" id="dashbox"><p class="panel glass muted">Loading your numbers...</p></section>' : adminTab === 'report' ? reportView : adminTab === 'cash' ? cashView : adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'audit' && isRaven() ? auditView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'alerts' && !isRaven() ? alertsView : adminTab === 'combos' ? combosView : adminTab === 'popups' && isRaven() ? popupsView : adminTab === 'prep' ? '<div id="prepbox"></div>' : adminTab === 'promos' ? promosView : adminTab === 'customers' ? customersView : productsView);
+  $('#app').innerHTML = tabs + subtabs + '<div id="attn"></div><div id="adminnotes"></div>' + (adminTab === 'dashboard' ? '<section class="dash" id="dashbox"><p class="panel glass muted">Loading your numbers...</p></section>' : adminTab === 'report' ? reportView : adminTab === 'cash' ? cashView : adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'audit' && isRaven() ? auditView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'alerts' && !isRaven() ? alertsView : adminTab === 'combos' ? combosView : adminTab === 'popups' && isRaven() ? popupsView : adminTab === 'security' && isRaven() ? '<div id="secbox"><section class="panel glass"><h2>Security</h2><p class="muted">Loading...</p></section></div>' : adminTab === 'prep' ? '<div id="prepbox"></div>' : adminTab === 'promos' ? promosView : adminTab === 'customers' ? customersView : productsView);
   fillProducts();
   comboAdminHtml = ''; refreshAdminCombos().catch(() => {});
   promoAdminHtml = ''; refreshAdminPromos().catch(() => {});
@@ -1033,6 +1066,7 @@ function renderAdmin() {
   if (isRaven() && adminTab === 'popups') refreshPopups().catch(() => {});
   if (adminTab === 'prep') { drawPrep(); refreshOrders().then(drawPrep).catch(() => {}); }
   if (isRaven() && adminTab === 'audit') refreshAudit(false).catch(() => {});
+  if (isRaven() && adminTab === 'security') refreshSecurity().catch(() => {});
   if (isRaven()) loadBackupInfo();
   if (isRaven()) refreshSellers().catch(() => {}); else loadAlerts().catch(() => {});
 }
@@ -1071,7 +1105,7 @@ async function fillMine() {
   const html = card + (orders.map((o) => `
     <section class="panel glass">
       <div class="between"><b>Order #${o.id}</b><span class="pill st-${o.status}">${STATUS[o.status] || esc(o.status)}</span></div>
-      <p class="muted" style="margin:2px 0 10px">${new Date(o.created_at).toLocaleString()}${o.slot ? ' \u00b7 ' + esc(SLOTS[o.slot] || o.slot) : ''}</p>
+      <p class="muted" style="margin:2px 0 10px">${new Date(o.created_at).toLocaleString()}</p>
       ${o.status !== 'cancelled' ? tracker(o.status) : ''}
       ${o.status === 'cancelled' && o.cancel_reason ? `<p class="cancel-why">${esc(o.cancel_reason)}</p>` : ''}
       ${o.status === 'packed' ? '<p class="ready">Your order is packed and ready!</p>' : ''}
@@ -1235,7 +1269,6 @@ function cartLines() {
     return { key, title: p.title, price: unitFor(p, q), q, owner: p.owner_id, note, img: p.image_url || '', list: Number(p.price) };
   }).filter(Boolean);
 }
-let cartSlot = '';
 let cartUndo = null; // { items, label }: what the last Remove / Clear took out, so it can be put back
 const undoBanner = () => cartUndo ? `<div class="cart-undo"><span>${esc(cartUndo.label)}</span><button type="button" data-act="cart-undo">Undo</button></div>` : '';
 const saveLine = (lines) => { const s = lines.reduce((t, l) => t + (l.list ? Math.max(0, l.list - l.price) * l.q : 0), 0); return s > 0.004 ? `<p class="cart-save">You are saving ${money(s)} with deals</p>` : ''; };
@@ -1268,7 +1301,6 @@ function cartDialog() {
       <div class="actions"><input id="promoin" value="${esc(promo ? promo.code : '')}" placeholder="Enter code" style="flex:1;margin:0"><button data-act="applypromo">Apply</button></div>
       <label style="display:block;margin-top:12px">Note for the seller (your name, seat, anything helpful)</label>
       <input id="ordernote" maxlength="300" value="${esc(cartNote)}">
-      <label style="display:block;margin-top:12px">Delivery time (optional)</label><select id="slotsel"><option value="">Any time</option>${Object.entries(SLOTS).map(([k, v]) => `<option value="${k}" ${cartSlot === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
       <div class="cart-chips">${['Please pack separately', 'Call me when ready', 'No need for change'].map((t) => `<button type="button" data-act="note-chip" data-t="${esc(t)}">${esc(t)}</button>`).join('')}</div></div>
       ${suggestHtml(lines)}` : ''}</div>
     <div class="cart-foot">${saveLine(lines)}
@@ -1661,9 +1693,9 @@ const actions = {
     const items = cartLines().map((l) => (l.key[0] === 'c' ? { combo_id: l.key.slice(1), quantity: l.q } : { product_id: l.key, quantity: l.q }));
     const fx = orderProgress(); // a ring fills while the order is sent, turns into a check, then glows
     let o;
-    try { [o] = await Promise.all([api('/api/orders', { method: 'POST', json: { items, promo: promo ? promo.code : '', note: cartNote, slot: cartSlot } }), new Promise((r) => setTimeout(r, 900))]); }
+    try { [o] = await Promise.all([api('/api/orders', { method: 'POST', json: { items, promo: promo ? promo.code : '', note: cartNote } }), new Promise((r) => setTimeout(r, 900))]); }
     catch (e) { fx.fail(); throw e; }
-    cart = {}; promo = null; cartNote = ''; cartSlot = ''; usualIds = null; saveCart(); $('#dlg').close(); toast(`Order #${o.id} placed.`); burst(); fx.done(o.id); view = 'orders'; render();
+    cart = {}; promo = null; cartNote = ''; usualIds = null; saveCart(); $('#dlg').close(); toast(`Order #${o.id} placed.`); burst(); fx.done(o.id); view = 'orders'; render();
   },
   toggle: async (id) => { await api(`/api/products/${id}/sold-out`, { method: 'PATCH' }); await loadProducts(); },
   delete: async (id) => { if (confirm('Delete this product?')) { await api(`/api/products/${id}`, { method: 'DELETE' }); await loadProducts(); toast('Deleted.'); } },
@@ -1799,7 +1831,6 @@ document.addEventListener('change', (e) => {
 document.addEventListener('input', (e) => {
   if (e.target.id === 'search') { searchText = e.target.value; fillGrid(); }
   else if (e.target.id === 'ordernote') cartNote = e.target.value;
-    else if (e.target.id === 'slotsel') cartSlot = e.target.value;
   else if (e.target.closest('#combo-form')) updateComboSum();
 });
 
@@ -2504,11 +2535,11 @@ function drawPrep() {
   const el = $('#prepbox'); if (!el) return;
   const open = (ordersCache || []).filter((o) => ['pending', 'packed'].includes(statusOf(o)));
   if (!open.length) { el.innerHTML = '<section class="panel glass"><h2>Prep list</h2><p class="muted">No open orders to prepare right now.</p></section>'; return; }
-  const groups = {}; open.forEach((o) => { (groups[o.slot || ''] ||= []).push(o); });
-  el.innerHTML = '<section class="panel glass"><h2>Prep list</h2><p class="muted">What to pack for open orders, grouped by delivery time.</p></section>' + ['recess', 'lunch', 'dismissal', ''].filter((k) => groups[k]).map((k) => {
+  const groups = { all: open };
+  el.innerHTML = '<section class="panel glass"><h2>Prep list</h2><p class="muted">What to pack for all open orders.</p></section>' + ['all'].map((k) => {
     const tot = {};
     groups[k].forEach((o) => (o.items || []).forEach((i) => { const key = i.title + (isRaven() && i.owner_id && ownerName(i.owner_id) ? ` (${ownerName(i.owner_id)})` : ''); tot[key] = (tot[key] || 0) + i.quantity; }));
-    return `<section class="panel glass"><div class="between"><h3>${k ? esc(SLOTS[k]) : 'No time chosen'}</h3><span class="muted">${groups[k].length} order${groups[k].length === 1 ? '' : 's'}</span></div><ul class="lines">${Object.entries(tot).sort((x, y) => y[1] - x[1]).map(([t, q]) => `<li><span>${esc(t)}</span><b>${q}</b></li>`).join('')}</ul><p class="muted" style="margin:6px 0 0">${groups[k].map((o) => '#' + o.id + ' ' + esc(o.username)).join(', ')}</p></section>`;
+    return `<section class="panel glass"><div class="between"><h3>Open orders</h3><span class="muted">${groups[k].length} order${groups[k].length === 1 ? '' : 's'}</span></div><ul class="lines">${Object.entries(tot).sort((x, y) => y[1] - x[1]).map(([t, q]) => `<li><span>${esc(t)}</span><b>${q}</b></li>`).join('')}</ul><p class="muted" style="margin:6px 0 0">${groups[k].map((o) => '#' + o.id + ' ' + esc(o.username)).join(', ')}</p></section>`;
   }).join('');
 }
 
