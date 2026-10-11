@@ -713,3 +713,177 @@ html.theme-anim #theme svg{animation:themeSpin .8s var(--ease)}
 /* ===== the cart and every popup stay pinned to the screen (they had slipped into the page and scrolled away with it) ===== */
 html{scrollbar-gutter:stable}
 dialog:modal,dialog[open]{position:fixed;inset:0}
+
+/* ===== Lenis smooth scrolling (base rules) ===== */
+html.lenis,html.lenis body{height:auto}
+.lenis.lenis-smooth{scroll-behavior:auto!important}
+.lenis.lenis-smooth [data-lenis-prevent]{overscroll-behavior:contain}
+.lenis.lenis-stopped{overflow:clip}
+.lenis.lenis-smooth iframe{pointer-events:none}
+
+/* ===== Cart: phones keep the old sheet exactly; desktop gets a structured drawer ===== */
+@media(max-width:640px){
+  .cart-head,.cart-head>div,.cart-body,.cart-extra,.cart-foot{display:contents}
+  .cart-count,.cart-x,.sum-d{display:none}
+}
+@media(min-width:641px){
+  .sum-m{display:none}
+  dialog[data-kind=cart][open]{display:flex;flex-direction:column;padding:0;overflow:hidden}
+  dialog[data-kind=cart] .cart-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex:none;padding:24px 28px 16px;border-bottom:1px solid var(--edge2)}
+  dialog[data-kind=cart] .cart-head>div{display:flex;align-items:center;gap:12px;min-width:0}
+  dialog[data-kind=cart] .cart-head h2{margin:0;font-size:1.45rem;font-weight:700;letter-spacing:-.01em}
+  .cart-count{padding:3px 11px;font-size:.78rem;font-weight:600;color:var(--muted);background:var(--field);border:1px solid var(--edge);border-radius:999px}
+  .cart-x{display:grid;place-items:center;width:36px;height:36px;padding:0;font-size:1.35rem;line-height:1;border-radius:50%}
+  dialog[data-kind=cart] .cart-body{flex:1;min-height:0;overflow-y:auto;padding:4px 28px 20px;overscroll-behavior:contain}
+  dialog[data-kind=cart] .cline{display:grid;grid-template-columns:1fr auto;grid-template-areas:"t p" "q r";align-items:center;gap:10px 16px;padding:16px 0}
+  .cline .cl-t{grid-area:t;font-weight:600;line-height:1.35}
+  .cline .cl-t small{display:flex;margin-top:4px;font-weight:500}
+  .cline .cl-p{grid-area:p;margin:0;font-size:1.02rem;font-variant-numeric:tabular-nums;text-align:right}
+  .cline .qty{grid-area:q;justify-self:start;gap:2px;padding:3px;background:var(--field);border:1px solid var(--edge);border-radius:999px}
+  .cline .qty button{width:30px;min-width:30px;height:30px;padding:0;line-height:1;border-radius:50%}
+  .cline .qty b{min-width:2.6ch}
+  .cline .cl-r{grid-area:r;justify-self:end;padding:4px 10px;font-size:.78rem;color:var(--muted);background:transparent;border-color:transparent;box-shadow:none}
+  .cline .cl-r:hover:not(:disabled){color:var(--bad)}
+  .cart-extra{margin-top:8px;padding-top:18px;border-top:1px solid var(--edge2)}
+  .cart-extra label{font-size:.82rem;font-weight:600;color:var(--muted)}
+  dialog[data-kind=cart] .cart-foot{flex:none;padding:18px 28px 24px;background:var(--field);border-top:1px solid var(--edge)}
+  .sum-d{display:grid;gap:6px;margin:0 0 12px;font-variant-numeric:tabular-nums}
+  .sum-d>div{display:flex;justify-content:space-between;gap:12px;font-size:.92rem;color:var(--muted)}
+  .sum-d .sum-off b{color:var(--ok)}
+  .sum-d .sum-total{margin-top:6px;padding-top:12px;border-top:1px dashed var(--edge);font-size:1.3rem;font-weight:700;color:var(--txt)}
+  .cart-foot>p.muted{margin:0 0 8px;font-size:.84rem}
+  .cart-foot .notice{margin:10px 0 14px;padding:10px 14px;font-size:.8rem;border-radius:14px}
+  .cart-foot button.primary{width:100%;min-height:48px;font-size:1rem}
+  .cart-foot .close-btn{display:none}
+  dialog[data-kind=cart] .empty{padding:36px 0 20px;text-align:center}
+}
+
+/* ===== Desktop polish (wide screens with a mouse only) + admin bar fixes ===== */
+@media(min-width:901px) and (pointer:fine){
+  /* scrollbars */
+  html{scrollbar-width:thin;scrollbar-color:rgba(125,107,255,.5) transparent}
+  ::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-track{background:transparent}
+  ::-webkit-scrollbar-thumb{background:rgba(125,107,255,.4);background-clip:padding-box;border:3px solid transparent;border-radius:10px}
+  ::-webkit-scrollbar-thumb:hover{background:rgba(125,107,255,.75);background-clip:padding-box}
+  /* buttons: hover lift, press glow */
+  button{transition:transform .35s var(--spring),background .2s,box-shadow .25s,border-color .2s}
+  button:hover:not(:disabled){border-color:rgba(255,255,255,.4)}
+  button:active:not(:disabled){box-shadow:0 0 0 3px rgba(10,132,255,.22),0 0 22px rgba(10,132,255,.45),var(--sh1),inset 0 1px 0 var(--edge)}
+  button.primary:hover:not(:disabled){box-shadow:0 12px 34px rgba(10,132,255,.55),0 0 0 1px rgba(255,255,255,.25),inset 0 1px 0 rgba(255,255,255,.5)}
+  button.primary:active:not(:disabled){box-shadow:0 0 0 4px rgba(10,132,255,.3),0 0 32px rgba(125,107,255,.7),inset 0 1px 0 rgba(255,255,255,.4)}
+  button.danger:active:not(:disabled){box-shadow:0 0 0 3px rgba(255,95,122,.28),0 0 26px rgba(255,95,122,.6)}
+  /* fields */
+  input,select,textarea{transition:box-shadow .25s,border-color .2s,background .2s}
+  input:focus,select:focus,textarea:focus{outline:none;border-color:var(--a1);box-shadow:0 0 0 3px rgba(10,132,255,.25),0 0 20px rgba(10,132,255,.25)}
+  /* header, cards, panels, dialogs, toast */
+  .nav{transition:box-shadow .4s var(--ease)}
+  .scrolled .nav{box-shadow:0 22px 60px -10px rgba(10,132,255,.35),var(--sh3),inset 0 1px 0 var(--edge)}
+  .grid>.card{transition:transform .45s var(--spring),box-shadow .35s}
+  .grid>.card:hover{box-shadow:var(--sh3),0 0 0 1px rgba(125,107,255,.35),0 22px 60px -18px rgba(10,132,255,.5)}
+  .panel:hover,.kpi:hover,.stat:hover{box-shadow:var(--sh3),0 0 0 1px rgba(125,107,255,.28),inset 0 1px 0 var(--edge)}
+  dialog{box-shadow:var(--sh3),0 0 0 1px var(--edge),0 30px 80px -24px rgba(10,132,255,.4),inset 0 1px 0 var(--edge)}
+  #toast.show{box-shadow:var(--sh3),0 0 28px rgba(10,132,255,.35)}
+  #cartbar:hover{box-shadow:0 14px 40px rgba(10,132,255,.55)}
+  /* tables */
+  th{padding:10px 12px;font-size:.72rem;letter-spacing:.06em;text-transform:uppercase}
+  td{padding:14px 12px;font-variant-numeric:tabular-nums}
+  tbody tr{transition:background .2s,box-shadow .2s}
+  tbody tr:hover{background:var(--glass);box-shadow:inset 3px 0 0 var(--a1)}
+  /* admin tab bars */
+  #app:has(>.tabs)>.tabs{gap:6px;max-height:calc(100vh - 116px);overflow-x:hidden;overflow-y:auto}
+  .tabs button{padding:12px 16px;font-size:.9rem}
+  .tabs>button:not(.primary):hover,.subtabs button:not(.primary):hover{color:var(--txt);background:var(--glass2)}
+  /* admin bars: the horizontal bars used to start and end at different places on every row (each row sized its own number column) */
+  .hbars{gap:14px}
+  .hb{grid-template-columns:minmax(96px,1.2fr) 3fr 96px;gap:14px;font-size:.86rem}
+  .hb b{text-align:right}
+  .hl{color:var(--muted);transition:color .2s}.hb:hover .hl{color:var(--txt)}
+  .ht{height:12px;border-radius:8px;box-shadow:inset 0 1px 2px rgba(0,0,0,.25)}
+  .ht i{min-width:6px;border-radius:8px;box-shadow:inset 0 1px 0 rgba(255,255,255,.4),0 0 14px -2px rgba(125,107,255,.55);transition:filter .25s}
+  .ht i[style*="width:0%"]{min-width:0}
+  .hb:hover .ht i{filter:brightness(1.15)}
+  /* admin column chart: real gradient, glow on hover, softer grid */
+  .chart .bar{fill:url(#barg);opacity:1;transition:filter .2s}
+  .chart .bar:hover{fill:url(#barg);filter:drop-shadow(0 0 8px rgba(10,132,255,.85))}
+  .chart .gl{stroke-dasharray:3 6}
+}
+
+/* ===== Ad backgrounds: every highlight slide gets its own moving colour glow ===== */
+.slide::before{content:'';position:absolute;inset:0;z-index:1;pointer-events:none;opacity:.55;background:radial-gradient(46% 70% at 88% 18%,var(--ad1,#0a84ff),transparent 70%),radial-gradient(40% 60% at 72% 100%,var(--ad2,#bf5af2),transparent 70%);background-size:150% 150%;animation:adDrift 12s ease-in-out infinite alternate}
+@keyframes adDrift{to{background-position:100% 100%}}
+.slide[data-kind="Announcement"]{--ad1:#0a84ff;--ad2:#7d6bff}
+.slide[data-kind="Promo"]{--ad1:#ff9f0a;--ad2:#ff375f}
+.slide[data-kind="New arrival"]{--ad1:#30d158;--ad2:#64d2ff}
+.slide[data-kind="Best seller"]{--ad1:#ffd60a;--ad2:#ff453a}
+.slide .sl-k{background:linear-gradient(135deg,var(--ad1,#0a84ff),var(--ad2,#bf5af2));border-color:rgba(255,255,255,.55);box-shadow:0 0 18px -2px var(--ad1,#0a84ff);animation:adPulse 2.8s ease-in-out infinite}
+@keyframes adPulse{50%{box-shadow:0 0 26px 2px var(--ad2,#bf5af2)}}
+.banner.glass{background-image:linear-gradient(110deg,rgba(10,132,255,.28),rgba(191,90,242,.28),rgba(255,159,10,.22),rgba(10,132,255,.28));background-size:300% 100%;animation:adSlide 10s linear infinite}
+@keyframes adSlide{to{background-position:-300% 0}}
+:root[data-glass=lite] .slide::before,:root[data-glass=lite] .banner.glass,:root[data-glass=lite] .slide .sl-k{animation:none}
+
+/* ===== Sound switch ===== */
+#sfx-btn{display:grid;place-items:center;width:40px;height:40px;padding:0}
+#sfx-btn svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+
+/* ===== Order placed animation (phones and desktop) ===== */
+#ordfx{position:fixed;inset:0;z-index:500;display:grid;place-items:center;padding:24px;background:rgba(5,7,22,.55);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);animation:ofIn .3s var(--ease)}
+#ordfx.out{opacity:0;transition:opacity .35s}
+.ordfx-card{position:relative;width:min(320px,90vw);padding:30px 24px 26px;text-align:center;color:var(--txt);background:var(--solid);border:1px solid var(--edge);border-radius:28px;box-shadow:var(--sh3),0 0 60px rgba(10,132,255,.45);animation:ofPop .6s var(--spring)}
+.ordfx-card h3{margin:14px 0 4px;font-size:1.35rem}.ordfx-card p{margin:0;font-size:.9rem;color:var(--muted)}
+.ordfx-check{width:84px;height:84px;fill:none;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}
+.ordfx-check circle{stroke:var(--ok);stroke-dasharray:145;stroke-dashoffset:145;animation:ofDraw .6s .1s var(--ease) forwards}
+.ordfx-check path{stroke:var(--ok);stroke-dasharray:40;stroke-dashoffset:40;animation:ofDraw .4s .55s var(--ease) forwards}
+.ordfx-burst{position:absolute;left:50%;top:72px;width:0;height:0}
+.ordfx-burst i{position:absolute;left:-4px;top:-6px;width:8px;height:12px;border-radius:2px;background:var(--c);opacity:0;animation:ofBit 1.1s .45s var(--ease) forwards}
+@keyframes ofIn{from{opacity:0}}
+@keyframes ofPop{from{opacity:0;transform:scale(.7) translateY(20px)}}
+@keyframes ofDraw{to{stroke-dashoffset:0}}
+@keyframes ofBit{0%{opacity:1;transform:rotate(var(--a)) translateY(0) rotate(var(--r))}100%{opacity:0;transform:rotate(var(--a)) translateY(calc(var(--d) * -1)) rotate(calc(var(--r) + 540deg))}}
+@media(prefers-reduced-motion:reduce){.ordfx-check circle,.ordfx-check path{stroke-dashoffset:0}}
+
+/* ===== Startup: stacks of glass wipes (replaces the old logo intro) ===== */
+#gw{position:fixed;inset:0;z-index:1000;display:grid;place-items:center;overflow:hidden;background:var(--bg);color:var(--txt)}
+#gw.out,#gw.skip{background:transparent}
+#gw.skip{animation:gwFade .35s ease forwards}
+@keyframes gwFade{to{opacity:0}}
+#gw:not(.go) *{animation-play-state:paused!important} /* nothing starts until the first frame is painted */
+.gw-cols,.gw-rows,.gw-panes{position:absolute;inset:0;pointer-events:none}
+.gw-cols,.gw-rows{display:flex}.gw-rows{flex-direction:column}
+/* wave 1: tall glass strips slide in from above and below, one after another */
+.gw-cols i{flex:1;margin-right:-1px;background:linear-gradient(180deg,rgba(255,255,255,.18),rgba(255,255,255,0) 42%,rgba(125,107,255,.22)),var(--bg);border-left:1px solid rgba(255,255,255,.16);box-shadow:inset 1px 0 0 rgba(255,255,255,.12),inset -24px 0 40px -28px rgba(10,132,255,.55);animation:gwColIn .8s var(--ease) calc(var(--i)*45ms) backwards}
+@keyframes gwColIn{from{transform:translateY(calc(var(--s) * -105%))}}
+/* wave 2: wide frosted bars slide across from left and right */
+.gw-rows i{flex:1;background:linear-gradient(90deg,rgba(255,255,255,0),rgba(255,255,255,.13) 50%,rgba(255,255,255,0)),rgba(125,107,255,.07);border-top:1px solid rgba(255,255,255,.2);animation:gwRowIn .8s var(--ease) calc(.35s + var(--i)*50ms) backwards}
+@keyframes gwRowIn{from{transform:translateX(calc(var(--s) * 105%))}}
+/* floating glass panes drift while the shop loads */
+.gw-panes i{position:absolute;left:var(--x);top:var(--y);width:var(--w);height:var(--h);border-radius:26px;background:linear-gradient(135deg,rgba(255,255,255,.24),rgba(255,255,255,.04));border:1px solid rgba(255,255,255,.3);box-shadow:0 20px 50px rgba(0,0,0,.25),inset 0 1px 0 rgba(255,255,255,.45);transform:rotate(var(--r));animation:gwPaneIn .9s var(--spring) calc(.5s + var(--i)*80ms) backwards,gwFloat 6s ease-in-out calc(1.6s + var(--i)*.3s) infinite alternate}
+@keyframes gwPaneIn{from{opacity:0;transform:translateY(60px) scale(.6) rotate(var(--r))}}
+@keyframes gwFloat{from{transform:rotate(var(--r)) translateY(0)}to{transform:rotate(calc(var(--r) + 4deg)) translateY(-14px)}}
+/* a bright diagonal shine keeps passing over everything */
+.gw-shine{position:absolute;inset:-20% -40%;pointer-events:none;background:linear-gradient(105deg,transparent 40%,rgba(255,255,255,.26) 50%,transparent 60%);transform:translateX(-100%);animation:gwShine 2.8s ease-in-out 1s infinite}
+@keyframes gwShine{0%{transform:translateX(-60%)}60%,100%{transform:translateX(60%)}}
+.gw-wipe{position:absolute;top:-10%;bottom:-10%;left:-50%;width:34%;pointer-events:none;opacity:0;transform:skewX(-18deg);background:linear-gradient(90deg,rgba(255,255,255,0),rgba(255,255,255,.4),rgba(255,255,255,0))}
+/* centre: title, progress, message */
+.gw-center{position:relative;z-index:3;padding:0 24px;text-align:center}
+.gw-title{display:flex;justify-content:center;font-size:clamp(2.4rem,9vw,4.2rem);font-weight:800;letter-spacing:-.04em;line-height:1}
+.gw-title span{background:linear-gradient(120deg,var(--txt) 10%,#7aa7ff 55%,#c07cff);-webkit-background-clip:text;background-clip:text;color:transparent;animation:gwLetter .7s var(--ease) calc(.9s + var(--i)*.05s) backwards}
+@keyframes gwLetter{from{opacity:0;transform:translateY(24px) scale(.9)}}
+.gw-bar{position:relative;width:160px;height:5px;margin:22px auto 0;overflow:hidden;background:rgba(255,255,255,.16);border-radius:5px;animation:gwFade2 .5s ease 1.4s backwards}
+.gw-bar i{position:absolute;top:0;bottom:0;left:0;width:40%;background:var(--acc);border-radius:5px;animation:gwBar 1.2s ease-in-out infinite}
+@keyframes gwBar{from{transform:translateX(-100%)}to{transform:translateX(250%)}}
+@keyframes gwFade2{from{opacity:0}}
+.gw-msg{max-width:340px;margin:16px auto 0;font-size:.9rem;color:var(--muted);opacity:0;transition:opacity .4s}.gw-msg.on{opacity:1}
+/* leaving: the bars shoot away, then the strips push through, with three bright wipes crossing on top */
+#gw.out .gw-rows i{animation:gwRowOut .55s cubic-bezier(.7,0,.3,1) calc(var(--i)*35ms) forwards}
+@keyframes gwRowOut{to{transform:translateX(calc(var(--s) * -105%))}}
+#gw.out .gw-cols i{animation:gwColOut .7s cubic-bezier(.7,0,.3,1) calc(.15s + (13 - var(--i))*40ms) forwards}
+@keyframes gwColOut{to{transform:translateY(calc(var(--s) * 105%))}}
+#gw.out .gw-panes i{animation:gwPaneOut .5s ease-in forwards}
+@keyframes gwPaneOut{to{opacity:0;transform:scale(1.4) rotate(var(--r))}}
+#gw.out .gw-center{animation:gwCenterOut .45s ease-in forwards}
+@keyframes gwCenterOut{to{opacity:0;transform:scale(1.08)}}
+#gw.out .gw-shine{animation:gwShineOut .9s ease-in forwards}
+@keyframes gwShineOut{from{transform:translateX(-60%)}to{transform:translateX(120%)}}
+#gw.out .gw-wipe{animation:gwWipe .9s cubic-bezier(.6,0,.3,1) calc(var(--w)*.18s) forwards}
+@keyframes gwWipe{0%{opacity:1;transform:translateX(0) skewX(-18deg)}100%{opacity:1;transform:translateX(480%) skewX(-18deg)}}
+:root[data-glass=lite] .gw-rows,:root[data-glass=lite] .gw-panes{display:none}
