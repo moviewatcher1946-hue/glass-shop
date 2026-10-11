@@ -337,10 +337,37 @@
     ['System', 'gear', 205, [15, 16, 17, 19, 42, 43, 54, 55, 56, 57].concat(R(42, 8))]
   ];
 
+  // Admin+ Pack: more tools, listed by the server (/api/plus/pack). Columns come from the data itself.
+  var packP = null;
+  function loadPack() {
+    if (packP) return packP;
+    var lab = function (k) { k = String(k).replace(/_/g, ' '); return k.charAt(0).toUpperCase() + k.slice(1); };
+    function auto(t) {
+      if (t.k === 'b') return barTool(t.t, t.u, 'label', 'value')[1];
+      if (t.k === 'a') return function (b) { b.innerHTML = '<button type="button" data-go>Run</button> <span class="muted" data-msg></span>'; $('[data-go]', b).onclick = function () { if (!confirm(t.t + '?')) return; var m = $('[data-msg]', b); m.textContent = 'Working...'; api(t.u, 'POST', {}).then(function (r) { m.textContent = r.message || 'Done.'; }).catch(function (e) { m.textContent = e.message; }); }; };
+      return function (b) {
+        b.innerHTML = '<p class="muted">Loading...</p>';
+        api(t.u).then(function (r) {
+          if (!r.length) { b.innerHTML = '<p class="muted">Nothing to show.</p>'; return; }
+          var ks = Object.keys(r[0]), f = function (k) { return /(^at$|_at$)/.test(k) ? dt : typeof r[0][k] === 'number' && r[0][k] % 1 ? money : null; };
+          if (t.k === 's') { var rows = ks.map(function (k) { var v = r[0][k]; return { s: lab(k), v: f(k) && v != null ? f(k)(v) : v == null ? '-' : v }; }); b.innerHTML = table(rows, K([['Measure', 's'], ['Value', 'v']])); return; }
+          b.innerHTML = table(r, K(ks.map(function (k) { return [lab(k), k, f(k)]; })));
+        }).catch(function (e) { b.innerHTML = '<p class="muted">' + esc(e.message) + '</p>'; });
+      };
+    }
+    packP = api('/api/plus/pack').then(function (d) {
+      var hue = { 'Security': 5, 'Data health': 190, 'Orders+': 265, 'Catalog+': 215, 'People+': 335, 'Insights+': 140, 'System+': 205 }, by = {}, order = [];
+      d.tools.forEach(function (t) { var i = tools.push([t.t, auto(t)]) - 1; if (!by[t.g]) { by[t.g] = []; order.push(t.g); } by[t.g].push(i); });
+      order.forEach(function (g) { GROUPS.push([g, 'gear', hue[g] || 205, by[g]]); });
+    }).catch(function () { packP = null; });
+    return packP;
+  }
+
   function close() { var o = $('#ap-dlg'); if (o) o.remove(); document.body.style.overflow = ''; document.removeEventListener('keydown', onKey); }
   function onKey(e) { if (e.key === 'Escape') close(); }
 
-  function open() {
+  function open() { loadPack().then(openNow, openNow); }
+  function openNow() {
     close();
     var d = document.createElement('div'); d.id = 'ap-dlg';
     d.innerHTML = '<div class="hy-sheet" role="dialog" aria-label="Admin+"><div class="hy-bar"><div><h2>Admin+</h2><p>' + tools.length + ' tools and settings</p></div><button class="hy-x" type="button" aria-label="Close">' + ico('close') + '</button></div>' +
