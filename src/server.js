@@ -14,6 +14,11 @@ const app = express();
 const compression = require('compression');
 const sharp = require('sharp');
 app.set('trust proxy', 1); // Render sits behind a proxy; this makes req.ip the visitor's real address
+// Software protection (src/guard.js). It goes FIRST so /healthz answers instantly (no database, no other middleware in front of it),
+// visitors get a friendly "waking up" answer while the database is still starting, and overload is shed politely.
+const shieldGuard = require('./guard');
+shieldGuard.watchPool(pool);
+shieldGuard.early(app);
 // Gzip text responses (the JSON lists, HTML, CSS, JS) over 1 KB. Images are already compressed, so they are skipped. Same data, a fraction of the bytes; polling stays just as fresh.
 app.use(compression({ threshold: 512, level: 5 }));
 // Safety headers on everything (content security policy, no framing, HTTPS-only, no sniffing...). See src/security.js.
@@ -370,7 +375,7 @@ const withImage = async (id) =>
     )
   ).rows[0];
 
-app.get('/healthz', (req, res) => res.send('ok'));
+// (/healthz now lives in src/guard.js, registered before everything else.)
 
 // What the phones ask every few seconds: a couple of dozen bytes. `w` covers things that change with the clock (the order cutoff).
 let revWin = { t: 0, v: '' };
@@ -732,6 +737,7 @@ app.patch('/api/products/discount', auth, staff, wrap(async (req, res) => {
 
 require('./admin-plus')(app, { pool, auth, admin, wrap });
 boost.mount(app, { pool, auth, admin, wrap });
+shieldGuard.mount(app, { pool, auth, admin, wrap });
 
 // Brings every open (pending or packed) order up to the shop's current prices: all products for the owner, a seller's own for a seller.
 app.post('/api/orders/reprice', auth, staff, wrap(async (req, res) => {
@@ -1910,7 +1916,12 @@ const shutdown = (sig) => {
 };
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
-init()
+// Start-up: listen FIRST so the host's health check (/healthz) passes right away, then prepare the database. Until it is ready,
+// guard.js answers visitors with a friendly 503. If the database is still waking up, retry instead of giving up.
+const srv = httpServer = app.listen(PORT, () => console.log(`Glass Shop listening on :${PORT} (preparing the database)`));
+srv.keepAliveTimeout = 61e3; srv.headersTimeout = 65e3; // slow or half-open connections are dropped instead of piling up
+const prepare = () =>
+  init()
   .then(ensureCustomRequests)
   .then(ensureCategory)
   .then(ensureCombos)
@@ -1970,9 +1981,19 @@ init()
       reason     VARCHAR(200) NOT NULL DEFAULT '',
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       UNIQUE (user_id, blocked_by)
-    );`))
-  .then(() => {
-    const srv = httpServer = app.listen(PORT, () => { console.log(`Glass Shop running on :${PORT}`); boost.tune(srv); setInterval(tick, 5 * 60 * 1000); setTimeout(tick, 20000); });
-    srv.keepAliveTimeout = 61e3; srv.headersTimeout = 65e3; // slow or half-open connections are dropped instead of piling up
-  })
-  .catch((e) => { console.error('Startup failed:', e); process.exit(1); });
+    );`));
+(async () => {
+  for (let n = 1; ; n++) {
+    try { await prepare(); break; }
+    catch (e) {
+      console.error(`Start-up attempt ${n} failed:`, e && e.message);
+      if (n >= 8) { console.error('Startup failed:', e); process.exit(1); }
+      await new Promise((r) => setTimeout(r, Math.min(15e3, 2e3 * n)));
+    }
+  }
+  shieldGuard.markReady();
+  shieldGuard.startIntegrity();
+  boost.tune(srv);
+  setInterval(tick, 5 * 60 * 1000); setTimeout(tick, 20000);
+  console.log('Glass Shop ready');
+})();
