@@ -19,6 +19,8 @@ app.use(compression({ threshold: 512, level: 5 }));
 // Safety headers on everything (content security policy, no framing, HTTPS-only, no sniffing...). See src/security.js.
 app.disable('x-powered-by');
 app.use(sec.headers);
+require('./shield')(app, { pool, auth });
+require('./admin-plus').early(app);
 // Flood protection, per visitor address. Generous, because a whole class may share one Wi-Fi address. The 5-second "has anything changed" check and pictures are not counted.
 app.use('/api', sec.limiter({ name: 'api', windowMs: 60e3, max: 1500, skip: (r) => r.path === '/rev' || /^\/products\/\d+\/image/.test(r.path) }));
 app.use('/api', sec.limiter({ name: 'changes', windowMs: 60e3, max: 300, skip: (r) => r.method === 'GET' || r.method === 'HEAD' }));
