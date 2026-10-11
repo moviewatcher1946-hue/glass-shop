@@ -1,6 +1,11 @@
 // 20 extra admin tools (main admin only). Mounted from server.js: require('./admin-plus')(app, { pool, auth, admin, wrap }).
 const os = require('os');
 
+const SYS = { hours: false, open: 8, close: 22, slowlog: false, slowms: 1000, trim: false, trimdays: 30, optimize: false, purge: false, purgedays: 90, awake: false };
+const SYSR = { hours: 'b', open: [0, 23], close: [1, 24], slowlog: 'b', slowms: [100, 30000], trim: 'b', trimdays: [1, 3650], optimize: 'b', purge: 'b', purgedays: [1, 3650], awake: 'b' };
+const PERF = { lite: false, nomotion: false, noglow: false, lazy: false, nohover: false, slowrefresh: false };
+const shared = { sys: { ...SYS }, slow: [] };
+
 module.exports = function mount(app, { pool, auth, admin, wrap }) {
   const q = (s, p) => pool.query(s, p);
   const bad = (m, c = 400) => Object.assign(new Error(m), { status: c });
@@ -21,14 +26,43 @@ module.exports = function mount(app, { pool, auth, admin, wrap }) {
   const ids = (a) => (Array.isArray(a) ? a.map(Number).filter(Number.isInteger).slice(0, 500) : []);
 
   // 1 + 2: public announcement and maintenance flag
-  app.get('/api/plus/public', wrap(async (req, res) => { res.set('Cache-Control', 'public, max-age=15'); res.json({ announcement: await get('announcement'), maintenance: (await get('maintenance')) === '1' }); }));
+  const readJ = async (k, d) => { try { return { ...d, ...JSON.parse((await get(k)) || '{}') }; } catch (e) { return { ...d }; } };
+  ready.then(() => readJ('sys', SYS)).then((v) => Object.assign(shared.sys, v)).catch(() => {});
+  app.get('/api/plus/public', wrap(async (req, res) => { res.set('Cache-Control', 'public, max-age=15'); res.json({ announcement: await get('announcement'), maintenance: (await get('maintenance')) === '1', perf: await readJ('perf', PERF) }); }));
   app.put('/api/plus/announcement', ...A, wrap(async (req, res) => { await set('announcement', String((req.body || {}).text || '').slice(0, 300)); await log(req, 'announcement', req.body.text); res.json({ ok: true }); }));
   app.put('/api/plus/maintenance', ...A, wrap(async (req, res) => { await set('maintenance', (req.body || {}).on ? '1' : '0'); await log(req, 'maintenance', req.body.on ? 'on' : 'off'); res.json({ ok: true }); }));
-  // Maintenance: only blocks customers placing orders; staff keep working.
+  // Maintenance and shop hours only stop customers placing new orders; staff keep working.
   app.use('/api/orders', async (req, res, next) => {
-    if (req.method === 'GET' || req.method === 'HEAD' || (await get('maintenance')) !== '1') return next();
-    res.status(503).json({ error: 'The shop is paused for maintenance. Please try again soon.' });
+    if (req.method !== 'POST' || req.path !== '/') return next();
+    if ((await get('maintenance')) === '1') return res.status(503).json({ error: 'The shop is paused for maintenance. Please try again soon.' });
+    const c = shared.sys;
+    if (c.hours) {
+      const h = new Date(Date.now() + 8 * 3600e3).getUTCHours();
+      const open = c.open <= c.close ? h >= c.open && h < c.close : h >= c.open || h < c.close;
+      if (!open) return res.status(503).json({ error: `The shop takes orders from ${c.open}:00 to ${c.close}:00 (Philippine time).` });
+    }
+    next();
   });
+
+  // Performance modes (applied by every visitor's browser) and system settings
+  app.get('/api/plus/perf', ...A, wrap(async (req, res) => res.json(await readJ('perf', PERF))));
+  app.put('/api/plus/perf', ...A, wrap(async (req, res) => { const cur = await readJ('perf', PERF), b = req.body || {}; for (const k of Object.keys(PERF)) if (k in b) cur[k] = !!b[k]; await set('perf', JSON.stringify(cur)); await log(req, 'performance', Object.keys(cur).filter((k) => cur[k]).join(',') || 'balanced'); res.json(cur); }));
+  app.get('/api/plus/sys', ...A, wrap(async (req, res) => res.json({ sys: shared.sys, slow: shared.slow })));
+  app.put('/api/plus/sys', ...A, wrap(async (req, res) => { const { key, value } = req.body || {}, r = SYSR[key]; if (!r) throw bad('Unknown setting.'); shared.sys[key] = r === 'b' ? !!value : Math.round(num(value, shared.sys[key], r[0], r[1])); await set('sys', JSON.stringify(shared.sys)); await log(req, 'system-setting', `${key} = ${shared.sys[key]}`); res.json({ sys: shared.sys }); }));
+  let lastDaily = 0;
+  const tick = async () => {
+    const c = shared.sys;
+    try {
+      if (c.awake && process.env.RENDER_EXTERNAL_URL && typeof fetch === 'function') fetch(process.env.RENDER_EXTERNAL_URL + '/api/plus/public').catch(() => {});
+      if (Date.now() - lastDaily > 24 * 3600e3) {
+        lastDaily = Date.now();
+        if (c.trim) await q("DELETE FROM audit_log WHERE at < now() - ($1||' days')::interval", [c.trimdays]);
+        if (c.purge) await q("DELETE FROM orders WHERE status='cancelled' AND created_at < now() - ($1||' days')::interval", [c.purgedays]);
+        if (c.optimize) await q('ANALYZE');
+      }
+    } catch (e) { console.error('admin-plus tick:', e.message); }
+  };
+  setInterval(tick, 10 * 60e3).unref(); setTimeout(tick, 60e3).unref();
 
   // 3 bulk sold-out toggle, 4 bulk price change, 5 duplicate product
   app.post('/api/plus/products/soldout', ...A, wrap(async (req, res) => { const i = ids(req.body.ids); const r = await q('UPDATE products SET is_sold_out=$2 WHERE id=ANY($1)', [i, !!req.body.soldOut]); await log(req, 'bulk-soldout', `${r.rowCount} items -> ${!!req.body.soldOut}`); res.json({ changed: r.rowCount }); }));
@@ -96,4 +130,21 @@ module.exports = function mount(app, { pool, auth, admin, wrap }) {
   // System
   G('recent-activity', 'SELECT at,username,action,detail FROM audit_log ORDER BY id DESC LIMIT 40');
   G('activity-users', "SELECT username, COUNT(*)::int actions, MAX(at) last FROM audit_log WHERE at > now()-interval '7 days' GROUP BY username ORDER BY actions DESC LIMIT 20");
+};
+
+// Mounted first in server.js so it times every API request.
+module.exports.early = function early(app) {
+  app.use((req, res, next) => {
+    if (!shared.sys.slowlog) return next();
+    const t = process.hrtime.bigint();
+    res.on('finish', () => {
+      const ms = Number(process.hrtime.bigint() - t) / 1e6;
+      if (ms >= shared.sys.slowms && req.originalUrl.startsWith('/api')) {
+        shared.slow.unshift({ at: new Date().toISOString(), ms: Math.round(ms), method: req.method, path: String(req.originalUrl).slice(0, 100), status: res.statusCode });
+        if (shared.slow.length > 30) shared.slow.pop();
+        console.warn(`[slow] ${req.method} ${req.originalUrl} ${Math.round(ms)}ms`);
+      }
+    });
+    next();
+  });
 };
