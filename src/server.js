@@ -21,6 +21,8 @@ app.disable('x-powered-by');
 app.use(sec.headers);
 require('./shield')(app, { pool, auth });
 require('./admin-plus').early(app);
+const boost = require('./boost');
+boost.early(app);
 // Flood protection, per visitor address. Generous, because a whole class may share one Wi-Fi address. The 5-second "has anything changed" check and pictures are not counted.
 app.use('/api', sec.limiter({ name: 'api', windowMs: 60e3, max: 1500, skip: (r) => r.path === '/rev' || /^\/products\/\d+\/image/.test(r.path) }));
 app.use('/api', sec.limiter({ name: 'changes', windowMs: 60e3, max: 300, skip: (r) => r.method === 'GET' || r.method === 'HEAD' }));
@@ -31,11 +33,13 @@ app.use('/api/auth', sec.limiter({ name: 'login-signup', windowMs: 10 * 60e3, ma
 // seconds and only download the real lists when it moved. Same live feel as before, a fraction of the outbound traffic.
 // (One server process, which is what Render's free plan runs. After a restart the id changes, so every phone refreshes once.)
 let REV = 0;
+const waiters = new Set(); // phones waiting on the live check (long poll)
+const bump = () => { REV = REV + 1; for (const w of [...waiters]) w(); };
 const BOOT_ID = Date.now().toString(36);
 app.use('/api', (req, res, next) => {
   // Live data must never be kept by a shared cache; the browser may keep it only to ask "has this changed?" (304, no body).
   res.set('Cache-Control', 'private, no-cache');
-  if (req.method !== 'GET' && req.method !== 'HEAD' && !req.path.startsWith('/auth/') && !req.path.startsWith('/favorites')) res.on('finish', () => { if (res.statusCode < 400) REV++; }); // logging in changes nothing anyone else sees
+  if (req.method !== 'GET' && req.method !== 'HEAD' && !req.path.startsWith('/auth/') && !req.path.startsWith('/favorites')) res.on('finish', () => { if (res.statusCode < 400) bump(); }); // logging in changes nothing anyone else sees
   next();
 });
 /* ---------- Activity log (who changed what) ---------- */
@@ -131,7 +135,7 @@ const upload = multer({
 async function squeeze(f) {
   if (!f || f.mimetype === 'image/gif') return f || null;
   try {
-    const buffer = await sharp(f.buffer).rotate().resize({ width: 1400, height: 1400, fit: 'inside', withoutEnlargement: true }).webp({ quality: 82 }).toBuffer();
+    const buffer = await sharp(f.buffer).rotate().resize({ width: 1400, height: 1400, fit: 'inside', withoutEnlargement: true }).webp({ quality: 90, smartSubsample: true }).toBuffer();
     return buffer.length < f.buffer.length ? { buffer, mimetype: 'image/webp' } : f;
   } catch (e) { return f; }
 }
@@ -370,11 +374,27 @@ app.get('/healthz', (req, res) => res.send('ok'));
 
 // What the phones ask every few seconds: a couple of dozen bytes. `w` covers things that change with the clock (the order cutoff).
 let revWin = { t: 0, v: '' };
-app.get('/api/rev', wrap(async (req, res) => {
+const refreshWin = async () => {
   if (Date.now() - revWin.t > 3000) { // many phones asking at once share one database visit
     const w = await orderWindow(pool);
     revWin = { t: Date.now(), v: `${w.closed ? 1 : 0}${w.label}${w.date}` };
   }
+};
+// Long poll: with ?wait=1&since=<what the phone last saw>, the answer is held (up to 15 s) until something changes, then sent at once.
+// Changes show up in about a second, and a quiet shop costs one tiny request per 15 seconds instead of one every 5.
+app.get('/api/rev', wrap(async (req, res) => {
+  await refreshWin();
+  const key = () => `${BOOT_ID}.${REV}|${revWin.v}`;
+  if (req.query.wait && String(req.query.since || '') === key() && waiters.size < 3000) {
+    await new Promise((ok) => {
+      const t = setTimeout(done, 15000);
+      function done() { clearTimeout(t); waiters.delete(done); req.off('close', done); ok(); }
+      waiters.add(done); req.on('close', done);
+    });
+    if (res.destroyed || req.destroyed) return;
+    await refreshWin();
+  }
+  res.set('Cache-Control', 'no-store');
   res.json({ r: `${BOOT_ID}.${REV}`, w: revWin.v });
 }));
 
@@ -495,17 +515,17 @@ app.get('/api/products/:id', wrap(async (req, res) => {
 
 // Picture sizes: the shop grid asks for ?w=480 (or 240 for small ones) instead of the full 1400 px photo, so a phone downloads
 // about 15-40 KB per product instead of 100-300 KB. Resized copies are kept in memory (least recently used goes first).
-const THUMB_WIDTHS = [160, 240, 480, 800], THUMB_BUDGET = 48 * 1024 * 1024;
+const THUMB_WIDTHS = [160, 240, 480, 640, 800, 1000, 1400], THUMB_BUDGET = 48 * 1024 * 1024;
 const thumbs = new Map(); let thumbBytes = 0;
 const thumbPending = new Map();
 async function thumbFor(id, ver, w, data, fmt = 'webp') {
-  if (!ver) return sharp(data).rotate().resize({ width: w, withoutEnlargement: true }).webp({ quality: 82 }).toBuffer(); // no version = no way to know when it goes stale
+  if (!ver) return sharp(data).rotate().resize({ width: w, withoutEnlargement: true }).webp({ quality: 88, smartSubsample: true }).toBuffer(); // no version = no way to know when it goes stale
   const key = `${id}:${ver}:${w}${fmt === 'avif' ? ':avif' : ''}`, hit = thumbs.get(key);
   if (hit) { thumbs.delete(key); thumbs.set(key, hit); return hit; }
   if (thumbPending.has(key)) return thumbPending.get(key);
   const base = sharp(data).rotate().resize({ width: w, withoutEnlargement: true });
   // AVIF at quality 50 looks like WebP at 72 but is roughly a quarter smaller. effort 3 keeps the encode cheap on a small server.
-  const job = (fmt === 'avif' ? base.avif({ quality: 50, effort: 3 }) : base.webp({ quality: 72 })).toBuffer()
+  const job = (fmt === 'avif' ? base.avif({ quality: 64, effort: 3, chromaSubsampling: '4:4:4' }) : base.webp({ quality: 86, smartSubsample: true })).toBuffer()
     .then((buf) => {
       thumbs.set(key, buf); thumbBytes += buf.length;
       for (const [k, v] of thumbs) { if (thumbBytes <= THUMB_BUDGET) break; thumbs.delete(k); thumbBytes -= v.length; }
@@ -711,6 +731,7 @@ app.patch('/api/products/discount', auth, staff, wrap(async (req, res) => {
 }));
 
 require('./admin-plus')(app, { pool, auth, admin, wrap });
+boost.mount(app, { pool, auth, admin, wrap });
 
 // Brings every open (pending or packed) order up to the shop's current prices: all products for the owner, a seller's own for a seller.
 app.post('/api/orders/reprice', auth, staff, wrap(async (req, res) => {
@@ -1951,7 +1972,7 @@ init()
       UNIQUE (user_id, blocked_by)
     );`))
   .then(() => {
-    const srv = httpServer = app.listen(PORT, () => { console.log(`Glass Shop running on :${PORT}`); setInterval(tick, 5 * 60 * 1000); setTimeout(tick, 20000); });
+    const srv = httpServer = app.listen(PORT, () => { console.log(`Glass Shop running on :${PORT}`); boost.tune(srv); setInterval(tick, 5 * 60 * 1000); setTimeout(tick, 20000); });
     srv.keepAliveTimeout = 61e3; srv.headersTimeout = 65e3; // slow or half-open connections are dropped instead of piling up
   })
   .catch((e) => { console.error('Startup failed:', e); process.exit(1); });
