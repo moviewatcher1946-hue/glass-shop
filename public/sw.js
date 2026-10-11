@@ -1,7 +1,7 @@
 // Snack Shop service worker: installable, fast on bad signal.
 // Pages and files: network first (a new deploy shows right away), but if the network takes over 4 s the saved copy is shown instead.
 // Product pictures and the /vendor scripts: saved on the device, shown instantly. Live data (/api/...) is never stored.
-const CACHE = 'shop-v19-boost';
+const CACHE = 'shop-v20-fix';
 const IMG = 'shop-img-v1';
 const SHELL = ['/', '/style.css', '/boost.css', '/app.js', '/boost.js', '/tour.js', '/admin-plus.js', '/manifest.json', '/icon-192.png', '/icon-512.png', '/vendor/gsap.min.js', '/vendor/lenis.min.js'];
 
