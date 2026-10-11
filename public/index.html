@@ -51,7 +51,7 @@
 </head>
 <body>
   <div id="gw" role="status" aria-live="polite">
-    <div class="gw-cols" aria-hidden="true"></div><div class="gw-rows" aria-hidden="true"></div><div class="gw-panes" aria-hidden="true"></div><div class="gw-shine" aria-hidden="true"></div>
+    <div class="gw-cols" aria-hidden="true"></div><div class="gw-rows" aria-hidden="true"></div><div class="gw-shine" aria-hidden="true"></div>
     <div class="gw-wipe" style="--w:0" aria-hidden="true"></div><div class="gw-wipe" style="--w:1" aria-hidden="true"></div><div class="gw-wipe" style="--w:2" aria-hidden="true"></div>
     <div class="gw-center">
       <div class="gw-title" aria-label="Snack Shop"><span style="--i:0">S</span><span style="--i:1">n</span><span style="--i:2">a</span><span style="--i:3">c</span><span style="--i:4">k</span><span style="--i:5">&nbsp;</span><span style="--i:6">S</span><span style="--i:7">h</span><span style="--i:8">o</span><span style="--i:9">p</span></div>
@@ -71,8 +71,6 @@
       function dir(k) { return k % 2 ? -1 : 1; }
       fill('.gw-cols', 14, function (k) { return '<i style="--i:' + k + ';--s:' + dir(k) + '"></i>'; });
       fill('.gw-rows', 9, function (k) { return '<i style="--i:' + k + ';--s:' + dir(k) + '"></i>'; });
-      var P = [[6, 10, 22, 26, -8], [62, 6, 30, 18, 10], [70, 52, 24, 34, -12], [10, 58, 28, 30, 9], [40, 70, 20, 22, -6], [44, 14, 16, 14, 14], [84, 30, 12, 20, 6]];
-      fill('.gw-panes', P.length, function (k) { var p = P[k]; return '<i style="--i:' + k + ';--x:' + p[0] + '%;--y:' + p[1] + '%;--w:' + p[2] + '%;--h:' + p[3] + '%;--r:' + p[4] + 'deg"></i>'; });
       body.classList.add('booting'); // hides the page underneath so the phone only has the animation to draw
       function say(t) { msg.textContent = t; msg.classList.add('on'); }
       function lift(cls, ms) {
