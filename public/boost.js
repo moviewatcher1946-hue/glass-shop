@@ -1,258 +1,205 @@
-// Boost: performance, polish and admin tools. Loaded after app.js. Nothing here is required: if any part fails, the shop keeps working.
-(function () {
-  'use strict';
-  const R = document.documentElement;
-  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const fine = matchMedia('(hover:hover) and (pointer:fine)').matches;
-  const lite = () => R.dataset.glass === 'lite';
-  const ls = {
-    get(k, d) { try { const v = localStorage.getItem('bx_' + k); return v === null ? d : v; } catch (e) { return d; } },
-    set(k, v) { try { localStorage.setItem('bx_' + k, v); } catch (e) { /* private mode */ } },
-  };
-  const say = (m) => { try { if (typeof toast === 'function') toast(m); } catch (e) { /* ignore */ } };
-  const el = (tag, id, html, cls) => { const e = document.createElement(tag); if (id) e.id = id; if (cls) e.className = cls; if (html) e.innerHTML = html; document.body.appendChild(e); return e; };
-  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const raf = (f) => { let q = false; return (...a) => { if (q) return; q = true; requestAnimationFrame(() => { q = false; f(...a); }); }; };
-  const safe = (f) => { try { f(); } catch (e) { /* one feature failing must not stop the rest */ } };
+// Boost: extra security, live stats and admin tools.
+// server.js calls boost.early(app) near the top, boost.mount(app, {...}) after the other admin tools, and boost.tune(server) once listening.
+// Plain Node, no extra packages. State lives in memory (fine for one Render process); a restart clears it.
+const express = require('express');
+const fs = require('fs');
+const path = require('path');
+const { monitorEventLoopDelay } = require('perf_hooks');
+const sec = require('./security');
 
-  /* 1-3. Performance mode: when the device looks slow (data saver, slow network, weak CPU, low battery, low frame rate) it ASKS before
-     switching to lite mode. "Not now" is remembered for 30 days. Press L any time to switch by hand. */
-  const ask = (why) => {
-    if (lite() || localStorage.glass || Date.now() < Number(ls.get('noperf', 0)) || sessionStorage.bxask) return;
-    try { sessionStorage.bxask = '1'; } catch (e) { /* ignore */ }
-    const p = el('div', 'bx-perf', '<span>' + why + ' Switch to lite mode for smoother scrolling?</span><button type="button" class="primary">Switch</button><button type="button">Not now</button>', 'bx-pill glass');
-    requestAnimationFrame(() => p.classList.add('on'));
-    const b = p.querySelectorAll('button');
-    b[0].onclick = () => { R.dataset.glass = 'lite'; try { localStorage.glass = 'lite'; } catch (e) { /* ignore */ } p.remove(); say('Lite mode on. Press L to switch back.'); };
-    b[1].onclick = () => { ls.set('noperf', Date.now() + 30 * 864e5); p.remove(); };
-    setTimeout(() => { if (p.isConnected) { p.classList.remove('on'); setTimeout(() => p.remove(), 500); } }, 25000);
-  };
-  safe(() => {
-    const c = navigator.connection || {};
-    const why = c.saveData ? 'Data saver is on.' : /(^|-)2g$/.test(c.effectiveType || '') ? 'Your connection is slow.'
-      : (navigator.deviceMemory && navigator.deviceMemory <= 4) || navigator.hardwareConcurrency <= 2 ? 'This device looks like it has limited power.'
-      : matchMedia('(prefers-reduced-transparency: reduce)').matches ? 'Your device asks for less transparency.' : '';
-    if (why) setTimeout(() => ask(why), 4000);
-    if (navigator.getBattery) navigator.getBattery().then((b) => { if (!b.charging && b.level < 0.2) setTimeout(() => ask('Battery is low.'), 5000); });
-  });
-  safe(() => {
-    if (reduce || lite() || sessionStorage.bxfps) return;
-    const run = () => {
-      let n = 0, t0 = 0;
-      const tick = (t) => { if (!t0) t0 = t; n++; if (t - t0 < 2200) return requestAnimationFrame(tick); const fps = n / ((t - t0) / 1000); sessionStorage.bxfps = '1'; if (fps < 38 && !document.hidden) ask('The page is running slowly.'); };
-      requestAnimationFrame(tick);
-    };
-    let started = false; const go = () => { if (!started) { started = true; setTimeout(run, 1500); } };
-    window.addEventListener('bootdone', go, { once: true }); setTimeout(go, 6000);
+const lag = monitorEventLoopDelay({ resolution: 20 });
+lag.enable();
+const started = Date.now();
+const BAN_MS = 30 * 60e3;
+const ALLOWED = String(process.env.ALLOWED_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean);
+const TZ = process.env.SHOP_TZ || 'Asia/Manila';
+
+const stat = { total: 0, s2: 0, s3: 0, s4: 0, s5: 0, lat: [], mins: new Map(), routes: new Map() };
+const bans = new Map(); // ip -> { until, why, at }
+const strikes = new Map(); // ip -> { n, t }
+const vitals = { lcp: [], fcp: [], cls: [], inp: [], ttfb: [], cpu: [] };
+
+// Paths that only bots and scanners ask for (this shop is Node, not WordPress/PHP). 4 strikes in 10 minutes = 30 minute ban.
+const SCAN = /^\/(wp-|wordpress|xmlrpc|phpmyadmin|pma\b|\.env|\.git|\.aws|\.ssh|\.ds_store|cgi-bin|actuator|server-status|vendor\/phpunit|boaform|owa\/|autodiscover|config\.(json|php|yml))|\.(php\d?|asp|aspx|jsp|cgi|sql|bak|env|ini|swp)(\?|$)/i;
+
+const pct = (arr, p) => { if (!arr.length) return 0; const a = [...arr].sort((x, y) => x - y); return a[Math.min(a.length - 1, Math.floor(a.length * p))]; };
+const push = (arr, v, cap = 300) => { arr.push(v); if (arr.length > cap) arr.shift(); };
+const num = (v, lo, hi) => (Number.isFinite(Number(v)) && Number(v) >= lo && Number(v) <= hi ? Number(v) : null);
+
+function strike(ip, req, why) {
+  if (!ip) return;
+  const now = Date.now();
+  let s = strikes.get(ip);
+  if (!s || now - s.t > 10 * 60e3) s = { n: 0, t: now };
+  s.n++; strikes.set(ip, s);
+  if (strikes.size > 5000) strikes.clear();
+  if (s.n === 1) sec.logEvent('scanner', req, `probe ${String(why).slice(0, 80)}`);
+  if (s.n >= 4 && !bans.has(ip)) {
+    if (bans.size > 5000) bans.clear();
+    bans.set(ip, { until: now + BAN_MS, why: 'scanner probes', at: now });
+    sec.logEvent('auto_ban', req, `30 min ban after ${s.n} probes`);
+  }
+}
+
+const VENDOR = { 'gsap.min.js': 'gsap/dist/gsap.min.js', 'lenis.min.js': 'lenis/dist/lenis.min.js' };
+
+function early(app) {
+  app.disable('x-powered-by');
+
+  // Scripts the shop needs are served from this site (installed by npm), so no outside script host is needed and the CSP can say 'self' only.
+  app.get('/vendor/:f', (req, res, next) => {
+    const rel = VENDOR[req.params.f];
+    if (!rel) return next();
+    const p = path.join(__dirname, '../node_modules', rel);
+    if (!fs.existsSync(p)) return res.status(404).type('text').send('Not installed.');
+    res.set('Cache-Control', 'public, max-age=31536000, immutable');
+    res.sendFile(p);
   });
 
-  /* 4. Hidden-tab pause, 5. tab title when away, 6. theme-color follows the theme */
-  safe(() => {
-    const title = document.title;
-    document.addEventListener('visibilitychange', () => { R.classList.toggle('bx-hid', document.hidden); document.title = document.hidden ? 'Still here, come back for a snack' : title; });
-    const tc = document.querySelector('meta[name=theme-color]');
-    const sync = () => { if (tc) setTimeout(() => { const v = getComputedStyle(R).getPropertyValue('--bg').trim(); if (v) tc.content = v; }, 80); }; // browser bars take the page's real background colour
-    sync(); new MutationObserver(sync).observe(R, { attributes: true, attributeFilter: ['data-theme'] });
-  });
+  app.use((req, res, next) => {
+    const ip = req.ip || '';
+    const b = bans.get(ip);
+    if (b) { if (Date.now() < b.until) return res.status(403).type('text').send('Blocked.'); bans.delete(ip); }
+    if (SCAN.test(req.path)) { strike(ip, req, req.path); return res.status(404).type('text').send('Not found.'); }
 
-  /* 7. Scroll progress, 8. header shadow (the shop already has its own back-to-top button) */
-  safe(() => {
-    const bar = el('div', 'bx-progress');
-    const upd = raf(() => {
-      const h = R.scrollHeight - innerHeight, y = scrollY;
-      bar.style.transform = 'scaleX(' + (h > 0 ? Math.min(1, y / h) : 0) + ')';
-      R.classList.toggle('bx-sc', y > 12);
+    // Same-site check for anything that changes data: a form on another website cannot make a visitor's browser act on this shop.
+    if (!/^(GET|HEAD|OPTIONS)$/.test(req.method)) {
+      const o = req.get('origin');
+      if (o && o !== 'null') {
+        let h = '';
+        try { h = new URL(o).host; } catch (e) { /* bad header */ }
+        if (h !== req.get('host') && !ALLOWED.includes(h)) {
+          sec.logEvent('bad_origin', req, `${req.method} ${req.path} from ${o}`);
+          return res.status(403).json({ error: 'Blocked: that request came from another website.' });
+        }
+      }
+    }
+
+    // Numbers for Admin Pulse. The 15-second live check is left out so it does not skew the averages.
+    if (req.path === '/api/rev') return next();
+    const t = process.hrtime.bigint();
+    res.on('finish', () => {
+      const ms = Number(process.hrtime.bigint() - t) / 1e6;
+      stat.total++;
+      const k = res.statusCode;
+      if (k >= 500) stat.s5++; else if (k >= 400) stat.s4++; else if (k >= 300) stat.s3++; else stat.s2++;
+      const m = Math.floor(Date.now() / 60000);
+      stat.mins.set(m, (stat.mins.get(m) || 0) + 1);
+      if (stat.mins.size > 70) for (const key of stat.mins.keys()) if (key < m - 60) stat.mins.delete(key);
+      if (req.originalUrl.startsWith('/api')) {
+        push(stat.lat, ms, 500);
+        const rk = `${req.method} ${req.baseUrl || ''}${req.route ? req.route.path : '?'}`.slice(0, 80);
+        let r = stat.routes.get(rk);
+        if (!r) { if (stat.routes.size > 200) return; r = { n: 0, sum: 0, max: 0 }; stat.routes.set(rk, r); }
+        r.n++; r.sum += ms; if (ms > r.max) r.max = ms;
+      }
     });
-    addEventListener('scroll', upd, { passive: true }); upd();
+    next();
+  });
+}
+
+function mount(app, { pool, auth, admin, wrap }) {
+  const A = [auth, admin];
+  const q = (s, p) => pool.query(s, p);
+  const log = (req, a, d) => q('INSERT INTO audit_log (user_id, username, role, action, detail) VALUES ($1,$2,$3,$4,$5)', [req.user.id, req.user.username, req.user.role, a, String(d || '').slice(0, 500)]).catch(() => {});
+  const ipOk = (s) => typeof s === 'string' && s.length <= 64 && /^[0-9a-f:.]+$/i.test(s);
+
+  // Real-visitor speed numbers sent by public/boost.js (a few bytes, once per visit).
+  const vit = express.json({ limit: '2kb' });
+  app.post('/api/boost/vitals', sec.limiter({ name: 'vitals', windowMs: 60e3, max: 30 }), vit, (req, res) => {
+    const b = req.body || {};
+    for (const [k, hi] of [['lcp', 60000], ['fcp', 60000], ['inp', 10000], ['ttfb', 60000], ['cls', 10], ['cpu', 10000]]) { const v = num(b[k], 0, hi); if (v !== null) push(vitals[k], v); }
+    res.status(204).end();
   });
 
-  /* 10. Aurora, 11. spotlight following the pointer, 12. film grain */
-  safe(() => {
-    if (reduce) return;
-    el('div', 'bx-aurora', '<i></i><i></i><i></i>').setAttribute('aria-hidden', 'true');
-    el('div', 'bx-grain').setAttribute('aria-hidden', 'true');
-    if (!fine) return;
-    const s = el('div', 'bx-spot'); s.setAttribute('aria-hidden', 'true');
-    let x = 0, y = 0; const mv = raf(() => { s.style.transform = 'translate3d(' + x + 'px,' + y + 'px,0)'; });
-    addEventListener('pointermove', (e) => { x = e.clientX; y = e.clientY; s.classList.add('on'); mv(); }, { passive: true });
-    document.addEventListener('pointerleave', () => s.classList.remove('on'));
+  // Browsers report anything the content security policy blocked; it lands in Admin > System > Security.
+  const cspParse = express.json({ type: ['application/csp-report', 'application/json', 'application/reports+json'], limit: '8kb' });
+  app.post('/api/boost/csp', sec.limiter({ name: 'csp', windowMs: 60e3, max: 20 }), cspParse, (req, res) => {
+    const r = (req.body && (req.body['csp-report'] || req.body)) || {};
+    sec.logEvent('csp_block', req, `${r['violated-directive'] || r.effectiveDirective || '?'} blocked ${r['blocked-uri'] || r.blockedURL || '?'}`);
+    res.status(204).end();
   });
 
-  /* 13. (tilt removed: it softened pictures) 14. magnetic primary buttons (fine pointers only; uses rotate/translate so it never fights the existing transforms) */
-  safe(() => {
-    if (reduce || !fine) return;
-    let cur = null;
-    const reset = (t) => { if (t) { t.style.rotate = ''; t.style.translate = ''; } };
-    document.addEventListener('pointermove', raf((e) => {
-      if (lite()) return;
-      const btn = e.target.closest && e.target.closest('button.primary');
-      const t = btn;
-      if (cur && cur !== t) reset(cur);
-      cur = t || null; if (!t) return;
-      const r = t.getBoundingClientRect(), nx = (e.clientX - r.left) / r.width - 0.5, ny = (e.clientY - r.top) / r.height - 0.5;
-      t.style.translate = (nx * 6).toFixed(1) + 'px ' + (ny * 4).toFixed(1) + 'px';
-    }), { passive: true });
-    document.addEventListener('pointerleave', () => reset(cur), true);
-  });
+  app.get('/robots.txt', (req, res) => res.type('text').send('User-agent: *\nDisallow: /api/\nAllow: /\n'));
+  if (process.env.SECURITY_CONTACT) {
+    app.get('/.well-known/security.txt', (req, res) => res.type('text').send(`Contact: ${process.env.SECURITY_CONTACT}\nExpires: ${new Date(Date.now() + 365 * 864e5).toISOString()}\nPreferred-Languages: en\n`));
+  }
 
-  /* 15. Cards rise in as they scroll into view (only the first time each card is seen), 16. lazy + async + fade-in pictures */
-  safe(() => {
-    const main = document.getElementById('app') || document.body;
-    const seen = new Set(); let imgs = 0;
-    const io = 'IntersectionObserver' in window && !reduce ? new IntersectionObserver((es) => {
-      let i = 0;
-      es.forEach((e) => { if (!e.isIntersecting) return; const c = e.target; io.unobserve(c); c.style.setProperty('--bx-d', Math.min(i++, 8) * 55 + 'ms'); c.classList.remove('bx-pre'); c.classList.add('bx-in'); });
-    }, { rootMargin: '0px 0px -6% 0px', threshold: 0.05 }) : null;
-    if (io) R.classList.add('bx-rv');
-    const card = (c) => {
-      if (!io || c.dataset.bx) return; c.dataset.bx = '1';
-      const key = (c.textContent || '').trim().slice(0, 70);
-      if (!key || seen.has(key)) return; seen.add(key);
-      c.classList.add('bx-pre'); io.observe(c);
-      setTimeout(() => { c.classList.remove('bx-pre'); }, 3500); // safety: never leave a card hidden
-    };
-    const img = (i) => {
-      if (i.dataset.bx) return; i.dataset.bx = '1';
-      if (!i.hasAttribute('decoding')) i.decoding = 'async';
-      if (imgs++ < 6) { i.fetchPriority = 'high'; } else { if (!i.hasAttribute('loading')) i.loading = 'lazy'; i.fetchPriority = 'low'; }
-      if (!i.complete) { i.classList.add('bx-f'); const ok = () => i.classList.add('bx-ok'); i.addEventListener('load', ok, { once: true }); i.addEventListener('error', ok, { once: true }); setTimeout(ok, 6000); }
-    };
-    const scan = (n) => { if (n.nodeType !== 1) return; if (n.matches('.card')) card(n); if (n.matches('img')) img(n); n.querySelectorAll && n.querySelectorAll('.card,img').forEach((x) => (x.matches('.card') ? card(x) : img(x))); };
-    new MutationObserver((ms) => ms.forEach((m) => m.addedNodes.forEach(scan))).observe(main, { childList: true, subtree: true });
-    scan(main);
-  });
-
-  /* 17. Tap feedback: a tiny vibration on phones (switch off with localStorage.bx_haptic = 0) */
-  safe(() => {
-    if (!navigator.vibrate || reduce || ls.get('haptic', '1') === '0') return;
-    document.addEventListener('pointerdown', (e) => { if (e.pointerType === 'touch' && e.target.closest && e.target.closest('button:not(:disabled)')) navigator.vibrate(6); }, { passive: true });
-  });
-
-  /* 18. Offline pill, 19. install-app pill */
-  safe(() => {
-    const net = el('div', 'bx-net', 'You are offline. Showing what was saved.', 'bx-pill glass');
-    const sync = () => { net.classList.toggle('on', !navigator.onLine); };
-    addEventListener('offline', sync); addEventListener('online', () => { sync(); say('Back online.'); }); sync();
-    let ev = null;
-    addEventListener('beforeinstallprompt', (e) => {
-      e.preventDefault(); ev = e;
-      if (Date.now() - Number(ls.get('noinst', 0)) < 14 * 864e5) return;
-      setTimeout(() => {
-        const p = el('div', 'bx-install', '<span>Install Snackify on your phone</span><button type="button" class="primary">Install</button><button type="button" aria-label="Close">x</button>', 'bx-pill glass');
-        requestAnimationFrame(() => p.classList.add('on'));
-        const b = p.querySelectorAll('button');
-        b[0].onclick = () => { ev.prompt(); p.remove(); };
-        b[1].onclick = () => { ls.set('noinst', Date.now()); p.remove(); };
-      }, 20000);
+  /* ---------- Admin Pulse (main admin only) ---------- */
+  app.get('/api/admin/boost/stats', ...A, wrap(async (req, res) => {
+    const [db, c] = await Promise.all([
+      q('SELECT pg_database_size(current_database())::float AS bytes'),
+      q('SELECT (SELECT count(*) FROM users)::int users, (SELECT count(*) FROM products)::int products, (SELECT count(*) FROM orders)::int orders, (SELECT count(*) FROM audit_log)::int audit'),
+    ]);
+    const mem = process.memoryUsage();
+    const m = Math.floor(Date.now() / 60000);
+    const perMin = []; for (let i = 29; i >= 0; i--) perMin.push(stat.mins.get(m - i) || 0);
+    const routes = [...stat.routes].map(([k, v]) => ({ route: k, n: v.n, avg: Math.round(v.sum / v.n), max: Math.round(v.max) })).sort((a, b) => b.avg - a.avg).slice(0, 6);
+    const med = (a) => Math.round(pct(a, 0.5) * 100) / 100, p75 = (a) => Math.round(pct(a, 0.75) * 100) / 100;
+    res.set('Cache-Control', 'no-store');
+    res.json({
+      uptime: Math.round((Date.now() - started) / 1000), node: process.version, env: process.env.NODE_ENV || 'dev',
+      mem: { rss: mem.rss, heap: mem.heapUsed, heapTotal: mem.heapTotal },
+      loop: { mean: Math.round(lag.mean / 1e6 * 10) / 10, p99: Math.round(lag.percentile(99) / 1e6 * 10) / 10 },
+      req: { total: stat.total, s2: stat.s2, s3: stat.s3, s4: stat.s4, s5: stat.s5, p50: Math.round(pct(stat.lat, 0.5)), p95: Math.round(pct(stat.lat, 0.95)), perMin },
+      routes,
+      pool: { total: pool.totalCount, idle: pool.idleCount, waiting: pool.waitingCount },
+      db: { bytes: db.rows[0].bytes, ...c.rows[0] },
+      vitals: { n: vitals.lcp.length, lcp: p75(vitals.lcp), fcp: p75(vitals.fcp), cls: p75(vitals.cls), inp: p75(vitals.inp), ttfb: med(vitals.ttfb), cpu: p75(vitals.cpu) },
+      bans: [...bans].filter(([, b]) => b.until > Date.now()).map(([ip, b]) => ({ ip, why: b.why, mins: Math.ceil((b.until - Date.now()) / 60000) })).slice(0, 50),
+      events: sec.recentEvents(12),
     });
-  });
+  }));
 
-  /* 20. Keyboard shortcuts: / search, t theme, l lite mode, g top, ? help, Esc closes */
-  safe(() => {
-    const help = el('div', 'bx-help', '<div class="glass"><h3>Keyboard shortcuts</h3><p><span>Search</span><kbd>/</kbd></p><p><span>Light / dark</span><kbd>t</kbd></p><p><span>Lite mode (faster)</span><kbd>l</kbd></p><p><span>Back to top</span><kbd>g</kbd></p><p><span>Admin Pulse</span><kbd>p</kbd></p><p><span>This help</span><kbd>?</kbd></p></div>');
-    help.onclick = () => help.classList.remove('on');
-    document.addEventListener('keydown', (e) => {
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
-      const t = e.target, typing = t && (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.isContentEditable);
-      if (e.key === 'Escape') { help.classList.remove('on'); return; }
-      if (typing) return;
-      if (e.key === '/') { const s = document.getElementById('search') || document.querySelector('input[type=search]'); if (s) { e.preventDefault(); s.focus(); } }
-      else if (e.key === 't') { const b = document.getElementById('theme'); b && b.click(); }
-      else if (e.key === 'l') { const on = !lite(); if (on) R.dataset.glass = 'lite'; else delete R.dataset.glass; try { localStorage.glass = on ? 'lite' : 'full'; } catch (x) { /* ignore */ } say(on ? 'Lite mode on.' : 'Full glass on.'); }
-      else if (e.key === 'g') { if (window.__lenis) window.__lenis.scrollTo(0); else scrollTo({ top: 0, behavior: reduce ? 'auto' : 'smooth' }); }
-      else if (e.key === 'p') { const b = document.getElementById('bx-pbtn'); b && b.classList.contains('on') && b.click(); }
-      else if (e.key === '?') help.classList.toggle('on');
-    });
-  });
+  app.post('/api/admin/boost/unban', ...A, wrap(async (req, res) => {
+    const ip = req.body && req.body.ip;
+    if (!ipOk(ip)) return res.status(400).json({ error: 'Bad address.' });
+    bans.delete(ip); strikes.delete(ip);
+    await log(req, 'unban', ip);
+    res.json({ ok: true });
+  }));
 
-  /* 21. Confetti (Konami code, or window.bxConfetti()) */
-  const confetti = () => {
-    if (reduce) return;
-    const c = el('canvas', 'bx-conf'), x = c.getContext('2d'); c.width = innerWidth; c.height = innerHeight;
-    const cols = ['#7c8cff', '#c084fc', '#38bdf8', '#f472b6', '#facc15', '#34d399'];
-    const ps = Array.from({ length: 130 }, () => ({ x: innerWidth / 2, y: innerHeight * 0.65, vx: (Math.random() - 0.5) * 16, vy: -Math.random() * 16 - 6, s: 4 + Math.random() * 6, c: cols[(Math.random() * cols.length) | 0], r: Math.random() * 6 }));
-    let f = 0;
-    (function step() { x.clearRect(0, 0, c.width, c.height); ps.forEach((p) => { p.vy += 0.35; p.x += p.vx; p.y += p.vy; p.r += 0.2; x.fillStyle = p.c; x.save(); x.translate(p.x, p.y); x.rotate(p.r); x.fillRect(-p.s / 2, -p.s / 4, p.s, p.s / 2); x.restore(); }); if (++f < 150) requestAnimationFrame(step); else c.remove(); })();
-  };
-  window.bxConfetti = confetti;
-  safe(() => {
-    const k = ['ArrowUp', 'ArrowUp', 'ArrowDown', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'ArrowLeft', 'ArrowRight', 'b', 'a']; let i = 0;
-    document.addEventListener('keydown', (e) => { i = e.key === k[i] ? i + 1 : e.key === k[0] ? 1 : 0; if (i === k.length) { i = 0; confetti(); } });
-  });
+  app.post('/api/admin/boost/ban', ...A, wrap(async (req, res) => {
+    const ip = req.body && req.body.ip, mins = Math.max(1, Math.min(10080, Number(req.body && req.body.minutes) || 60));
+    if (!ipOk(ip)) return res.status(400).json({ error: 'Bad address.' });
+    if (ip === req.ip) return res.status(400).json({ error: 'That is your own address.' });
+    bans.set(ip, { until: Date.now() + mins * 60e3, why: `by ${req.user.username}`, at: Date.now() });
+    await log(req, 'ban', `${ip} for ${mins} min`);
+    res.json({ ok: true });
+  }));
 
-  /* 22. Real-visitor speed numbers (FCP, LCP, CLS, INP, TTFB) sent once per visit to the admin's Pulse panel */
-  safe(() => {
-    if (Math.random() > 0.5 || !('PerformanceObserver' in window)) return;
-    const v = {}; let cls = 0, inp = 0;
-    const ob = (type, fn) => { try { new PerformanceObserver((l) => l.getEntries().forEach(fn)).observe({ type, buffered: true, durationThreshold: 40 }); } catch (e) { /* unsupported */ } };
-    ob('paint', (e) => { if (e.name === 'first-contentful-paint') v.fcp = e.startTime; });
-    ob('largest-contentful-paint', (e) => { v.lcp = e.startTime; });
-    ob('layout-shift', (e) => { if (!e.hadRecentInput) cls += e.value; });
-    ob('event', (e) => { if (e.duration > inp) inp = e.duration; });
-    const nav = performance.getEntriesByType('navigation')[0]; if (nav) v.ttfb = nav.responseStart;
-    let sent = false;
-    document.addEventListener('visibilitychange', () => {
-      if (!document.hidden || sent || !v.lcp) return; sent = true; v.cls = cls; if (inp) v.inp = inp;
-      try { navigator.sendBeacon('/api/boost/vitals', new Blob([JSON.stringify(v)], { type: 'application/json' })); } catch (e) { /* ignore */ }
-    });
-  });
+  // Sales insights: best sellers, best customers, busiest hours and weekdays. Cached 20 seconds so refreshing never hammers the database.
+  const ins = new Map();
+  app.get('/api/admin/boost/insights', ...A, wrap(async (req, res) => {
+    const days = Math.max(1, Math.min(365, parseInt(req.query.days, 10) || 30));
+    const hit = ins.get(days);
+    res.set('Cache-Control', 'no-store');
+    if (hit && Date.now() - hit.t < 20e3) return res.json(hit.v);
+    const ok = "o.created_at > now() - make_interval(days => $1::int) AND o.status NOT IN ('cancelled','canceled','declined','rejected')";
+    const [top, cust, hours, dows] = await Promise.all([
+      q(`SELECT oi.title, sum(oi.quantity)::int qty, sum(oi.quantity*oi.unit_price)::float rev FROM order_items oi JOIN orders o ON o.id=oi.order_id WHERE ${ok} GROUP BY oi.title ORDER BY rev DESC LIMIT 8`, [days]),
+      q(`SELECT u.username, count(*)::int orders, sum(o.total)::float spent FROM orders o JOIN users u ON u.id=o.user_id WHERE ${ok} GROUP BY u.username ORDER BY spent DESC LIMIT 5`, [days]),
+      q(`SELECT extract(hour from o.created_at AT TIME ZONE $2)::int k, count(*)::int n FROM orders o WHERE ${ok} GROUP BY 1`, [days, TZ]),
+      q(`SELECT extract(dow from o.created_at AT TIME ZONE $2)::int k, count(*)::int n FROM orders o WHERE ${ok} GROUP BY 1`, [days, TZ]),
+    ]);
+    const fill = (rows, n) => { const a = new Array(n).fill(0); rows.forEach((r) => { a[r.k] = r.n; }); return a; };
+    const v = { days, top: top.rows, customers: cust.rows, hours: fill(hours.rows, 24), weekdays: fill(dows.rows, 7) };
+    if (ins.size > 20) ins.clear();
+    ins.set(days, { t: Date.now(), v });
+    res.json(v);
+  }));
 
-  /* 23. Admin Pulse: live server health, speed, security and sales insight (main admin only) */
-  safe(() => {
-    const isMain = () => { try { return typeof isAdmin === 'function' && isAdmin(); } catch (e) { return false; } };
-    const btn = el('button', 'bx-pbtn', '<svg viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>', 'glass');
-    btn.type = 'button'; btn.setAttribute('aria-label', 'Admin Pulse');
-    const panel = el('div', 'bx-pulse', '', 'glass');
-    let timer = null, days = 30, ins = null;
-    const fmtB = (b) => (b > 1e9 ? (b / 1e9).toFixed(2) + ' GB' : b > 1e6 ? (b / 1e6).toFixed(1) + ' MB' : Math.round(b / 1e3) + ' KB');
-    const fmtT = (s) => (s > 86400 ? Math.floor(s / 86400) + 'd ' + Math.floor((s % 86400) / 3600) + 'h' : s > 3600 ? Math.floor(s / 3600) + 'h ' + Math.floor((s % 3600) / 60) + 'm' : Math.floor(s / 60) + 'm ' + (s % 60) + 's');
-    const money = (n) => Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 2 });
-    const spark = (a) => { const m = Math.max(1, ...a), w = 100 / a.length; return '<svg class="bx-spark" viewBox="0 0 100 40" preserveAspectRatio="none">' + a.map((v, i) => '<rect x="' + (i * w + w * 0.12).toFixed(2) + '" y="' + (40 - (v / m) * 38).toFixed(2) + '" width="' + (w * 0.76).toFixed(2) + '" height="' + ((v / m) * 38 + 0.5).toFixed(2) + '" rx="1"/>').join('') + '</svg>'; };
-    const tile = (v, l, c) => '<div class="bx-t ' + (c || '') + '"><b>' + esc(v) + '</b><span>' + esc(l) + '</span></div>';
-    const grade = (v, good, ok) => (v <= good ? 'good' : v <= ok ? 'warn' : 'bad');
-    const draw = (s) => {
-      const q = s.req, v = s.vitals, e = s.events || [];
-      panel.innerHTML = '<h3>Admin Pulse <button type="button" data-x="close" aria-label="Close">x</button></h3>'
-        + '<div class="bx-g">' + tile(fmtT(s.uptime), 'uptime') + tile(q.p50 + ' ms', 'API median', grade(q.p50, 120, 400)) + tile(q.p95 + ' ms', 'API p95', grade(q.p95, 400, 1200)) + tile(s.loop.p99 + ' ms', 'loop lag p99', grade(s.loop.p99, 40, 150))
-        + tile(fmtB(s.mem.rss), 'memory used', s.mem.rss > 4.2e8 ? 'bad' : s.mem.rss > 3.2e8 ? 'warn' : 'good') + tile(q.s5, 'server errors', q.s5 ? 'bad' : 'good') + tile(q.s4, 'client errors') + tile(s.pool.total + '/' + s.pool.idle + '/' + s.pool.waiting, 'db conns total/idle/wait') + '</div>'
-        + '<h4>Requests per minute (last 30)</h4>' + spark(q.perMin)
-        + '<h4>Database</h4><div class="bx-g">' + tile(fmtB(s.db.bytes), 'size') + tile(s.db.orders, 'orders') + tile(s.db.products, 'products') + tile(s.db.users, 'accounts') + tile(s.db.audit, 'log lines') + '</div>'
-        + '<h4>Real visitors (' + v.n + ' visits)</h4><div class="bx-g">' + tile(v.lcp ? Math.round(v.lcp) + ' ms' : '-', 'LCP p75', v.lcp ? grade(v.lcp, 2500, 4000) : '') + tile(v.fcp ? Math.round(v.fcp) + ' ms' : '-', 'FCP p75', v.fcp ? grade(v.fcp, 1800, 3000) : '') + tile(v.cls || '0', 'CLS p75', grade(v.cls, 0.1, 0.25)) + tile(v.inp ? Math.round(v.inp) + ' ms' : '-', 'INP p75', v.inp ? grade(v.inp, 200, 500) : '') + tile(v.ttfb ? Math.round(v.ttfb) + ' ms' : '-', 'TTFB median', v.ttfb ? grade(v.ttfb, 800, 1800) : '') + '</div>'
-        + '<h4>Slowest routes</h4>' + (s.routes.length ? s.routes.map((r) => '<div class="bx-row"><span>' + esc(r.route) + '</span><span>' + r.avg + ' ms avg, ' + r.max + ' max, ' + r.n + 'x</span></div>').join('') : '<div class="bx-row"><span>No data yet</span></div>')
-        + '<h4>Blocked visitors</h4>' + (s.bans.length ? s.bans.map((b) => '<div class="bx-row"><span>' + esc(b.ip) + ' (' + esc(b.why) + ')</span><span>' + b.mins + ' min <button type="button" data-unban="' + esc(b.ip) + '">Unblock</button></span></div>').join('') : '<div class="bx-row"><span>Nobody blocked</span></div>')
-        + '<h4>Security events</h4>' + (e.length ? e.map((x) => '<div class="bx-row"><span>' + esc(x.type) + ' ' + esc(x.ip) + '</span><span>' + esc(x.at.slice(11, 19)) + '</span></div>').join('') : '<div class="bx-row"><span>Quiet</span></div>')
-        + '<h4>Sales insight <select data-days>' + [7, 30, 90].map((d) => '<option value="' + d + '"' + (d === days ? ' selected' : '') + '>' + d + ' days</option>').join('') + '</select></h4><div data-ins>' + insHtml() + '</div>'
-        + '<div class="bx-acts"><button type="button" data-x="analyze">Refresh DB statistics</button><button type="button" data-x="conf">Celebrate</button></div>';
-    };
-    const insHtml = () => {
-      if (!ins) return '<div class="bx-row"><span>Loading...</span></div>';
-      const hh = ins.hours, wd = ins.weekdays, names = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], peak = hh.indexOf(Math.max(...hh)), pd = wd.indexOf(Math.max(...wd));
-      return '<div class="bx-row"><span>Busiest hour / day</span><span>' + (Math.max(...hh) ? peak + ':00 / ' + names[pd] : '-') + '</span></div>' + spark(hh)
-        + (ins.top.length ? ins.top.map((t) => '<div class="bx-row"><span>' + esc(t.title) + '</span><span>' + t.qty + ' sold, ' + money(t.rev) + '</span></div>').join('') : '<div class="bx-row"><span>No sales in this period</span></div>')
-        + (ins.customers.length ? '<h4>Best customers</h4>' + ins.customers.map((c) => '<div class="bx-row"><span>' + esc(c.username) + '</span><span>' + c.orders + ' orders, ' + money(c.spent) + '</span></div>').join('') : '');
-    };
-    const load = async () => {
-      if (!panel.classList.contains('on')) return;
-      try {
-        const s = await api('/api/admin/boost/stats'); draw(s);
-      } catch (e) { panel.innerHTML = '<h3>Admin Pulse <button type="button" data-x="close">x</button></h3><p>Could not load: ' + esc(e.message) + '</p>'; }
-    };
-    const loadIns = async () => { try { ins = await api('/api/admin/boost/insights?days=' + days); const d = panel.querySelector('[data-ins]'); if (d) d.innerHTML = insHtml(); } catch (e) { /* ignore */ } };
-    const open = (on) => {
-      panel.classList.toggle('on', on); clearInterval(timer);
-      if (on) { load().then(loadIns); timer = setInterval(() => { if (!document.hidden) load(); }, 6000); }
-    };
-    btn.onclick = () => open(!panel.classList.contains('on'));
-    panel.addEventListener('click', async (e) => {
-      const t = e.target.closest('button'); if (!t) return;
-      try {
-        if (t.dataset.x === 'close') open(false);
-        else if (t.dataset.x === 'conf') confetti();
-        else if (t.dataset.x === 'analyze') { t.disabled = true; await api('/api/admin/boost/analyze', { method: 'POST', json: {} }); say('Database statistics refreshed.'); t.disabled = false; }
-        else if (t.dataset.unban) { await api('/api/admin/boost/unban', { method: 'POST', json: { ip: t.dataset.unban } }); say('Unblocked.'); load(); }
-      } catch (x) { say(x.message); }
-    });
-    panel.addEventListener('change', (e) => { if (e.target.matches('[data-days]')) { days = Number(e.target.value); ins = null; loadIns(); } });
-    setInterval(() => { const on = isMain(); btn.classList.toggle('on', on); if (!on && panel.classList.contains('on')) open(false); }, 2500);
-  });
-})();
+  // Refresh the database's own statistics so queries stay quick after lots of changes.
+  app.post('/api/admin/boost/analyze', ...A, wrap(async (req, res) => {
+    await pool.query('ANALYZE');
+    await log(req, 'db_analyze', 'ANALYZE run from Admin Pulse');
+    res.json({ ok: true });
+  }));
+}
+
+// Called once the server is listening. Render's proxy keeps connections open about a minute; staying slightly longer avoids random 502 errors.
+function tune(srv) {
+  try { srv.keepAliveTimeout = 65e3; srv.headersTimeout = 66e3; srv.requestTimeout = 120e3; } catch (e) { /* older Node */ }
+}
+
+module.exports = { early, mount, tune };
