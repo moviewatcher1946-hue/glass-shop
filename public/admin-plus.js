@@ -414,13 +414,52 @@
 
   // ----- Security switches (shown inside Admin > System > Security) -----
   var SW = [
+    ['throttle', 'bolt', 'Throttle mode', 'Keeps the shop running near max if an attack gets through: caches public data, limits anonymous visitors, sheds overload, serves logged-in users first.', false],
+    ['throttleauto', 'bolt', 'Auto-throttle', 'Turns Throttle mode on by itself when the server is overloaded, and off 60 seconds after it calms down.', false],
     ['lockdown', 'alert', 'Lockdown', 'Shuts the shop for everyone except you. Customers and sellers see a maintenance message.', true],
     ['firewall', 'shield', 'Firewall mode', 'Strict filter: blocks attack patterns and requests with no browser ID, and caps each visitor at 120 requests a minute.', false],
     ['readonly', 'lock', 'Read-only mode', 'Everyone can browse but nobody except you can order or change anything.', true],
     ['nosignup', 'userplus', 'Pause sign-ups', 'Stops new accounts from being created.', false],
-    ['nobots', 'bot', 'Block bots', 'Refuses scripts and scanners such as curl, python and sqlmap.', false]
+    ['nobots', 'bot', 'Block bots', 'Refuses scripts and scanners such as curl, python and sqlmap.', false],
+    ['ctypecheck', 'shield', 'Content-type check', 'Rejects submissions that are not normal JSON, form or picture data.', false],
+    ['jsondepth', 'shield', 'Deep-data guard', 'Rejects submitted data nested more than 10 levels (crash attacks).', false],
+    ['uaguard', 'bot', 'Browser-ID check', 'Blocks oversized or code-filled browser identifiers.', false],
+    ['hdrspoof', 'lock', 'Header spoof guard', 'Strips forged X-Original-URL, X-Forwarded-Host and method-override headers.', false],
+    ['apinostore', 'lock', 'No-cache API', 'Stops browsers and proxies storing any API answer.', false],
+    ['tarpit', 'bot', 'Tarpit', 'Slows every answer by 1.5 s for visitors who keep getting blocked.', false],
+    ['maxparams', 'alert', 'Parameter cap', 'Rejects addresses with more than 40 query parameters.', false],
+    ['rangeguard', 'alert', 'Range-request guard', 'Blocks abusive multi-range download requests.', false],
+    ['tokenurl', 'lock', 'Secrets-in-URL block', 'Refuses addresses carrying token, password or jwt.', false],
+    ['logindelay', 'lock', 'Login slow-down', 'Adds 0.7 s to every login attempt to make guessing slow.', false],
+    ['geoblock', 'shield', 'Country block', 'Blocks countries listed in BLOCK_COUNTRIES (e.g. RU,CN). Needs a host that sends the country, such as Cloudflare.', false],
+    ['corsstrict', 'lock', 'Strict CORS', 'Refuses any request that comes from another website.', false],
+    ['referercheck', 'lock', 'Referer check', 'Changes must come from your own pages.', false],
+    ['dotfiles', 'lock', 'Hide secret files', 'Blocks .env, .git, backups, .sql, source folders and key files.', false],
+    ['methodlock', 'lock', 'Method lock', 'Only normal web methods are allowed (no TRACE, CONNECT and similar).', false],
+    ['hpp', 'shield', 'Parameter pollution guard', 'Rejects repeated or stuffed query parameters.', false],
+    ['longurl', 'alert', 'Long URL block', 'Rejects addresses over 2000 characters.', false],
+    ['protopollution', 'shield', 'Prototype pollution guard', 'Blocks __proto__ and constructor tricks in submitted data.', false],
+    ['nullbyte', 'shield', 'Null-byte block', 'Blocks %00 file-path tricks.', false],
+    ['burst', 'alert', 'Burst guard', 'Max 25 requests per second per visitor.', false],
+    ['conip', 'alert', 'Connection cap', 'Max 25 simultaneous requests per visitor.', false],
+    ['hostcheck', 'lock', 'Host check', 'Only answers for your own domain. Needs the ALLOWED_HOSTS setting (comma list), otherwise does nothing.', false],
+    ['slowloris', 'alert', 'Slow-attack guard', 'Drops connections that send data too slowly (Slowloris).', false],
+    ['ddos', 'alert', 'DDoS shield', 'Tight flood limit: 60 requests per 10 seconds per visitor, then they are slowed down.', false],
+    ['datashield', 'shield', 'Data protection shield', 'Strips passwords, tokens and secrets from every answer and stops browsers caching private data.', false],
+    ['sqlguard', 'shield', 'SQL injection guard', 'Blocks database-attack text in addresses and forms.', false],
+    ['xssguard', 'shield', 'Script injection guard (XSS)', 'Blocks script and iframe code hidden in addresses and forms.', false],
+    ['origin', 'lock', 'Cross-site request block (CSRF)', 'Refuses changes sent from other websites.', false],
+    ['honeypot', 'bot', 'Honeypot traps', 'Hacker bait pages like /.env and /wp-admin: anyone who touches them is banned for 1 hour.', false],
+    ['autoban', 'lock', 'Auto-ban repeat attackers', 'Bans an address for 1 hour after 8 blocked attempts.', false],
+    ['scrape', 'bot', 'Anti-scraping', 'Limits browsing to 90 data requests a minute per visitor.', false],
+    ['slowlogin', 'lock', 'Login and sign-up throttle', 'Max 12 login or sign-up attempts per 5 minutes per visitor.', false],
+    ['bigbody', 'alert', 'Block oversized requests', 'Rejects anything over 2 MB.', false],
+    ['noupload', 'lock', 'Block uploads', 'Turns off picture and file uploads.', true],
+    ['nohotlink', 'shield', 'Hotlink protection', 'Other websites cannot embed your pictures.', false],
+    ['forcehttps', 'lock', 'Force HTTPS', 'Redirects insecure visits to the secure address.', false],
+    ['secheaders', 'shield', 'Strict security headers', 'HSTS, no framing, no sniffing, locked camera, mic and location.', false]
   ];
-  var LBL = { lockdown: 'Lockdown', firewall: 'Firewall', readonly: 'Read-only', nosignup: 'Sign-ups paused', nobots: 'Bots', ip: 'Blocked IP', session: 'Old logins ended' };
+  var LBL = { ctypecheck: 'Content type', jsondepth: 'Deep data', uaguard: 'Browser ID', hdrspoof: 'Header spoof', apinostore: 'No-cache', tarpit: 'Tarpit', maxparams: 'Param cap', rangeguard: 'Range abuse', tokenurl: 'Secret in URL', logindelay: 'Login delay', geoblock: 'Country', corsstrict: 'CORS', referercheck: 'Referer', dotfiles: 'Secret files', methodlock: 'Method lock', hpp: 'Param pollution', longurl: 'Long URL', protopollution: 'Proto pollution', nullbyte: 'Null byte', burst: 'Burst', conip: 'Connections', hostcheck: 'Host', slowloris: 'Slow attack', spill: 'RAM exports', memory: 'RAM alarms', throttle: 'Throttled', throttleauto: 'Auto-throttle', ddos: 'DDoS shield', datashield: 'Data fields hidden', sqlguard: 'SQL injection', xssguard: 'Script injection', origin: 'Cross-site', honeypot: 'Honeypot', autoban: 'Auto-banned', scrape: 'Scraping', bigbody: 'Oversized', noupload: 'Uploads', slowlogin: 'Login throttle', forcehttps: 'HTTPS', nohotlink: 'Hotlink', secheaders: 'Headers', lockdown: 'Lockdown', firewall: 'Firewall', readonly: 'Read-only', nosignup: 'Sign-ups paused', nobots: 'Bots', ip: 'Blocked IP', session: 'Old logins ended' };
   function shield(box) {
     var u = me(); if (!box || !u || u.role !== 'admin') return;
     var old = $('#shieldbox', box); if (old) old.remove();
@@ -428,11 +467,11 @@
     sec.innerHTML = '<p class="muted">Loading security switches...</p>'; box.insertBefore(sec, box.firstChild);
     function paint(d) {
       var on = SW.filter(function (x) { return d.state[x[0]]; }).length;
-      sec.innerHTML = '<div class="sh-head"><div><h2>Security controls</h2><p class="muted">Flip a switch and it takes effect instantly. You stay logged in and keep full access.</p></div><span class="sh-pill' + (on ? ' hot' : '') + '">' + (on ? on + ' active' : 'All normal') + '</span></div>' +
+      sec.innerHTML = '<div class="sh-head"><div><h2>Security controls</h2><p class="muted">Flip a switch and it takes effect instantly. You stay logged in and keep full access.</p>' + (d.live ? '<p class="muted"><b>Throttle:</b> ' + (d.live.throttle ? (d.live.auto ? 'ACTIVE (auto)' : 'ACTIVE') : 'standby') + ' &middot; lag ' + d.live.lag + 'ms &middot; ' + d.live.open + ' open &middot; ' + d.live.cached + ' cached &middot; ' + d.live.shed + ' shed</p>' : '') + '</div><span class="sh-pill' + (on ? ' hot' : '') + '">' + (on ? on + ' active' : 'All normal') + '</span></div>' +
         SW.map(function (x) { return '<label class="sh-row' + (d.state[x[0]] ? ' on' : '') + '"><em class="sh-ic">' + ico(x[1]) + '</em><span class="sh-txt"><b>' + x[2] + '</b><small>' + x[3] + '</small></span><span class="sh-sw' + (x[4] ? ' danger' : '') + '"><input type="checkbox" role="switch" data-k="' + x[0] + '"' + (d.state[x[0]] ? ' checked' : '') + '><i></i></span></label>'; }).join('') +
         '<div class="sh-ips"><b>Blocked IP addresses</b><small>One per line. Blocked visitors get "Access blocked".</small><textarea id="sh-ips" rows="3" placeholder="e.g. 203.0.113.7">' + esc(d.state.ips.join('\n')) + '</textarea><button type="button" id="sh-save">Save IP list</button></div>' +
         '<div class="sh-btns"><button type="button" id="sh-out" class="sh-warn">Log everyone else out</button><button type="button" id="sh-clr">Clear blocked log</button></div>' +
-        '<h3>Blocked so far</h3><div class="ap-stats">' + Object.keys(d.stats).filter(function (k) { return d.stats[k]; }).map(function (k) { return '<div><b>' + d.stats[k] + '</b>' + (LBL[k] || k) + '</div>'; }).join('') + '</div>' +
+        '<div class="sh-btns"><button type="button" id="sh-all">Turn ON all safe defences</button></div><h3>Blocked so far</h3><div class="ap-stats">' + Object.keys(d.stats).filter(function (k) { return d.stats[k]; }).map(function (k) { return '<div><b>' + d.stats[k] + '</b>' + (LBL[k] || k) + '</div>'; }).join('') + '</div>' +
         (d.blocked.length ? table(d.blocked.slice(0, 15), [C('When', function (x) { return String(x.at).replace('T', ' ').slice(5, 19); }), C('Type', function (x) { return LBL[x.type] || x.type; }), C('IP', function (x) { return x.ip; }), C('Path', function (x) { return x.path; })]) : '<p class="muted">Nothing blocked since the last restart.</p>');
       sec.querySelectorAll('input[data-k]').forEach(function (i) {
         i.onchange = function () {
@@ -443,9 +482,32 @@
       });
       $('#sh-save', sec).onclick = function () { api('/api/shield/ips', 'PUT', { text: $('#sh-ips', sec).value }).then(function (r) { paint(r); toast('IP list saved'); }).catch(function (e) { toast(e.message); }); };
       $('#sh-out', sec).onclick = function () { if (confirm('Log out every customer and seller? You stay logged in.')) api('/api/shield/logout-all', 'POST').then(function (r) { paint(r); toast('Everyone else was logged out'); }).catch(function (e) { toast(e.message); }); };
+      $('#sh-all', sec).onclick = function () { var ks = SW.filter(function (x) { return !x[4] && x[0] !== 'nosignup' && x[0] !== 'nobots' && x[0] !== 'throttle' && x[0] !== 'hostcheck' && x[0] !== 'geoblock' && x[0] !== 'referercheck' && x[0] !== 'corsstrict'; }).map(function (x) { return x[0]; }); ks.reduce(function (p, k) { return p.then(function () { return api('/api/shield/toggle', 'PUT', { key: k, on: true }); }); }, Promise.resolve()).then(function () { toast('All safe defences are ON'); shield(box); }).catch(function (e) { toast(e.message); }); };
+      function bulk(keys, on, msg) { keys.reduce(function (p, k) { return p.then(function () { return api('/api/shield/toggle', 'PUT', { key: k, on: on }); }); }, Promise.resolve()).then(function () { toast(msg); shield(box); }).catch(function (e) { toast(e.message); }); }
+      var P1 = function (x) { return x[0] !== 'lockdown' && x[0] !== 'readonly' && x[0] !== 'nosignup' && x[0] !== 'hostcheck' && x[0] !== 'geoblock'; };
+      if ($('#sh-panic', sec)) $('#sh-panic', sec).onclick = function () { if (confirm('Panic mode turns on every defence except lockdown, read-only and sign-up pause. Continue?')) bulk(SW.filter(P1).map(function (x) { return x[0]; }), true, 'Panic mode: all defences ON'); };
+      if ($('#sh-off', sec)) $('#sh-off', sec).onclick = function () { if (confirm('Turn every switch OFF?')) bulk(SW.map(function (x) { return x[0]; }).filter(function (k) { return d.state[k]; }), false, 'All switches OFF'); };
       $('#sh-clr', sec).onclick = function () { api('/api/shield/clear-log', 'POST').then(paint); };
     }
     api('/api/shield').then(paint).catch(function (e) { sec.innerHTML = '<p class="muted">' + esc(e.message) + '</p>'; });
   }
+
+  // ----- Performance mode bar (shows at the top of every Admin page) -----
+  var PM = [['low', 'Low power', 'Saves RAM and CPU: long caching, tight limits'], ['balanced', 'Balanced', 'Normal everyday setting'], ['max', 'Max', 'Highest capacity, caching on']];
+  function perfBar() {
+    var u = me(), app = $('#app'); if (!u || u.role !== 'admin' || !app || !$('#attn', app)) { var o = $('#perfbar'); if (o && !(app && $('#attn', app))) o.remove(); return; }
+    if ($('#perfbar')) return;
+    var b = document.createElement('section'); b.id = 'perfbar'; b.className = 'panel glass sh'; b.innerHTML = '<p class="muted">Loading performance mode...</p>';
+    app.insertBefore(b, $('#attn', app));
+    function paint(d) {
+      var l = d.live || {}, r = l.ram || {};
+      b.innerHTML = '<div class="sh-head"><div><h2>Performance mode</h2><p class="muted">RAM ' + (r.mb || 0) + ' / ' + (r.limit || 0) + ' MB (' + (r.pct || 0) + '%). If RAM runs short, logs, bans and caches are exported to the database and freed' + (r.spills ? ' (' + r.spills + ' export' + (r.spills > 1 ? 's' : '') + ' so far)' : '') + '.</p></div></div>' +
+        '<div class="sh-btns">' + PM.map(function (m) { return '<button type="button" data-m="' + m[0] + '" title="' + m[2] + '"' + (d.state.perf === m[0] ? ' style="background:var(--acc);color:#fff"' : '') + '>' + m[1] + '</button>'; }).join('') + '<button type="button" id="pf-spill">Export RAM to database now</button></div>';
+      b.querySelectorAll('[data-m]').forEach(function (x) { x.onclick = function () { api('/api/shield/perf', 'PUT', { mode: x.dataset.m }).then(function (r2) { paint(r2); toast(x.textContent + ' mode on'); }).catch(function (e) { toast(e.message); }); }; });
+      $('#pf-spill', b).onclick = function () { api('/api/shield/spill-now', 'POST').then(function (r2) { paint(r2); toast('Exported to database'); }).catch(function (e) { toast(e.message); }); };
+    }
+    api('/api/shield').then(paint).catch(function (e) { b.innerHTML = '<p class="muted">' + esc(e.message) + '</p>'; });
+  }
+  setInterval(perfBar, 1500);
   window.AdminPlus = { shield: shield };
 })();
