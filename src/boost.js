@@ -17,7 +17,7 @@ const TZ = process.env.SHOP_TZ || 'Asia/Manila';
 const stat = { total: 0, s2: 0, s3: 0, s4: 0, s5: 0, lat: [], mins: new Map(), routes: new Map() };
 const bans = new Map(); // ip -> { until, why, at }
 const strikes = new Map(); // ip -> { n, t }
-const vitals = { lcp: [], fcp: [], cls: [], inp: [], ttfb: [] };
+const vitals = { lcp: [], fcp: [], cls: [], inp: [], ttfb: [], cpu: [] };
 
 // Paths that only bots and scanners ask for (this shop is Node, not WordPress/PHP). 4 strikes in 10 minutes = 30 minute ban.
 const SCAN = /^\/(wp-|wordpress|xmlrpc|phpmyadmin|pma\b|\.env|\.git|\.aws|\.ssh|\.ds_store|cgi-bin|actuator|server-status|vendor\/phpunit|boaform|owa\/|autodiscover|config\.(json|php|yml))|\.(php\d?|asp|aspx|jsp|cgi|sql|bak|env|ini|swp)(\?|$)/i;
@@ -108,7 +108,7 @@ function mount(app, { pool, auth, admin, wrap }) {
   const vit = express.json({ limit: '2kb' });
   app.post('/api/boost/vitals', sec.limiter({ name: 'vitals', windowMs: 60e3, max: 30 }), vit, (req, res) => {
     const b = req.body || {};
-    for (const [k, hi] of [['lcp', 60000], ['fcp', 60000], ['inp', 10000], ['ttfb', 60000], ['cls', 10]]) { const v = num(b[k], 0, hi); if (v !== null) push(vitals[k], v); }
+    for (const [k, hi] of [['lcp', 60000], ['fcp', 60000], ['inp', 10000], ['ttfb', 60000], ['cls', 10], ['cpu', 10000]]) { const v = num(b[k], 0, hi); if (v !== null) push(vitals[k], v); }
     res.status(204).end();
   });
 
@@ -145,7 +145,7 @@ function mount(app, { pool, auth, admin, wrap }) {
       routes,
       pool: { total: pool.totalCount, idle: pool.idleCount, waiting: pool.waitingCount },
       db: { bytes: db.rows[0].bytes, ...c.rows[0] },
-      vitals: { n: vitals.lcp.length, lcp: p75(vitals.lcp), fcp: p75(vitals.fcp), cls: p75(vitals.cls), inp: p75(vitals.inp), ttfb: med(vitals.ttfb) },
+      vitals: { n: vitals.lcp.length, lcp: p75(vitals.lcp), fcp: p75(vitals.fcp), cls: p75(vitals.cls), inp: p75(vitals.inp), ttfb: med(vitals.ttfb), cpu: p75(vitals.cpu) },
       bans: [...bans].filter(([, b]) => b.until > Date.now()).map(([ip, b]) => ({ ip, why: b.why, mins: Math.ceil((b.until - Date.now()) / 60000) })).slice(0, 50),
       events: sec.recentEvents(12),
     });
