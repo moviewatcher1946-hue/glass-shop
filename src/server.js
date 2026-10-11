@@ -744,7 +744,8 @@ require('./admin-plus')(app, { pool, auth, admin, wrap });
 require('./admin-pack')(app, { pool, auth, admin, wrap });
 require('./ddos').mount(app, { auth, admin });
 require('./dataguard').mount(app, { pool, auth, admin, notify: (m) => notify(m) });
-require('./chatroom')(app, { pool, auth, wrap }); // in-site customer chat
+require('./chatroom')(app, { pool, auth, wrap }); // shop support thread (shown inside Messages)
+require('./messages')(app, { pool, auth, admin, wrap }); // Messages: send and receive between everyone
 // Memory tools for the admin: see what the server uses and drop the in-memory picture cache on demand.
 app.get('/api/plus/p/mem-now', auth, admin, (req, res) => { const m = process.memoryUsage(), mb = (n) => Math.round(n / 1048576); res.json([{ rss_mb: mb(m.rss), heap_mb: mb(m.heapUsed), external_mb: mb(m.external), picture_cache_mb: mb(thumbBytes), pictures_cached: thumbs.size, uptime_min: Math.round(process.uptime() / 60) }]); });
 app.post('/api/plus/p/act-clear-pictures', auth, admin, (req, res) => { const n = thumbs.size; thumbs.clear(); thumbBytes = 0; if (global.gc) global.gc(); res.json({ message: `Cleared ${n} cached pictures. They are rebuilt on demand.` }); });
