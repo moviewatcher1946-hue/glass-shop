@@ -69,7 +69,7 @@ function limiter({ name, windowMs, max, skip }) {
   const hits = new Map();
   setInterval(() => { const now = Date.now(); for (const [k, v] of hits) if (now > v.reset) hits.delete(k); }, Math.min(windowMs, 60e3)).unref();
   return (req, res, next) => {
-    if (skip && skip(req)) return next();
+    if ((skip && skip(req)) || require('./trust').is(req.ip)) return next();
     const now = Date.now(), key = req.ip || 'unknown';
     let h = hits.get(key);
     if (!h || now > h.reset) {
