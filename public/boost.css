@@ -1,11 +1,16 @@
 /* Boost: polish + speed. Everything here uses transform/opacity only, and switches off in lite mode and for reduced motion. */
 :root { --bx-a: #7c8cff; --bx-b: #c084fc; --bx-c: #38bdf8; }
-html { scrollbar-gutter: stable; -webkit-text-size-adjust: 100%; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; scroll-padding-top: 84px; }
+html { -webkit-text-size-adjust: 100%; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; scroll-padding-top: 84px; }
 button, a, input, select, textarea, summary, label { touch-action: manipulation; }
 h1, h2, h3 { text-wrap: balance; }
 p { text-wrap: pretty; }
 ::selection { background: color-mix(in srgb, var(--bx-a) 45%, transparent); }
-* { scrollbar-width: thin; scrollbar-color: rgba(140, 150, 200, .45) transparent; }
+@media (hover: hover) and (pointer: fine) {
+  html { scrollbar-gutter: stable; }
+  * { scrollbar-width: thin; scrollbar-color: rgba(140, 150, 200, .45) transparent; }
+}
+/* Phones: no page-wide overlays (they can show as an edge/border and cost battery) */
+@media (hover: none), (pointer: coarse) { #bx-aurora, #bx-grain, #bx-spot { display: none !important; } }
 :focus-visible { outline: 2px solid var(--bx-a); outline-offset: 2px; border-radius: 10px; }
 dialog { overscroll-behavior: contain; }
 button:not(:disabled):active { scale: .97; }
