@@ -72,6 +72,8 @@ const AUDIT_RULES = [
   { m: 'DELETE', re: /^\/admin\/sellers\/(\d+)$/, snap: 'user', f: (b, o) => ['Removed a seller', o ? o.username : ''] },
   { m: 'POST', re: /^\/admin\/sellers\/(\d+)\/split-off$/, snap: 'user', f: (b, o) => ['Split off a seller', o ? o.username : ''] },
   { m: 'PUT', re: /^\/admin\/settings$/, f: (b) => ['Changed shop settings', brief(b)] },
+  { m: 'PATCH', re: /^\/products\/(\d+)\/stock$/, f: (b) => ['Changed stock', `${Number(b.delta) > 0 ? '+' : ''}${Number(b.delta) || 0}`] },
+  { m: 'PATCH', re: /^\/products\/(\d+)\/flash$/, f: (b) => ['Flash sale', brief(b)] },
   { m: 'PUT', re: /^\/admin\/popups$/, f: (b) => ['Changed pop-ups', `${Array.isArray(b.popups) ? b.popups.length : 0} pop-up(s)`] },
   { m: 'POST', re: /^\/admin\/sales-reset$/, f: (b) => ['Reset sales', b.keepOpen === false ? 'every order removed' : 'finished orders removed, open orders kept'] },
   { m: 'POST', re: /^\/admin\/import$/, f: () => ['Restored a backup', ''] },
@@ -128,7 +130,7 @@ async function squeeze(f) {
   } catch (e) { return f; }
 }
 const wrap = (fn) => (req, res, next) => fn(req, res, next).catch(next);
-const COLS = 'id,title,description,price,is_sold_out,category,discount_percent,bulk_min,bulk_percent,image_url,created_at,owner_id,stock,pinned,sort_order';
+const COLS = 'id,title,description,price,is_sold_out,category,discount_percent,bulk_min,bulk_percent,image_url,created_at,owner_id,stock,pinned,sort_order,discount_until';
 const LOW_STOCK = 5; // warn at this many left or fewer
 const CATEGORIES = ['drinks', 'snacks'];
 // Price after the product's % discount. The server always works the price out itself.
@@ -253,6 +255,9 @@ const ensureCategory = () => pool.query("ALTER TABLE products ADD COLUMN IF NOT 
 
 // Discounts and combos (safe to run every start; never touches existing data).
 const ensureCombos = () => pool.query(`
+  ALTER TABLE orders ADD COLUMN IF NOT EXISTS slot VARCHAR(20);
+  ALTER TABLE orders ADD COLUMN IF NOT EXISTS cancel_reason TEXT;
+  ALTER TABLE products ADD COLUMN IF NOT EXISTS discount_until TIMESTAMPTZ;
   ALTER TABLE products ADD COLUMN IF NOT EXISTS discount_percent INT NOT NULL DEFAULT 0 CHECK (discount_percent BETWEEN 0 AND 90);
   ALTER TABLE products ADD COLUMN IF NOT EXISTS bulk_min INT CHECK (bulk_min IS NULL OR bulk_min BETWEEN 2 AND 999);
   ALTER TABLE products ADD COLUMN IF NOT EXISTS bulk_percent INT NOT NULL DEFAULT 0 CHECK (bulk_percent BETWEEN 0 AND 90);
@@ -458,6 +463,7 @@ app.get('/api/sellers/public', wrap(async (req, res) => {
 }));
 
 app.get('/api/products', softAuth, wrap(async (req, res) => {
+  await sweepFlash().catch(() => {});
   const hidden = 'COALESCE((SELECT products_hidden FROM users WHERE users.id=products.owner_id), false) AS hidden';
   const hot = await hotIds();
   res.json((await pool.query(`SELECT ${COLS}, ${req.user && req.user.role === 'admin' ? hidden : 'false AS hidden'}, (id = ANY($1::int[])) AS hot FROM products ${isStaffReq(req) ? '' : `WHERE ${HIDE_PROD}`} ORDER BY pinned DESC, sort_order ASC NULLS LAST, created_at DESC`, [hot])).rows);
@@ -474,12 +480,14 @@ app.get('/api/products/:id', wrap(async (req, res) => {
 const THUMB_WIDTHS = [160, 240, 480, 800], THUMB_BUDGET = 48 * 1024 * 1024;
 const thumbs = new Map(); let thumbBytes = 0;
 const thumbPending = new Map();
-async function thumbFor(id, ver, w, data) {
+async function thumbFor(id, ver, w, data, fmt = 'webp') {
   if (!ver) return sharp(data).rotate().resize({ width: w, withoutEnlargement: true }).webp({ quality: 82 }).toBuffer(); // no version = no way to know when it goes stale
-  const key = `${id}:${ver}:${w}`, hit = thumbs.get(key);
+  const key = `${id}:${ver}:${w}${fmt === 'avif' ? ':avif' : ''}`, hit = thumbs.get(key);
   if (hit) { thumbs.delete(key); thumbs.set(key, hit); return hit; }
   if (thumbPending.has(key)) return thumbPending.get(key);
-  const job = sharp(data).rotate().resize({ width: w, withoutEnlargement: true }).webp({ quality: 72 }).toBuffer()
+  const base = sharp(data).rotate().resize({ width: w, withoutEnlargement: true });
+  // AVIF at quality 50 looks like WebP at 72 but is roughly a quarter smaller. effort 3 keeps the encode cheap on a small server.
+  const job = (fmt === 'avif' ? base.avif({ quality: 50, effort: 3 }) : base.webp({ quality: 72 })).toBuffer()
     .then((buf) => {
       thumbs.set(key, buf); thumbBytes += buf.length;
       for (const [k, v] of thumbs) { if (thumbBytes <= THUMB_BUDGET) break; thumbs.delete(k); thumbBytes -= v.length; }
@@ -488,17 +496,25 @@ async function thumbFor(id, ver, w, data) {
   thumbPending.set(key, job);
   return job;
 }
+const avifBusy = new Set(); // keys being encoded or that failed once: never retried in a loop
 app.get('/api/products/:id/image', wrap(async (req, res) => {
   const id = parseInt(req.params.id);
   if (!Number.isInteger(id)) return res.sendStatus(404);
   const w = THUMB_WIDTHS.find((x) => x >= (parseInt(req.query.w) || 0)), ver = String(req.query.v || '').slice(0, 20);
   res.set('Cache-Control', 'public, max-age=31536000, immutable');
+  res.vary('Accept');
+  // Browsers that understand AVIF get it once it is ready (about a quarter smaller than WebP at the same look). The first request is
+  // answered with WebP straight away while AVIF is made in the background, so nobody waits for the encode.
+  const wantAvif = !!(req.query.w && w && ver) && /image\/avif/.test(req.headers.accept || '') && process.env.IMAGE_AVIF !== 'off';
+  const akey = `${id}:${ver}:${w}:avif`;
+  if (wantAvif) { const a = thumbs.get(akey); if (a) { thumbs.delete(akey); thumbs.set(akey, a); return res.type('image/avif').send(a); } }
   // The ?v= in the picture's address changes whenever the picture does, so a copy already in memory needs no database visit at all.
   const hit = req.query.w && w && ver ? thumbs.get(`${id}:${ver}:${w}`) : null;
-  if (hit) return res.type('image/webp').send(await thumbFor(id, ver, w, null));
+  if (hit && !(wantAvif && !avifBusy.has(akey))) return res.type('image/webp').send(await thumbFor(id, ver, w, null));
   const { rows: [p] } = await pool.query('SELECT image_data, image_mime FROM products WHERE id=$1', [id]);
   if (!p || !p.image_data) return res.sendStatus(404);
   if (req.query.w && w && p.image_mime !== 'image/gif') { // gifs may be animated: always sent as they are
+    if (wantAvif && !avifBusy.has(akey)) { avifBusy.add(akey); thumbFor(id, ver, w, p.image_data, 'avif').then(() => avifBusy.delete(akey)).catch(() => {}); }
     try { return res.type('image/webp').send(await thumbFor(id, ver, w, p.image_data)); } catch (e) { /* fall back to the original */ }
   }
   res.type(p.image_mime).send(p.image_data);
@@ -609,7 +625,7 @@ app.put('/api/products/:id', auth, staff, upload.single('image'), wrap(async (re
        cost=CASE WHEN $12::boolean THEN $13::numeric ELSE cost END,
        stock=CASE WHEN $10::boolean THEN $11::int ELSE stock END,
        is_sold_out=CASE WHEN $10::boolean AND $11::int IS NOT NULL THEN $11::int = 0 ELSE is_sold_out END, title=COALESCE($1,title), description=COALESCE($2,description), price=COALESCE($3,price),
-       image_data=COALESCE($4,image_data), image_mime=COALESCE($5,image_mime), category=COALESCE($6,category), discount_percent=COALESCE($7,discount_percent), owner_id=COALESCE($9,owner_id) WHERE id=$8`,
+       image_data=COALESCE($4,image_data), image_mime=COALESCE($5,image_mime), category=COALESCE($6,category), discount_percent=COALESCE($7,discount_percent), discount_until=CASE WHEN $7::int IS NOT NULL THEN NULL ELSE discount_until END, owner_id=COALESCE($9,owner_id) WHERE id=$8`,
     [title === undefined ? null : String(title).trim(), description ?? null, price ?? null, f ? f.buffer : null, f ? f.mimetype : null, category ?? null, disc, req.params.id, newOwner, setStock, stock, setCost, cost, setBulk, bulk.min, bulk.pct]
   );
   if (!rowCount) throw bad('Product not found.', 404);
@@ -858,8 +874,8 @@ const createOrder = wrap(async (req, res) => {
     const discount = promo ? Math.round(base * promo.percent) / 100 : 0;
     const note = String(req.body.note || '').trim().slice(0, 300);
     const { rows: [o] } = await c.query(
-      'INSERT INTO orders (user_id, total, note, promo_code, discount, deliver_for) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id,total,status,created_at',
-      [req.user.id, (total - discount).toFixed(2), note, promo ? promo.code : null, discount.toFixed(2), win.date]
+      'INSERT INTO orders (user_id, total, note, promo_code, discount, deliver_for, slot) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id,total,status,created_at',
+      [req.user.id, (total - discount).toFixed(2), note, promo ? promo.code : null, discount.toFixed(2), win.date, ['recess', 'lunch', 'dismissal'].includes(req.body.slot) ? req.body.slot : null]
     );
     if (promo) await c.query('UPDATE promo_codes SET used_count = used_count + 1 WHERE id=$1', [promo.id]);
     for (const l of lines)
@@ -906,7 +922,7 @@ app.post('/api/staff/orders', auth, staff, wrap(async (req, res, next) => {
   return createOrder(req, res, next);
 }));
 
-const ORDER_SQL = `SELECT o.id,o.user_id,o.total,o.status,o.note,o.promo_code,o.discount,o.created_at,o.paid_by,o.paid_at,to_char(o.deliver_for,'YYYY-MM-DD') AS deliver_for,(SELECT username FROM users WHERE id=o.paid_by) AS paid_name,u.username,
+const ORDER_SQL = `SELECT o.id,o.user_id,o.total,o.status,o.note,o.promo_code,o.discount,o.created_at,o.paid_by,o.paid_at,o.slot,o.cancel_reason,to_char(o.deliver_for,'YYYY-MM-DD') AS deliver_for,(SELECT username FROM users WHERE id=o.paid_by) AS paid_name,u.username,
   (SELECT json_agg(json_build_object('product_id',product_id,'title',title,'unit_price',unit_price,'quantity',quantity,'owner_id',owner_id))
    FROM order_items WHERE order_id=o.id) AS items,
   (SELECT json_agg(json_build_object('owner_id',x.owner_id,'username',pu.username,'status',COALESCE(a.status,'pending')) ORDER BY x.owner_id)
@@ -988,6 +1004,7 @@ app.patch('/api/orders/:id/cancel', auth, wrap(async (req, res) => {
 // Admin moves an order along: pending -> packed (ready) -> completed, or cancelled.
 app.patch('/api/orders/:id/status', auth, staff, wrap(async (req, res) => {
   const { status } = req.body || {};
+  const reason = String((req.body || {}).reason || '').trim().slice(0, 200);
   if (!['pending', 'packed', 'completed', 'cancelled'].includes(status)) throw bad('Invalid status.');
   const id = parseInt(req.params.id);
   if (!Number.isInteger(id)) throw bad('Order not found.', 404);
@@ -1003,7 +1020,7 @@ app.patch('/api/orders/:id/status', auth, staff, wrap(async (req, res) => {
   // Raven decides for the whole order, even when sellers are involved: no waiting for anyone's approval.
   // Every seller's part is set to match, so the screens agree.
   if (isMain(req.user)) {
-    const { rows: [o] } = await pool.query('UPDATE orders SET status=$1 WHERE id=$2 RETURNING id,status', [status, id]);
+    const { rows: [o] } = await pool.query("UPDATE orders SET status=$1::text, cancel_reason=CASE WHEN $1::text='cancelled' THEN NULLIF($3::text,'') ELSE cancel_reason END WHERE id=$2 RETURNING id,status", [status, id, reason]);
     for (const x of owners)
       await pool.query('INSERT INTO order_approvals (order_id, owner_id, status) VALUES ($1,$2,$3) ON CONFLICT (order_id, owner_id) DO UPDATE SET status=EXCLUDED.status', [id, x, status]);
     if (status === 'cancelled') await restoreStock(pool, id);
@@ -1012,7 +1029,7 @@ app.patch('/api/orders/:id/status', auth, staff, wrap(async (req, res) => {
 
   // One owner: change the status directly.
   if (owners.length < 2) {
-    const { rows: [o] } = await pool.query('UPDATE orders SET status=$1 WHERE id=$2 RETURNING id,status', [status, id]);
+    const { rows: [o] } = await pool.query("UPDATE orders SET status=$1::text, cancel_reason=CASE WHEN $1::text='cancelled' THEN NULLIF($3::text,'') ELSE cancel_reason END WHERE id=$2 RETURNING id,status", [status, id, reason]);
     if (status === 'cancelled') await restoreStock(pool, id);
     return res.json(o);
   }
@@ -1458,14 +1475,42 @@ app.get('/api/settings', wrap(async (req, res) => {
 }));
 
 /* ---------- Pop-ups: random messages the main admin adds; the shop shows one now and then ---------- */
+const isoOrEmpty = (v) => { const d = new Date(v); return v && !isNaN(d) ? d.toISOString() : ''; };
 function readPopups(raw) { try { const a = JSON.parse(raw || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } }
+/* ---------- Flash sales: a product discount that ends by itself ---------- */
+async function sweepFlash() {
+  const { rows } = await pool.query("UPDATE products SET discount_percent=0, discount_until=NULL WHERE discount_until IS NOT NULL AND discount_until <= now() RETURNING id");
+  if (rows.length) await repriceSafe(rows.map((r) => r.id)).catch(() => {});
+}
+setInterval(() => sweepFlash().catch(() => {}), 60000).unref();
+app.patch('/api/products/:id/flash', auth, staff, wrap(async (req, res) => {
+  const id = parseInt(req.params.id), pct = parseInt(req.body.percent), mins = parseInt(req.body.minutes);
+  if (!Number.isInteger(id)) throw bad('Product not found.', 404);
+  if (!(pct >= 0 && pct <= 90)) throw bad('The sale must be 0 to 90 percent.');
+  if (pct > 0 && !(mins >= 5 && mins <= 10080)) throw bad('A flash sale lasts 5 minutes to 7 days.');
+  const { rowCount } = await pool.query("UPDATE products SET discount_percent=$1::int, discount_until=CASE WHEN $1::int=0 THEN NULL ELSE now() + ($2::int * interval '1 minute') END WHERE id=$3 AND ($4::boolean OR owner_id=$5)", [pct, pct ? mins : 0, id, isMain(req.user), req.user.id]);
+  if (!rowCount) throw bad('Product not found.', 404);
+  await repriceSafe([id]).catch(() => {});
+  res.json({ ok: true });
+}));
+// Quick stock buttons (+ and -) on the admin product list. Only for products that count their stock.
+app.patch('/api/products/:id/stock', auth, staff, wrap(async (req, res) => {
+  const id = parseInt(req.params.id), delta = parseInt(req.body.delta);
+  if (!Number.isInteger(id) || !Number.isInteger(delta) || Math.abs(delta) > 100) throw bad('Invalid stock change.');
+  const { rows: [p] } = await pool.query('SELECT stock, owner_id FROM products WHERE id=$1', [id]);
+  if (!p || (!isMain(req.user) && p.owner_id !== req.user.id)) throw bad('Product not found.', 404);
+  if (p.stock == null) throw bad('This product does not count its stock. Edit it to set a stock number.');
+  const next = Math.max(0, Math.min(9999, p.stock + delta));
+  const { rows: [o] } = await pool.query('UPDATE products SET stock=$1::int, is_sold_out=CASE WHEN $1::int=0 THEN true WHEN $3::int=0 THEN false ELSE is_sold_out END WHERE id=$2 RETURNING stock,is_sold_out', [next, id, p.stock]);
+  res.json(o);
+}));
 app.get('/api/admin/popups', auth, admin, wrap(async (req, res) => { res.json(readPopups(await getSetting('popups'))); }));
 app.put('/api/admin/popups', auth, admin, wrap(async (req, res) => {
   const list = Array.isArray(req.body.popups) ? req.body.popups : null;
   if (!list || list.length > 20) throw bad('You can keep up to 20 pop-ups.');
   const clean = list.map((p) => {
     const url = String(p.url || '').trim().slice(0, 300);
-    return { id: String(p.id || Date.now().toString(36) + Math.random().toString(36).slice(2, 6)).slice(0, 24), title: String(p.title || '').trim().slice(0, 80), text: String(p.text || '').trim().slice(0, 300), btn: String(p.btn || '').trim().slice(0, 30), url: /^(https?:\/\/|\/)/.test(url) ? url : '', on: p.on !== false };
+    return { id: String(p.id || Date.now().toString(36) + Math.random().toString(36).slice(2, 6)).slice(0, 24), title: String(p.title || '').trim().slice(0, 80), text: String(p.text || '').trim().slice(0, 300), btn: String(p.btn || '').trim().slice(0, 30), url: /^(https?:\/\/|\/)/.test(url) ? url : '', on: p.on !== false, from: isoOrEmpty(p.from), to: isoOrEmpty(p.to) };
   }).filter((p) => p.title && p.text);
   await putSetting('popups', JSON.stringify(clean));
   res.json(clean);
