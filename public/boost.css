@@ -23,7 +23,7 @@ html.bx-hid *, html.bx-hid *::before, html.bx-hid *::after { animation-play-stat
 #bx-progress { position: fixed; inset: 0 0 auto 0; height: 3px; z-index: 9998; transform-origin: 0 50%; transform: scaleX(0); background: linear-gradient(90deg, var(--bx-c), var(--bx-a), var(--bx-b)); pointer-events: none; opacity: .92; }
 @media (min-width: 641px) { html.bx-sc .nav { box-shadow: 0 10px 32px -14px rgba(0, 0, 0, .5); } }
 @media (max-width: 640px) { #bx-progress { display: none; } }
-@media (max-width: 640px) { 
+
 /* Aurora + cursor spotlight (soft colour that drifts behind the glass) */
 #bx-aurora { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; contain: strict; mix-blend-mode: screen; opacity: .5; }
 html[data-theme="light"] #bx-aurora { mix-blend-mode: multiply; opacity: .3; }
