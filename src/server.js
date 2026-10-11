@@ -15,7 +15,7 @@ const compression = require('compression');
 const sharp = require('sharp');
 app.set('trust proxy', 1); // Render sits behind a proxy; this makes req.ip the visitor's real address
 // Gzip text responses (the JSON lists, HTML, CSS, JS) over 1 KB. Images are already compressed, so they are skipped. Same data, a fraction of the bytes; polling stays just as fresh.
-app.use(compression({ threshold: 1024 }));
+app.use(compression({ threshold: 512, level: 5 }));
 // Safety headers on everything (content security policy, no framing, HTTPS-only, no sniffing...). See src/security.js.
 app.disable('x-powered-by');
 app.use(sec.headers);
@@ -115,7 +115,7 @@ app.get('/sw.js', (req, res, next) => { res.set('Cache-Control', 'no-cache'); ne
 app.use(express.static(path.join(__dirname, '../public'), {
   etag: true,
   setHeaders: (res, file) => { // icons never change under the same name; code files are re-checked (304 = a few hundred bytes)
-    if (/\.(png|ico)$/.test(file)) res.set('Cache-Control', 'public, max-age=604800');
+    if (/\.(png|ico|woff2?)$/.test(file)) res.set('Cache-Control', 'public, max-age=604800, immutable');
   },
 }));
 
@@ -1859,6 +1859,8 @@ app.post('/api/admin/sales-reset', auth, admin, wrap(async (req, res) => {
     c.release();
   }
 }));
+
+require('./admin-plus')(app, { pool, auth, admin, wrap });
 
 /* ---------- Errors & boot ---------- */
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found.' }));
