@@ -678,6 +678,7 @@ async function refreshSecurity() {
     <ul style="list-style:none;padding:0;margin:10px 0">${checks}</ul>
     <div class="stats"><div class="stat glass"><b>${d.failed24h}</b><span>wrong passwords (24 h)</span></div><div class="stat glass"><b>${d.locked}</b><span>addresses locked out now</span></div></div></section>
     <section class="panel glass"><h3>Recent events</h3><p class="muted">Newest first. This list resets when the server restarts; the server log keeps the full history.</p>${rows}</section>`;
+  if (window.AdminPlus && window.AdminPlus.shield) window.AdminPlus.shield(box);
 }
 async function refreshOrders() {
   const want = finishedWanted();
@@ -889,7 +890,6 @@ function renderAdmin() {
     ['orders', 'Orders', [['orders', 'Orders', pendingCount ? ` (${pendingCount})` : ''], ['custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : ''], ['prep', 'Prep list'], ['cash', 'Cash']]],
     ['products', 'Catalog', [['products', 'Products'], ['combos', 'Combos'], ['promos', 'Promos'], ...(isRaven() ? [['popups', 'Pop-ups']] : [])]],
     ['customers', 'People', isRaven() ? [['customers', 'Customers'], ['sellers', 'Sellers']] : [['customers', 'Customers'], ['alerts', 'Alerts']]],
-    ...(isRaven() ? [['plus', 'Admin+', [['plus', 'Tools']]]] : []),
     ...(isRaven() ? [['backup', 'System', [['backup', 'Backup'], ['audit', 'Activity'], ['security', 'Security']]]] : []),
   ];
   const cur = GROUPS.find((g) => g[2].some((x) => x[0] === adminTab)) || GROUPS[0];
@@ -1050,7 +1050,7 @@ function renderAdmin() {
   const customersView = `<h2>Customers</h2>
     <p class="muted">Block people who abuse the shop (fake orders, not showing up). ${isRaven() ? 'Your block covers the whole shop.' : 'Your block stops them ordering your items only.'} The list shows the most cancelled orders first.</p>
     <div id="custlist"><p>Loading...</p></div>`;
-  $('#app').innerHTML = tabs + subtabs + '<div id="attn"></div><div id="adminnotes"></div>' + (adminTab === 'dashboard' ? '<section class="dash" id="dashbox"><p class="panel glass muted">Loading your numbers...</p></section>' : adminTab === 'report' ? reportView : adminTab === 'cash' ? cashView : adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'audit' && isRaven() ? auditView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'alerts' && !isRaven() ? alertsView : adminTab === 'combos' ? combosView : adminTab === 'popups' && isRaven() ? popupsView : adminTab === 'security' && isRaven() ? '<div id="secbox"><section class="panel glass"><h2>Security</h2><p class="muted">Loading...</p></section></div>' : adminTab === 'plus' && isRaven() ? '<div id="plusbox"></div>' : adminTab === 'prep' ? '<div id="prepbox"></div>' : adminTab === 'promos' ? promosView : adminTab === 'customers' ? customersView : productsView);
+  $('#app').innerHTML = tabs + subtabs + '<div id="attn"></div><div id="adminnotes"></div>' + (adminTab === 'dashboard' ? '<section class="dash" id="dashbox"><p class="panel glass muted">Loading your numbers...</p></section>' : adminTab === 'report' ? reportView : adminTab === 'cash' ? cashView : adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'audit' && isRaven() ? auditView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'alerts' && !isRaven() ? alertsView : adminTab === 'combos' ? combosView : adminTab === 'popups' && isRaven() ? popupsView : adminTab === 'security' && isRaven() ? '<div id="secbox"><section class="panel glass"><h2>Security</h2><p class="muted">Loading...</p></section></div>' : adminTab === 'prep' ? '<div id="prepbox"></div>' : adminTab === 'promos' ? promosView : adminTab === 'customers' ? customersView : productsView);
   fillProducts();
   comboAdminHtml = ''; refreshAdminCombos().catch(() => {});
   promoAdminHtml = ''; refreshAdminPromos().catch(() => {});
@@ -1063,7 +1063,6 @@ function renderAdmin() {
   if (adminTab === 'report' || adminTab === 'dashboard') refreshReport().catch(() => {});
   refreshCosts().catch(() => {});
   refreshAttention().catch(() => {});
-  if (isRaven() && adminTab === 'plus' && window.AdminPlus) window.AdminPlus.mount($('#plusbox'));
   if (isRaven() && adminTab === 'backup') refreshBackup().catch(() => {});
   if (isRaven() && adminTab === 'popups') refreshPopups().catch(() => {});
   if (adminTab === 'prep') { drawPrep(); refreshOrders().then(drawPrep).catch(() => {}); }
