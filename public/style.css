@@ -1123,3 +1123,34 @@ html.ap-lite *{-webkit-backdrop-filter:none!important;backdrop-filter:none!impor
 html.ap-nomotion *,html.ap-nomotion *::before,html.ap-nomotion *::after{animation-duration:.01ms!important;animation-delay:0s!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}
 html.ap-noglow body::before,html.ap-noglow .gw-ribbons{display:none!important}
 html.ap-nohover *:hover{transform:none!important}
+
+/* ===== Bottom-of-screen stacking fix: nothing fixed at the bottom overlaps anymore ===== */
+:root{--bn:0px;--sa:env(safe-area-inset-bottom,0px);--cb:0px}
+body:has(#cartbar:not([hidden])){--cb:64px}
+/* left column: chat button, then back-to-top above it */
+#ch-btn,#mg-btn{left:16px!important;bottom:calc(16px + var(--bn) + var(--sa))!important}
+#ch-box,#mg-box{left:16px!important;bottom:calc(68px + var(--bn) + var(--sa))!important;max-height:calc(100dvh - 110px - var(--bn))}
+#totop{left:16px!important;bottom:calc(76px + var(--bn) + var(--sa))!important}
+/* right column: Admin+ button, help, then pop-up above them */
+#ap-fab{right:16px!important;bottom:calc(16px + var(--bn) + var(--sa) + var(--cb))!important}
+#helpfab{bottom:calc(66px + var(--bn) + var(--sa) + var(--cb))!important}
+.site-pop{bottom:calc(76px + var(--bn) + var(--sa) + var(--cb))!important;max-width:calc(100vw - 32px)}
+#a2hs{bottom:calc(120px + var(--bn) + var(--sa) + var(--cb))!important}
+/* centre: cart bar sits at the bottom, toast above it */
+#cartbar{bottom:calc(16px + var(--bn) + var(--sa))!important;max-width:calc(100vw - 260px)}
+#toast{bottom:calc(84px + var(--bn) + var(--sa))!important}
+#foot{padding-bottom:140px!important}
+@media(max-width:900px){#cartbar{max-width:none}}
+@media(max-width:640px){
+  :root{--bn:74px}
+  #cartbar{left:12px!important;right:12px!important;width:auto!important;transform:none!important;min-width:0;bottom:calc(var(--bn) + var(--sa) + 6px)!important;max-width:none}
+  #cartbar:hover:not(:disabled),#cartbar:active:not(:disabled){transform:none!important}
+  #ch-btn,#mg-btn{bottom:calc(var(--bn) + var(--sa) + var(--cb) + 12px)!important}
+  #totop{bottom:calc(var(--bn) + var(--sa) + var(--cb) + 68px)!important}
+  #ap-fab{bottom:calc(var(--bn) + var(--sa) + var(--cb) + 12px)!important}
+  #helpfab{bottom:calc(var(--bn) + var(--sa) + var(--cb) + 62px)!important}
+  .site-pop{left:12px!important;right:12px!important;width:auto!important;bottom:calc(var(--bn) + var(--sa) + var(--cb) + 118px)!important}
+  #toast{bottom:calc(var(--bn) + var(--sa) + var(--cb) + 118px)!important;max-width:calc(100vw - 24px)}
+  #ch-box,#mg-box{bottom:calc(var(--bn) + var(--sa) + var(--cb) + 64px)!important;width:calc(100vw - 32px)!important}
+  #foot{padding-bottom:180px!important}
+}
