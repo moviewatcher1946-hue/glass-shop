@@ -48,6 +48,7 @@ const SFX = (() => {
     hover: play((c) => tone(c, 1200, 0, 0.025, 0.012, 'sine')),
     charge: play((c) => { tone(c, 280, 0, 0.9, 0.035, 'sine', 880); noise(c, 0, 0.7, 0.015, 600, 2400); }),
     press: play((c) => { tone(c, 300, 0, 0.12, 0.08, 'triangle', 700); tone(c, 1046.5, 0.05, 0.22, 0.05); }),
+    pop: play((c) => { tone(c, 523.25, 0, 0.12, 0.05); tone(c, 783.99, 0.08, 0.28, 0.05); }),
     get muted() { return muted; },
     set vol(v) { volume = Math.max(0, Math.min(1.5, v)); try { localStorage.sfxvol = String(volume); } catch (e) {} },
     get vol() { return volume; },
@@ -834,7 +835,7 @@ function renderAdmin() {
   const GROUPS = [
     ['dashboard', 'Dashboard', [['dashboard', 'Overview'], ['report', 'Report']]],
     ['orders', 'Orders', [['orders', 'Orders', pendingCount ? ` (${pendingCount})` : ''], ['custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : ''], ['cash', 'Cash']]],
-    ['products', 'Catalog', [['products', 'Products'], ['combos', 'Combos'], ['promos', 'Promos']]],
+    ['products', 'Catalog', [['products', 'Products'], ['combos', 'Combos'], ['promos', 'Promos'], ...(isRaven() ? [['popups', 'Pop-ups']] : [])]],
     ['customers', 'People', isRaven() ? [['customers', 'Customers'], ['sellers', 'Sellers']] : [['customers', 'Customers'], ['alerts', 'Alerts']]],
     ...(isRaven() ? [['backup', 'System', [['backup', 'Backup'], ['audit', 'Activity']]]] : []),
   ];
@@ -919,6 +920,14 @@ function renderAdmin() {
       </form>
     </section>
     <section class="panel glass table-wrap"><h2>Combos</h2><div id="combolist"><p>Loading...</p></div></section>`;
+  const popupsView = `<section class="panel glass"><h2>Add a pop-up</h2>
+      <form id="popup-form"><label>Title</label><input name="title" maxlength="80" required>
+        <label>Message</label><textarea name="text" maxlength="300" rows="3" required></textarea>
+        <label>Button text (optional)</label><input name="btn" maxlength="30">
+        <label>Button link (optional: https://... or a path like /)</label><input name="url" maxlength="300">
+        <button class="primary" type="submit">Add pop-up</button></form>
+      <p class="muted">Visitors see one random pop-up that is switched on, a few seconds after the shop opens, at most once every 10 minutes. They can close it or choose not to see it again.</p></section>
+    <section class="panel glass"><h2>Your pop-ups</h2><div id="popuplist"><p>Loading...</p></div></section>`;
   const promosView = `${isRaven() ? `<section class="panel glass">
       <h2>Announcement banner</h2>
       <form id="settings-form">
@@ -986,7 +995,7 @@ function renderAdmin() {
   const customersView = `<h2>Customers</h2>
     <p class="muted">Block people who abuse the shop (fake orders, not showing up). ${isRaven() ? 'Your block covers the whole shop.' : 'Your block stops them ordering your items only.'} The list shows the most cancelled orders first.</p>
     <div id="custlist"><p>Loading...</p></div>`;
-  $('#app').innerHTML = tabs + subtabs + '<div id="attn"></div><div id="adminnotes"></div>' + (adminTab === 'dashboard' ? '<section class="dash" id="dashbox"><p class="panel glass muted">Loading your numbers...</p></section>' : adminTab === 'report' ? reportView : adminTab === 'cash' ? cashView : adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'audit' && isRaven() ? auditView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'alerts' && !isRaven() ? alertsView : adminTab === 'combos' ? combosView : adminTab === 'promos' ? promosView : adminTab === 'customers' ? customersView : productsView);
+  $('#app').innerHTML = tabs + subtabs + '<div id="attn"></div><div id="adminnotes"></div>' + (adminTab === 'dashboard' ? '<section class="dash" id="dashbox"><p class="panel glass muted">Loading your numbers...</p></section>' : adminTab === 'report' ? reportView : adminTab === 'cash' ? cashView : adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'audit' && isRaven() ? auditView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'alerts' && !isRaven() ? alertsView : adminTab === 'combos' ? combosView : adminTab === 'popups' && isRaven() ? popupsView : adminTab === 'promos' ? promosView : adminTab === 'customers' ? customersView : productsView);
   fillProducts();
   comboAdminHtml = ''; refreshAdminCombos().catch(() => {});
   promoAdminHtml = ''; refreshAdminPromos().catch(() => {});
@@ -1000,6 +1009,7 @@ function renderAdmin() {
   refreshCosts().catch(() => {});
   refreshAttention().catch(() => {});
   if (isRaven() && adminTab === 'backup') refreshBackup().catch(() => {});
+  if (isRaven() && adminTab === 'popups') refreshPopups().catch(() => {});
   if (isRaven() && adminTab === 'audit') refreshAudit(false).catch(() => {});
   if (isRaven()) loadBackupInfo();
   if (isRaven()) refreshSellers().catch(() => {}); else loadAlerts().catch(() => {});
@@ -1580,6 +1590,9 @@ const actions = {
     if (row && !matchMedia('(prefers-reduced-motion: reduce)').matches) { row.closest('.cline').classList.add('leaving'); setTimeout(go, 260); } else go();
   },
   'cart-clear': () => { if (!Object.keys(cart).length) return; cartUndo = { items: { ...cart }, label: 'Cart cleared.' }; cart = {}; SFX.clear(); saveCart(); cartDialog(); },
+  'popup-prev': (id) => { const p = popupAdmin.find((x) => x.id === id); if (p) showPopup(p); },
+  'popup-on': async (id) => { const p = popupAdmin.find((x) => x.id === id); if (p) { p.on = !p.on; await savePopups(); } },
+  'popup-del': async (id) => { if (!confirm('Delete this pop-up?')) return; popupAdmin = popupAdmin.filter((x) => x.id !== id); await savePopups(); toast('Pop-up deleted.'); },
   'cart-undo': () => { if (!cartUndo) return; Object.entries(cartUndo.items).forEach(([k, q]) => { cart[k] = Math.min(99, (cart[k] || 0) + q); }); cartUndo = null; SFX.undo(); saveCart(); cartDialog(); },
   'note-chip': (_, d) => { const i = $('#ordernote'); if (!i) return; const t = d.t; i.value = i.value.includes(t) ? i.value : (i.value ? i.value + '. ' : '') + t; cartNote = i.value.slice(0, 300); i.value = cartNote; },
   'cart-sug': (id) => { const p = products.find((x) => x.id == id); if (!p) return; const have = cart[id] || 0; if (p.stock != null && have >= p.stock) return toast(`Only ${p.stock} in stock.`); cart[id] = have + 1; SFX.add(); saveCart(); cartDialog(); },
@@ -1682,6 +1695,9 @@ document.addEventListener('submit', async (e) => {
     } else if (e.target.id === 'promo-form') {
       await api('/api/promos', { method: 'POST', json: { ...Object.fromEntries(new FormData(e.target)), product_ids: [...e.target.querySelectorAll('input[name="pid"]:checked')].map((b) => Number(b.value)), shop_wide: !!e.target.querySelector('[name="shop_wide"]:checked') } });
       e.target.reset(); await refreshAdminPromos(); toast('Promo code created.');
+    } else if (e.target.id === 'popup-form') {
+      popupAdmin.push({ ...Object.fromEntries(new FormData(e.target)), on: true });
+      await savePopups(); e.target.reset(); toast('Pop-up added.');
     } else if (e.target.id === 'settings-form') {
       await api('/api/admin/settings', { method: 'PUT', json: Object.fromEntries(new FormData(e.target)) });
       await loadProductsQuiet(); toast('Saved.');
@@ -2307,3 +2323,47 @@ document.addEventListener('click', (e) => {
   };
   document.addEventListener('cancel', (e) => { if (e.target instanceof HTMLDialogElement && e.target.open) { e.preventDefault(); e.target.close(); } }, true); // Esc
 })();
+
+/* ===== v23: random pop-ups the main admin adds (Admin > Catalog > Pop-ups) ===== */
+let popupAdmin = [];
+async function refreshPopups() {
+  popupAdmin = await api('/api/admin/popups');
+  const box = $('#popuplist'); if (!box) return;
+  box.innerHTML = popupAdmin.length ? popupAdmin.map((p) => `<div class="req"><div class="between"><b>${esc(p.title)}</b><span class="muted">${p.on ? 'On' : 'Off'}</span></div>
+    <p style="margin:4px 0 8px">${esc(p.text)}${p.btn ? `<br><span class="muted">Button: ${esc(p.btn)}${p.url ? ' to ' + esc(p.url) : ''}</span>` : ''}</p>
+    <div class="actions"><button data-act="popup-prev" data-id="${esc(p.id)}">Preview</button><button data-act="popup-on" data-id="${esc(p.id)}">${p.on ? 'Turn off' : 'Turn on'}</button><button data-act="popup-del" data-id="${esc(p.id)}">Delete</button></div></div>`).join('') : '<p>No pop-ups yet. Add one above.</p>';
+}
+async function savePopups() { popupAdmin = await api('/api/admin/popups', { method: 'PUT', json: { popups: popupAdmin } }); await refreshPopups(); loadProductsQuiet().catch(() => {}); }
+
+let popupTimer = null;
+const popupHidden = () => { try { return JSON.parse(localStorage.popupHide || '[]'); } catch (e) { return []; } };
+function showPopup(p) {
+  const old = document.querySelector('.site-pop'); if (old) old.remove();
+  const el = document.createElement('div'); el.className = 'site-pop glass'; el.setAttribute('role', 'dialog'); el.setAttribute('aria-label', p.title);
+  const link = p.btn && p.url ? `<a class="sp-go primary" href="${esc(p.url)}" ${/^https?:/.test(p.url) ? 'target="_blank" rel="noopener"' : ''}>${esc(p.btn)}</a>` : '';
+  el.innerHTML = `<button type="button" class="sp-x" aria-label="Close">&times;</button><h3>${esc(p.title)}</h3><p>${esc(p.text)}</p><div class="sp-act">${link}<button type="button" class="sp-no">Don't show again</button></div>`;
+  document.body.appendChild(el);
+  SFX.pop();
+  const close = () => { el.classList.add('out'); setTimeout(() => el.remove(), 320); };
+  el.querySelector('.sp-x').onclick = close;
+  el.querySelector('.sp-no').onclick = () => { try { localStorage.popupHide = JSON.stringify([...popupHidden(), p.id]); } catch (e) {} close(); };
+  if (link) el.querySelector('.sp-go').onclick = close;
+  setTimeout(() => { if (el.isConnected && !el.matches(':hover')) close(); }, 15000);
+}
+function popupSchedule() {
+  const list = (settings.popups || []).filter((p) => p.on !== false);
+  if (!list.length || popupTimer) return;
+  try { if (Date.now() - Number(localStorage.popupAt || 0) < 600000) return; } catch (e) {}
+  popupTimer = setTimeout(function tryShow() {
+    if (document.getElementById('gw') || document.querySelector('dialog[open], .site-pop') || view === 'admin') return (popupTimer = setTimeout(tryShow, 3000));
+    popupTimer = null;
+    let seen = []; try { seen = JSON.parse(sessionStorage.popupSeen || '[]'); } catch (e) {}
+    const hide = popupHidden(), pool = (settings.popups || []).filter((p) => p.on !== false && !hide.includes(p.id) && !seen.includes(p.id));
+    if (!pool.length) return;
+    const p = pool[Math.floor(Math.random() * pool.length)];
+    try { sessionStorage.popupSeen = JSON.stringify([...seen, p.id]); localStorage.popupAt = String(Date.now()); } catch (e) {}
+    showPopup(p);
+  }, 4000 + Math.random() * 8000);
+}
+window.addEventListener('bootdone', popupSchedule);
+setTimeout(popupSchedule, 1500);
