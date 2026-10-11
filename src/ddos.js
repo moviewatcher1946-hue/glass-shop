@@ -22,7 +22,7 @@ function strike(ip, now) {
 function early(app) {
   app.use((req, res, next) => {
     const p = req.path; if (p === '/healthz') return next();
-    const ip = req.ip || (req.socket && req.socket.remoteAddress) || ''; if (ALLOW.has(ip)) return next();
+    const ip = req.ip || (req.socket && req.socket.remoteAddress) || ''; if (ALLOW.has(ip) || require('./trust').is(ip)) return next();
     const now = Date.now(), b = bans.get(ip);
     if (b) { if (b.until > now) { st.dropped++; return req.socket.destroy(); } bans.delete(ip); } // banned: closed without an answer, the cheapest possible reply
     st.n++;
