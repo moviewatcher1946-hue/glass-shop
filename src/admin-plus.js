@@ -53,7 +53,7 @@ module.exports = function mount(app, { pool, auth, admin, wrap }) {
   const tick = async () => {
     const c = shared.sys;
     try {
-      if (c.awake && process.env.RENDER_EXTERNAL_URL && typeof fetch === 'function') fetch(process.env.RENDER_EXTERNAL_URL + '/api/plus/public').catch(() => {});
+      if (c.awake && process.env.RENDER_EXTERNAL_URL && typeof fetch === 'function') fetch(process.env.RENDER_EXTERNAL_URL + '/healthz').catch(() => {});
       if (Date.now() - lastDaily > 24 * 3600e3) {
         lastDaily = Date.now();
         if (c.trim) await q("DELETE FROM audit_log WHERE at < now() - ($1||' days')::interval", [c.trimdays]);
@@ -130,6 +130,65 @@ module.exports = function mount(app, { pool, auth, admin, wrap }) {
   // System
   G('recent-activity', 'SELECT at,username,action,detail FROM audit_log ORDER BY id DESC LIMIT 40');
   G('activity-users', "SELECT username, COUNT(*)::int actions, MAX(at) last FROM audit_log WHERE at > now()-interval '7 days' GROUP BY username ORDER BY actions DESC LIMIT 20");
+
+  // ===== 50 more tools (v3): catalog, inventory, orders, people, insights, system =====
+  const MNL = "(now() AT TIME ZONE 'Asia/Manila')::date"; // today in Philippine time
+  const OD = "(o.created_at AT TIME ZONE 'Asia/Manila')::date";
+  // Catalog
+  G('free-products', 'SELECT id,title,price::float FROM products WHERE price=0 ORDER BY id DESC LIMIT 100');
+  G('active-discounts', 'SELECT id,title,discount_percent pct,discount_until FROM products WHERE discount_percent>0 AND (discount_until IS NULL OR discount_until>now()) ORDER BY discount_percent DESC,id LIMIT 100');
+  G('discounts-ending', "SELECT id,title,discount_percent pct,discount_until FROM products WHERE discount_percent>0 AND discount_until BETWEEN now() AND now()+interval '7 days' ORDER BY discount_until LIMIT 100");
+  G('low-margin', 'SELECT id,title,price::float,cost::float,ROUND((price-cost)/NULLIF(price,0)*100,1)::float margin FROM products WHERE cost IS NOT NULL AND price>0 ORDER BY (price-cost)/price,id LIMIT 30');
+  G('no-cost', 'SELECT id,title,price::float FROM products WHERE cost IS NULL ORDER BY id DESC LIMIT 100');
+  G('bulk-deals', 'SELECT id,title,bulk_min,bulk_percent FROM products WHERE bulk_min IS NOT NULL AND bulk_percent>0 ORDER BY id DESC LIMIT 100');
+  G('newest-products', 'SELECT id,title,price::float,created_at FROM products ORDER BY id DESC LIMIT 20');
+  G('products-per-owner', "SELECT COALESCE(u.username,'(no owner)') owner, COUNT(*)::int products FROM products p LEFT JOIN users u ON u.id=p.owner_id GROUP BY 1 ORDER BY products DESC LIMIT 20");
+  app.post('/api/plus/products/unpin-all', ...A, wrap(async (req, res) => { const r = await q('UPDATE products SET pinned=false WHERE pinned'); await log(req, 'unpin-all', r.rowCount + ' products'); res.json({ changed: r.rowCount }); }));
+  G('hidden-products', 'SELECT p.id,p.title,u.username owner FROM products p JOIN users u ON u.id=p.owner_id WHERE u.products_hidden ORDER BY p.id DESC LIMIT 100');
+  // Inventory
+  G('out-of-stock', 'SELECT id,title,is_sold_out FROM products WHERE stock=0 ORDER BY id DESC LIMIT 100');
+  G('stock-value', 'SELECT COALESCE(SUM(stock*cost),0)::float at_cost, COALESCE(SUM(stock*price),0)::float at_price, COALESCE(SUM(stock),0)::int units, COUNT(*)::int tracked FROM products WHERE stock IS NOT NULL');
+  G('overstocked', 'SELECT id,title,stock FROM products WHERE stock>=50 ORDER BY stock DESC LIMIT 100');
+  G('stock-runway', "SELECT p.id,p.title,p.stock,s.sold::int sold30,ROUND(p.stock/(s.sold/30.0),1)::float days_left FROM products p JOIN (SELECT i.product_id, SUM(i.quantity) sold FROM order_items i JOIN orders o ON o.id=i.order_id AND o.status<>'cancelled' AND o.created_at>now()-interval '30 days' GROUP BY i.product_id) s ON s.product_id=p.id WHERE p.stock>0 AND s.sold>0 ORDER BY p.stock/(s.sold/30.0) LIMIT 30");
+  app.post('/api/plus/products/sync-soldout', ...A, wrap(async (req, res) => {
+    const a = await q('UPDATE products SET is_sold_out=true WHERE stock=0 AND NOT is_sold_out');
+    const b = await q('UPDATE products SET is_sold_out=false WHERE stock>0 AND is_sold_out');
+    await log(req, 'sync-soldout', `${a.rowCount} marked sold out, ${b.rowCount} put back in stock`); res.json({ changed: a.rowCount + b.rowCount });
+  }));
+  G('untracked-stock', 'SELECT id,title,price::float FROM products WHERE stock IS NULL ORDER BY id DESC LIMIT 100');
+  // Orders
+  G('orders-today', `SELECT o.id,u.username,o.total::float,o.status,o.created_at FROM orders o JOIN users u ON u.id=o.user_id WHERE ${OD}=${MNL} ORDER BY o.id DESC LIMIT 100`);
+  G('unpaid-orders', "SELECT o.id,u.username,o.total::float,o.status,o.created_at FROM orders o JOIN users u ON u.id=o.user_id WHERE o.paid_at IS NULL AND o.status<>'cancelled' ORDER BY o.id DESC LIMIT 100");
+  G('cancelled-recent', "SELECT o.id,u.username,o.total::float,COALESCE(o.cancel_reason,'') reason,o.created_at FROM orders o JOIN users u ON u.id=o.user_id WHERE o.status='cancelled' ORDER BY o.id DESC LIMIT 50");
+  G('cancel-reasons', "SELECT COALESCE(NULLIF(trim(cancel_reason),''),'(none given)') reason, COUNT(*)::int orders FROM orders WHERE status='cancelled' GROUP BY 1 ORDER BY orders DESC LIMIT 15");
+  G('biggest-orders', "SELECT o.id,u.username,o.total::float,o.status,o.created_at FROM orders o JOIN users u ON u.id=o.user_id WHERE o.status<>'cancelled' ORDER BY o.total DESC LIMIT 10");
+  G('orders-with-notes', "SELECT o.id,u.username,o.note,o.status FROM orders o JOIN users u ON u.id=o.user_id WHERE o.note<>'' ORDER BY o.id DESC LIMIT 50");
+  G('pending-age', "SELECT label, COUNT(*)::int orders FROM (SELECT CASE WHEN h<1 THEN '1) under 1 hour' WHEN h<6 THEN '2) 1 to 6 hours' WHEN h<24 THEN '3) 6 to 24 hours' ELSE '4) over 24 hours' END label FROM (SELECT EXTRACT(EPOCH FROM now()-created_at)/3600 h FROM orders WHERE status='pending') a) b GROUP BY label ORDER BY label");
+  G('today-vs-yesterday', `SELECT COALESCE(SUM(total) FILTER (WHERE d=t),0)::float today, COALESCE(SUM(total) FILTER (WHERE d=t-1),0)::float yesterday, COALESCE(SUM(total) FILTER (WHERE d=t-7),0)::float last_week, COUNT(*) FILTER (WHERE d=t)::int orders_today, COUNT(*) FILTER (WHERE d=t-1)::int orders_yesterday FROM (SELECT total,(created_at AT TIME ZONE 'Asia/Manila')::date d,${MNL} t FROM orders WHERE status<>'cancelled' AND created_at>now()-interval '9 days') x`);
+  G('items-today', `SELECT i.title, SUM(i.quantity)::int qty FROM order_items i JOIN orders o ON o.id=i.order_id WHERE o.status<>'cancelled' AND ${OD}=${MNL} GROUP BY i.title ORDER BY qty DESC LIMIT 15`);
+  G('promo-performance', 'SELECT code,percent,used_count,max_uses,is_active FROM promo_codes ORDER BY used_count DESC,id DESC LIMIT 50');
+  // People
+  G('new-customers', "SELECT id,username,created_at FROM users WHERE role='customer' AND created_at>now()-interval '7 days' ORDER BY id DESC LIMIT 100");
+  G('sellers-overview', "SELECT u.id,u.username,(SELECT COUNT(*) FROM products p WHERE p.owner_id=u.id)::int products,COALESCE((SELECT SUM(i.quantity*i.unit_price) FROM order_items i JOIN orders o ON o.id=i.order_id AND o.status<>'cancelled' WHERE i.owner_id=u.id),0)::float revenue,u.products_hidden hidden FROM users u WHERE u.role='seller' ORDER BY revenue DESC LIMIT 50");
+  G('top-spenders-30', "SELECT u.username,COUNT(o.id)::int orders,SUM(o.total)::float spent FROM orders o JOIN users u ON u.id=o.user_id WHERE o.status<>'cancelled' AND o.created_at>now()-interval '30 days' GROUP BY u.id,u.username ORDER BY spent DESC LIMIT 10");
+  G('must-change', 'SELECT id,username,role,temp_expires FROM users WHERE must_change ORDER BY id DESC LIMIT 100');
+  G('recent-resets', 'SELECT u.username,r.created_at,b.username reset_by FROM password_resets r JOIN users u ON u.id=r.user_id LEFT JOIN users b ON b.id=r.by_id ORDER BY r.id DESC LIMIT 30');
+  G('blocked-customers', 'SELECT u.username,b.shop_wide,b.reason,b.created_at,s.username blocker FROM customer_blocks b JOIN users u ON u.id=b.user_id LEFT JOIN users s ON s.id=b.blocked_by ORDER BY b.id DESC LIMIT 100');
+  G('shared-signup-ip', "SELECT signup_ip ip,COUNT(*)::int accounts,string_agg(username,', ' ORDER BY id) users FROM users WHERE role='customer' AND signup_ip IS NOT NULL AND signup_ip<>'' GROUP BY signup_ip HAVING COUNT(*)>=5 ORDER BY accounts DESC LIMIT 30");
+  G('requests-waiting', "SELECT r.id,u.username,LEFT(r.description,60) request,r.created_at FROM custom_requests r JOIN users u ON u.id=r.user_id WHERE r.status='pending' ORDER BY r.id LIMIT 100");
+  // Insights
+  G('revenue-week', `SELECT to_char(d,'Dy MM-DD') label, COALESCE(SUM(o.total),0)::float revenue FROM generate_series(${MNL}-6,${MNL},'1 day') d LEFT JOIN orders o ON ${OD}=d::date AND o.status<>'cancelled' GROUP BY d ORDER BY d`);
+  G('sales-by-hour-today', `SELECT lpad(h::text,2,'0')||':00' label, COUNT(o.id)::int orders FROM generate_series(0,23) h LEFT JOIN orders o ON EXTRACT(hour FROM o.created_at AT TIME ZONE 'Asia/Manila')=h AND ${OD}=${MNL} AND o.status<>'cancelled' GROUP BY h ORDER BY h`);
+  G('best-sellers-7', "SELECT i.title,SUM(i.quantity)::int sold FROM order_items i JOIN orders o ON o.id=i.order_id AND o.status<>'cancelled' WHERE o.created_at>now()-interval '7 days' GROUP BY i.title ORDER BY sold DESC LIMIT 10");
+  G('slow-movers', "SELECT p.id,p.title,COALESCE(s.sold,0)::int sold30 FROM products p LEFT JOIN (SELECT i.product_id, SUM(i.quantity) sold FROM order_items i JOIN orders o ON o.id=i.order_id AND o.status<>'cancelled' AND o.created_at>now()-interval '30 days' GROUP BY i.product_id) s ON s.product_id=p.id WHERE COALESCE(s.sold,0)<=2 AND NOT p.is_sold_out ORDER BY sold30,p.id LIMIT 50");
+  G('fav-never-sold', 'SELECT p.id,p.title,COUNT(f.user_id)::int hearts FROM favorites f JOIN products p ON p.id=f.product_id WHERE NOT EXISTS (SELECT 1 FROM order_items i WHERE i.product_id=p.id) GROUP BY p.id,p.title ORDER BY hearts DESC LIMIT 30');
+  G('category-30', "SELECT p.category label,COALESCE(SUM(i.quantity*i.unit_price),0)::float revenue FROM order_items i JOIN orders o ON o.id=i.order_id AND o.status<>'cancelled' AND o.created_at>now()-interval '30 days' JOIN products p ON p.id=i.product_id GROUP BY p.category ORDER BY revenue DESC LIMIT 15");
+  G('month-compare', "SELECT COALESCE(SUM(total) FILTER (WHERE m=0),0)::float this_month, COALESCE(SUM(total) FILTER (WHERE m=1),0)::float last_month, COUNT(*) FILTER (WHERE m=0)::int orders_this, COUNT(*) FILTER (WHERE m=1)::int orders_last FROM (SELECT total,((date_part('year',now())*12+date_part('month',now()))-(date_part('year',created_at)*12+date_part('month',created_at)))::int m FROM orders WHERE status<>'cancelled' AND created_at>=date_trunc('month',now())-interval '1 month') x");
+  G('discount-given', "SELECT COALESCE(SUM(discount),0)::float given,COUNT(*) FILTER (WHERE discount>0)::int orders_with_discount,COUNT(*)::int orders FROM orders WHERE status<>'cancelled' AND created_at>now()-interval '30 days'");
+  // System
+  G('backup-list', 'SELECT id,size,created_at FROM backups ORDER BY id DESC LIMIT 20');
+  G('top-actions', "SELECT action label,COUNT(*)::int n FROM audit_log WHERE at>now()-interval '7 days' GROUP BY action ORDER BY n DESC LIMIT 12");
+  G('audit-search', 'SELECT at,username,action,detail FROM audit_log WHERE action ILIKE $1 OR detail ILIKE $1 OR username ILIKE $1 ORDER BY id DESC LIMIT 50', (r) => ['%' + String(r.query.q || '').replace(/[%_\\]/g, '').slice(0, 60) + '%']);
 };
 
 // Mounted first in server.js so it times every API request.
