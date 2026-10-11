@@ -704,3 +704,12 @@ html.theme-anim #theme svg{animation:themeSpin .8s var(--ease)}
   .subrow{flex-wrap:wrap;overflow:visible}
   .subtabs{max-width:100%;overflow-x:auto;scrollbar-width:none}.subtabs::-webkit-scrollbar{display:none}
 }
+
+/* ===== the theme wave: old colours stay underneath, the new ones grow out of the button ===== */
+::view-transition{background:var(--vt-old,transparent)}
+::view-transition-old(root),::view-transition-new(root){animation:none;mix-blend-mode:normal}
+::view-transition-old(root){z-index:1}
+::view-transition-new(root){z-index:2;animation:themeWave 1s cubic-bezier(.45,0,.2,1) both}
+/* ===== the cart and every popup stay pinned to the screen (they had slipped into the page and scrolled away with it) ===== */
+html{scrollbar-gutter:stable}
+dialog:modal,dialog[open]{position:fixed;inset:0}
