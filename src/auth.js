@@ -5,9 +5,13 @@ if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
   throw new Error('JWT_SECRET must be set in production');
 }
 const SECRET = process.env.JWT_SECRET || 'dev-only-secret';
+if (process.env.NODE_ENV === 'production' && SECRET.length < 32) console.warn('[security] JWT_SECRET is shorter than 32 characters. Use a long random value.');
+// Only HS256 is accepted, so a token can never choose a weaker (or "none") signing method.
+const VERIFY = { algorithms: ['HS256'] };
+const SIGN = { algorithm: 'HS256' };
 
 // pc = the person logged in with a temporary password: a short session that can only set a new password.
-const sign = (u, pc = false) => jwt.sign({ id: u.id, username: u.username, role: u.role, ...(pc ? { pc: true } : {}) }, SECRET, { expiresIn: pc ? '1h' : '7d' });
+const sign = (u, pc = false) => jwt.sign({ id: u.id, username: u.username, role: u.role, ...(pc ? { pc: true } : {}) }, SECRET, { ...SIGN, expiresIn: pc ? '1h' : '7d' });
 
 // The token only proves WHO someone is. Their role and name are always read from the database (cached for a few
 // seconds), so a seller who is removed or renamed stops working right away instead of staying powerful until the
@@ -18,17 +22,20 @@ setInterval(() => { const now = Date.now(); for (const [k, v] of cache) if (now 
 async function currentUser(id) {
   const hit = cache.get(id);
   if (hit && Date.now() - hit.t < TTL) return hit.u;
-  const { rows: [u] } = await pool.query('SELECT id, username, role FROM users WHERE id=$1', [id]);
+  const { rows: [u] } = await pool.query('SELECT id, username, role, pw_changed_at FROM users WHERE id=$1', [id]);
   cache.set(id, { u: u || null, t: Date.now() });
   return u || null;
 }
 
+// A password change or reset kills every token issued before it: a stolen or forgotten login stops working the moment the password changes.
+const revoked = (claims, u) => !!u.pw_changed_at && Number(claims.iat) < Math.floor(new Date(u.pw_changed_at).getTime() / 1000);
+
 // Like `auth`, but never rejects: if a valid token is sent it sets req.user, otherwise the person is just a visitor.
 const softAuth = async (req, res, next) => {
   try {
-    const claims = jwt.verify((req.headers.authorization || '').replace(/^Bearer /, ''), SECRET);
+    const claims = jwt.verify((req.headers.authorization || '').replace(/^Bearer /, ''), SECRET, VERIFY);
     const u = await currentUser(claims.id);
-    if (u) req.user = { id: u.id, username: u.username, role: u.role };
+    if (u && !revoked(claims, u)) req.user = { id: u.id, username: u.username, role: u.role };
   } catch (e) { /* a visitor */ }
   next();
 };
@@ -37,13 +44,13 @@ const softAuth = async (req, res, next) => {
 const auth = async (req, res, next) => {
   let claims;
   try {
-    claims = jwt.verify((req.headers.authorization || '').replace(/^Bearer /, ''), SECRET);
+    claims = jwt.verify((req.headers.authorization || '').replace(/^Bearer /, ''), SECRET, VERIFY);
   } catch {
     return res.status(401).json({ error: 'Log in to continue.' });
   }
   try {
     const u = await currentUser(claims.id);
-    if (!u) return res.status(401).json({ error: 'Log in to continue.' });
+    if (!u || revoked(claims, u)) return res.status(401).json({ error: 'Log in to continue.' });
     req.user = { id: u.id, username: u.username, role: u.role, ...(claims.pc ? { pc: true } : {}) };
   } catch (e) {
     return next(e);
