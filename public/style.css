@@ -918,3 +918,38 @@ header.glass,dialog,.glass.panel{background-image:linear-gradient(135deg,rgba(25
 .card:hover,button:hover:not(:disabled){box-shadow:var(--sh2),inset 0 1px 0 rgba(255,255,255,.7),inset 0 0 0 1px rgba(255,255,255,.18)}
 :root[data-glass=lite] header.glass,:root[data-glass=lite] dialog,:root[data-glass=lite] #toast,:root[data-glass=lite] .glass.panel{-webkit-backdrop-filter:blur(var(--blur)) saturate(1.6);backdrop-filter:blur(var(--blur)) saturate(1.6)}
 @media(prefers-reduced-transparency:reduce){header.glass,dialog,#toast,.glass.panel{-webkit-backdrop-filter:none;backdrop-filter:none}}
+
+/* ===== v22: order ring, rewarding presses, leaving animations ===== */
+#ordfx[popover]{margin:0;border:0;max-width:none;max-height:none;overflow:hidden;color:var(--txt)}
+.ordfx-ring{width:92px;height:92px;fill:none;stroke-width:3;stroke-linecap:round;stroke-linejoin:round;transition:filter .5s}
+.ordfx-ring .rt,.ordfx-ring .rp{transform:rotate(-90deg);transform-origin:26px 26px}
+.ordfx-ring .rt{stroke:rgba(128,140,200,.28)}
+.ordfx-ring .rp{stroke:#0a84ff;stroke-dasharray:145;stroke-dashoffset:145;animation:ofProg 2.8s cubic-bezier(.1,.7,.2,1) forwards;transition:fill .4s,stroke .3s}
+.ordfx-ring path{stroke:var(--ok);stroke-dasharray:40;stroke-dashoffset:40}
+.prog.done .ordfx-ring .rp{stroke:var(--ok);fill:rgba(48,209,88,.18)}
+.prog.done .ordfx-ring path{animation:ofDraw .45s .1s var(--ease) forwards}
+.prog.done .ordfx-ring{filter:drop-shadow(0 0 10px rgba(48,209,88,.9))}
+.prog.done .ordfx-card{animation:ofGlow 1.5s ease-out forwards}
+@keyframes ofProg{to{stroke-dashoffset:42}}
+@keyframes ofGlow{0%{box-shadow:var(--sh3),0 0 0 0 rgba(48,209,88,.8)}35%{box-shadow:var(--sh3),0 0 70px 16px rgba(48,209,88,.6)}100%{box-shadow:var(--sh3),0 0 38px 4px rgba(48,209,88,.32)}}
+.reward{animation:rwPop .55s var(--spring),rwRing .7s ease-out!important}
+@keyframes rwPop{0%{scale:1}30%{scale:1.09}60%{scale:.97}100%{scale:1}}
+@keyframes rwRing{0%{box-shadow:0 0 0 0 rgba(10,132,255,.7),0 0 0 0 rgba(191,90,242,.5)}100%{box-shadow:0 0 0 16px rgba(10,132,255,0),0 0 34px 10px rgba(191,90,242,0)}}
+.rip{position:absolute;width:14px;height:14px;margin:-7px;border-radius:50%;pointer-events:none;background:rgba(255,255,255,.6);animation:ripOut .65s ease-out forwards}
+@keyframes ripOut{to{transform:scale(22);opacity:0}}
+.pfx{position:fixed;z-index:2000;width:0;height:0;pointer-events:none}
+.pfx i{position:absolute;left:-3px;top:-3px;width:6px;height:6px;border-radius:50%;background:#fff;box-shadow:0 0 8px #7aa7ff,0 0 14px #bf5af2;animation:pfxOut .6s ease-out forwards}
+@keyframes pfxOut{from{transform:rotate(var(--a)) translateY(0);opacity:1}to{transform:rotate(var(--a)) translateY(calc(var(--d) * -1)) scale(.3);opacity:0}}
+button{transition:transform .45s var(--spring),box-shadow .3s ease,background .25s,filter .25s,color .25s,border-color .25s}
+@keyframes dlgOut{to{opacity:0;transform:scale(.95) translateY(8px)}}
+@keyframes drawerOut{to{opacity:0;transform:translateX(46px)}}
+@keyframes sheetDown{to{opacity:0;transform:translateY(80px)}}
+@keyframes cartFullOut{to{opacity:0;transform:scale(1.03)}}
+@keyframes bdOut{to{opacity:0}}
+dialog[open].closing{animation:dlgOut .22s ease-in forwards}
+dialog[open].closing::backdrop{animation:bdOut .22s ease-in forwards}
+dialog[data-kind=cart][open].closing{animation:cartFullOut .26s ease-in forwards}
+@media(max-width:640px){dialog[open].closing,dialog[data-kind=cart][open].closing{animation:sheetDown .26s ease-in forwards}}
+.cline.leaving{animation:lineOut .26s ease-in forwards;overflow:hidden;pointer-events:none}
+@keyframes lineOut{to{opacity:0;transform:translateX(60px) scale(.96)}}
+@media(prefers-reduced-motion:reduce){.ordfx-ring .rp{animation:none;stroke-dashoffset:0}}
