@@ -239,7 +239,7 @@ const arrangeCtl = (p) => `<div class="arr-ctl"><span class="grip" data-grip rol
 const productCard = (p) => {
   const off = Number(p.discount_percent) || 0;
   const note = bulkOn(p) ? `Buy ${p.bulk_min}+ and save ${p.bulk_percent}%` : (!p.is_sold_out && p.stock != null && p.stock <= LOW_STOCK ? `Only ${p.stock} left` : '');
-  return `<article class="card t has-fav${p.pinned ? ' pinned' : ''}" data-sid="${p.id}"><div class="img">${heartBtn(p.id)}${shareBtn(p.id)}${tagFor(p)}${lowBadge(p)}${flashBadge(p)}${p.pinned ? PINMARK : ''}${arrange && isRaven() ? arrangeCtl(p) : ''}${p.image_url ? `<img loading="lazy" decoding="async" src="${esc(thumb(p.image_url, 480))}" srcset="${esc(thumb(p.image_url, 240))} 240w, ${esc(thumb(p.image_url, 480))} 480w, ${esc(thumb(p.image_url, 800))} 800w" sizes="(max-width:560px) 50vw, (max-width:900px) 60vw, 40vw" alt="${esc(p.title)}">` : ''}${p.hidden ? '<span class="badge">Hidden from shop</span>' : p.is_sold_out ? '<span class="badge">Sold out</span>' : ''}${off ? `<span class="badge off chip" tabindex="0" aria-label="${off}% off, now ${money(fin(p))}"><i>-${off}% OFF</i><u>Now ${money(fin(p))}</u></span>` : ''}</div>` +
+  return `<article class="card t has-fav${p.pinned ? ' pinned' : ''}" data-sid="${p.id}"><div class="img">${heartBtn(p.id)}${shareBtn(p.id)}${tagFor(p)}${lowBadge(p)}${flashBadge(p)}${p.pinned ? PINMARK : ''}${arrange && isRaven() ? arrangeCtl(p) : ''}${p.image_url ? `<img loading="lazy" decoding="async" src="${esc(thumb(p.image_url, 640))}" srcset="${esc(thumb(p.image_url, 480))} 480w, ${esc(thumb(p.image_url, 800))} 800w, ${esc(thumb(p.image_url, 1000))} 1000w, ${esc(thumb(p.image_url, 1400))} 1400w" sizes="(max-width:560px) 50vw, (max-width:900px) 60vw, 40vw" alt="${esc(p.title)}">` : ''}${p.hidden ? '<span class="badge">Hidden from shop</span>' : p.is_sold_out ? '<span class="badge">Sold out</span>' : ''}${off ? `<span class="badge off chip" tabindex="0" aria-label="${off}% off, now ${money(fin(p))}"><i>-${off}% OFF</i><u>Now ${money(fin(p))}</u></span>` : ''}</div>` +
     capHtml(esc(p.title), note, `${off ? `<span class="was">${money(p.price)}</span> ` : ''}<b>${money(fin(p))}</b>`, `data-act="add" data-id="${p.id}"`, p.is_sold_out, esc(p.description)) + '</article>';
 };
 const comboCard = (c) => {
@@ -247,7 +247,7 @@ const comboCard = (c) => {
   const regular = c.items.reduce((s, x) => s + fin(x) * x.quantity, 0);
   const save = regular - Number(c.price);
   const withPic = c.items.filter((x) => x.image_url).slice(0, 4);
-  const imgs = withPic.map((x) => `<img loading="lazy" decoding="async" src="${esc(thumb(x.image_url, withPic.length === 1 ? 480 : 240))}" alt="">`).join('');
+  const imgs = withPic.map((x) => `<img loading="lazy" decoding="async" src="${esc(thumb(x.image_url, withPic.length === 1 ? 800 : 480))}" alt="">`).join('');
   return `<article class="card t combo" data-cid="${c.id}"><div class="img"><div class="combo-imgs">${imgs}</div>${out ? '<span class="badge">Sold out</span>' : save > 0 ? `<span class="badge off">Save ${money(save)}</span>` : ''}</div>` +
     capHtml(esc(c.title), '', `${save > 0 ? `<span class="was">${money(regular)}</span> ` : ''}<b>${money(c.price)}</b>`, `data-act="addcombo" data-id="${c.id}"`, out, c.items.map((x) => `${x.quantity}x ${esc(x.title)}`).join(', ')) + '</article>';
 };
@@ -1321,7 +1321,7 @@ function cartDialog() {
 // Desktop drawer motion (GSAP): rows slide in, the footer rises, and the total counts to its new value. Phones keep the plain sheet.
 let gsapP = null, lastCartTotal = null;
 const wideMotion = () => matchMedia('(min-width:641px)').matches && !matchMedia('(prefers-reduced-motion: reduce)').matches && document.documentElement.dataset.glass !== 'lite';
-const loadGsap = () => window.gsap ? Promise.resolve(window.gsap) : (gsapP = gsapP || new Promise((ok) => { const sc = document.createElement('script'); sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js'; sc.onload = () => ok(window.gsap || null); sc.onerror = () => ok(null); document.head.appendChild(sc); }));
+const loadGsap = () => window.gsap ? Promise.resolve(window.gsap) : (gsapP = gsapP || new Promise((ok) => { const sc = document.createElement('script'); sc.src = '/vendor/gsap.min.js'; sc.onload = () => ok(window.gsap || null); sc.onerror = () => ok(null); document.head.appendChild(sc); }));
 function cartMotion(again, total) {
   const from = again && lastCartTotal !== null ? lastCartTotal : total;
   lastCartTotal = total;
@@ -1839,12 +1839,12 @@ document.addEventListener('input', (e) => {
 // Every 5 seconds the phone asks /api/rev, a tiny answer that changes only when something in the shop was changed.
 // The real lists (products, combos, orders...) are downloaded only when it moved, so quiet moments cost almost no data.
 // A full check still happens at least once a minute as a safety net, and whenever /api/rev can't be reached.
-let lastFull = 0;
+let lastFull = 0, revFail = false;
 async function poll() {
   if (document.hidden || dragBusy) return;
   try {
     let key = null;
-    try { const r = await fetch('/api/rev'); if (r.ok) { const d = await r.json(); key = d.r + '|' + d.w; } } catch (e) { /* fall back to a full check */ }
+    revFail = true; try { const r = await fetch('/api/rev' + (revSig ? '?wait=1&since=' + encodeURIComponent(revSig) : '')); if (r.ok) { const d = await r.json(); key = d.r + '|' + d.w; revFail = false; } } catch (e) { /* fall back to a full check */ }
     if (key && key === revSig && Date.now() - lastFull < 60000) return;
     lastFull = Date.now();
     const [fresh, freshCombos, freshSettings] = await Promise.all([api('/api/products'), api('/api/combos'), api('/api/settings')]);
@@ -1862,7 +1862,8 @@ async function poll() {
   } catch (e) { /* ignore network hiccups */ }
 }
 loadFavs();
-setInterval(poll, 5000);
+// Long-poll loop: /api/rev answers the moment something changes (or after 15 s), so updates feel instant and quiet shops cost almost nothing.
+(async function liveLoop() { for (;;) { const t = Date.now(); try { await poll(); } catch (e) { /* ignore */ } const spent = Date.now() - t; await new Promise((ok) => setTimeout(ok, !navigator.onLine || revFail ? 5000 : document.hidden || dragBusy ? 2500 : spent < 1200 ? 1500 : 300)); } })();
 document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
 
 /* Phone layout elements (hidden on computers by the stylesheet). */
@@ -2586,7 +2587,7 @@ function quickView(id) {
   const pr = products.find((x) => x.id == id); if (!pr) return;
   const room = Math.min(99, pr.stock != null ? pr.stock - (cart[pr.id] || 0) : 99 - (cart[pr.id] || 0)), off = Number(pr.discount_percent) > 0, dlg = $('#dlg');
   delete dlg.dataset.kind;
-  dlg.innerHTML = `${pr.image_url ? `<img class="qv-img" src="${esc(thumb(pr.image_url, 800))}" alt="${esc(pr.title)}">` : ''}<div class="between"><h2 style="margin:0">${esc(pr.title)}</h2><span class="qv-price">${off ? `<s class="muted">${money(pr.price)}</s> ` : ''}<b>${money(fin(pr))}</b></span></div>
+  dlg.innerHTML = `${pr.image_url ? `<img class="qv-img" src="${esc(thumb(pr.image_url, 1000))}" alt="${esc(pr.title)}">` : ''}<div class="between"><h2 style="margin:0">${esc(pr.title)}</h2><span class="qv-price">${off ? `<s class="muted">${money(pr.price)}</s> ` : ''}<b>${money(fin(pr))}</b></span></div>
     ${pr.description ? `<p class="muted">${esc(pr.description)}</p>` : ''}
     ${pr.stock != null && pr.stock <= LOW_STOCK && !pr.is_sold_out ? `<p class="muted">Only ${pr.stock} left.</p>` : ''}
     ${bulkOn(pr) ? `<p class="muted">Buy ${pr.bulk_min}+ and save ${pr.bulk_percent}% on each.</p>` : ''}
