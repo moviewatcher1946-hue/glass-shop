@@ -1,7 +1,7 @@
 {
   "id": "/",
-  "name": "Snack Shop",
-  "short_name": "Snack Shop",
+  "name": "Snackify",
+  "short_name": "Snackify",
   "description": "Order drinks and snacks from your phone.",
   "start_url": "/",
   "scope": "/",
