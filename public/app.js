@@ -46,6 +46,8 @@ const SFX = (() => {
     promoOk: play((c) => [1318.5, 1568, 2093, 2637].forEach((f, i) => tone(c, f, i * 0.06, 0.28, 0.04))),
     error: play((c) => { tone(c, 220, 0, 0.14, 0.07, 'square'); tone(c, 165, 0.12, 0.2, 0.07, 'square'); }),
     hover: play((c) => tone(c, 1200, 0, 0.025, 0.012, 'sine')),
+    charge: play((c) => { tone(c, 280, 0, 0.9, 0.035, 'sine', 880); noise(c, 0, 0.7, 0.015, 600, 2400); }),
+    press: play((c) => { tone(c, 300, 0, 0.12, 0.08, 'triangle', 700); tone(c, 1046.5, 0.05, 0.22, 0.05); }),
     get muted() { return muted; },
     set vol(v) { volume = Math.max(0, Math.min(1.5, v)); try { localStorage.sfxvol = String(volume); } catch (e) {} },
     get vol() { return volume; },
@@ -1570,7 +1572,13 @@ const actions = {
   // One tap adds one (change the amount in the cart). Products with a bulk deal still ask first, so the offer is seen.
   add: (id) => { const p = products.find((x) => x.id == id); if (!p) return; if (bulkOn(p)) askQty(id, p.title, p.stock, `Buy ${p.bulk_min} or more for ${p.bulk_percent}% off each.`); else quickAdd(id, p.title, p.stock); },
   'qty-step': (_, d) => { const i = $('#qtyin'); i.value = Math.max(1, Math.min(Number(i.max) || 99, (parseInt(i.value) || 1) + Number(d.d))); },
-  remove: (id) => { const l = cartLines().find((x) => x.key === String(id)); cartUndo = { items: { [id]: cart[id] }, label: `Removed ${l ? l.title : 'item'}.` }; delete cart[id]; SFX.remove(); saveCart(); cartDialog(); },
+  remove: (id) => {
+    const l = cartLines().find((x) => x.key === String(id)), q = cart[id];
+    const go = () => { cartUndo = { items: { [id]: q }, label: `Removed ${l ? l.title : 'item'}.` }; delete cart[id]; saveCart(); cartDialog(); };
+    SFX.remove();
+    const row = $('#dlg').querySelector(`.cline [data-act="remove"][data-id="${id}"]`);
+    if (row && !matchMedia('(prefers-reduced-motion: reduce)').matches) { row.closest('.cline').classList.add('leaving'); setTimeout(go, 260); } else go();
+  },
   'cart-clear': () => { if (!Object.keys(cart).length) return; cartUndo = { items: { ...cart }, label: 'Cart cleared.' }; cart = {}; SFX.clear(); saveCart(); cartDialog(); },
   'cart-undo': () => { if (!cartUndo) return; Object.entries(cartUndo.items).forEach(([k, q]) => { cart[k] = Math.min(99, (cart[k] || 0) + q); }); cartUndo = null; SFX.undo(); saveCart(); cartDialog(); },
   'note-chip': (_, d) => { const i = $('#ordernote'); if (!i) return; const t = d.t; i.value = i.value.includes(t) ? i.value : (i.value ? i.value + '. ' : '') + t; cartNote = i.value.slice(0, 300); i.value = cartNote; },
@@ -1591,8 +1599,11 @@ const actions = {
   checkout: async () => {
     if (!user) { authDialog(); return toast('Log in to place your order.'); }
     const items = cartLines().map((l) => (l.key[0] === 'c' ? { combo_id: l.key.slice(1), quantity: l.q } : { product_id: l.key, quantity: l.q }));
-    const o = await api('/api/orders', { method: 'POST', json: { items, promo: promo ? promo.code : '', note: cartNote } });
-    cart = {}; promo = null; cartNote = ''; saveCart(); $('#dlg').close(); toast(`Order #${o.id} placed.`); burst(); orderCelebrate(o.id); view = 'orders'; render();
+    const fx = orderProgress(); // a ring fills while the order is sent, turns into a check, then glows
+    let o;
+    try { [o] = await Promise.all([api('/api/orders', { method: 'POST', json: { items, promo: promo ? promo.code : '', note: cartNote } }), new Promise((r) => setTimeout(r, 900))]); }
+    catch (e) { fx.fail(); throw e; }
+    cart = {}; promo = null; cartNote = ''; saveCart(); $('#dlg').close(); toast(`Order #${o.id} placed.`); burst(); fx.done(o.id); view = 'orders'; render();
   },
   toggle: async (id) => { await api(`/api/products/${id}/sold-out`, { method: 'PATCH' }); await loadProducts(); },
   delete: async (id) => { if (confirm('Delete this product?')) { await api(`/api/products/${id}`, { method: 'DELETE' }); await loadProducts(); toast('Deleted.'); } },
@@ -2231,4 +2242,68 @@ function orderCelebrate(id) {
     if (!t || (e.relatedTarget && t.contains(e.relatedTarget))) return;
     const now = performance.now(); if (now - last < 90) return; last = now; SFX.hover();
   }, true);
+})();
+
+/* ===== v22: order progress ring -> check -> glow ===== */
+function orderProgress() {
+  SFX.charge();
+  const o = document.createElement('div'); o.id = 'ordfx'; o.className = 'prog'; o.setAttribute('role', 'status');
+  o.innerHTML = '<div class="ordfx-card"><div class="ordfx-burst"></div><svg viewBox="0 0 52 52" class="ordfx-ring" aria-hidden="true"><circle class="rt" cx="26" cy="26" r="23"/><circle class="rp" cx="26" cy="26" r="23"/><path d="M15 27l8 8 14-16"/></svg><h3>Placing your order</h3><p>Hold on a moment.</p></div>';
+  o.setAttribute('popover', 'manual'); // top layer, so it sits above the open cart
+  document.body.appendChild(o);
+  try { o.showPopover(); } catch (e) {}
+  const rp = o.querySelector('.rp'), h3 = o.querySelector('h3'), p = o.querySelector('p');
+  const dismiss = () => { if (!o.isConnected) return; o.classList.add('out'); setTimeout(() => o.remove(), 400); };
+  return {
+    fail: dismiss,
+    done(id) {
+      const cur = getComputedStyle(rp).strokeDashoffset; // finish the ring from wherever it is
+      rp.style.animation = 'none'; rp.style.strokeDashoffset = cur; void rp.getBoundingClientRect();
+      rp.style.transition = 'stroke-dashoffset .5s cubic-bezier(.3,.7,.2,1)'; rp.style.strokeDashoffset = '0';
+      setTimeout(() => {
+        o.classList.add('done'); h3.textContent = 'Order placed!'; p.textContent = `Order #${Number(id)} is on its way to the seller.`;
+        const cols = ['#30d158', '#0a84ff', '#bf5af2', '#ffd60a', '#64d2ff'];
+        if (!matchMedia('(prefers-reduced-motion: reduce)').matches) o.querySelector('.ordfx-burst').innerHTML = Array.from({ length: 22 }, (_, i) => `<i style="--a:${Math.round((i * 360) / 22)}deg;--d:${90 + Math.round(Math.random() * 90)}px;--r:${Math.round(Math.random() * 360)}deg;--c:${cols[i % 5]}"></i>`).join('');
+        SFX.order(); try { navigator.vibrate && navigator.vibrate([25, 50, 25, 50, 60]); } catch (e) {}
+        o.addEventListener('click', dismiss); setTimeout(dismiss, 2800);
+      }, 520);
+    }
+  };
+}
+
+/* ===== v22: rewarding presses on important buttons (ripple, pop, glow ring, sparks, sound) ===== */
+document.addEventListener('click', (e) => {
+  const b = e.target.closest && e.target.closest('button.primary');
+  if (!b || b.disabled || b.closest('.tabs,.subtabs,.chips,.cats,.nav,.tour')) return;
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const r = b.getBoundingClientRect(), x = e.clientX || r.left + r.width / 2, y = e.clientY || r.top + r.height / 2;
+  const pos = getComputedStyle(b).position; if (pos === 'static') b.style.position = 'relative';
+  const rip = document.createElement('span'); rip.className = 'rip'; rip.style.left = (x - r.left) + 'px'; rip.style.top = (y - r.top) + 'px'; b.appendChild(rip);
+  b.classList.remove('reward'); void b.offsetWidth; b.classList.add('reward');
+  const fx = document.createElement('div'); fx.className = 'pfx'; fx.style.left = (r.left + r.width / 2) + 'px'; fx.style.top = (r.top + r.height / 2) + 'px';
+  fx.innerHTML = Array.from({ length: 8 }, (_, i) => `<i style="--a:${i * 45 + Math.round(Math.random() * 20)}deg;--d:${Math.min(60, 26 + r.width / 4)}px"></i>`).join('');
+  document.body.appendChild(fx);
+  if (!b.matches('.add,[data-act="add"],[data-act="checkout"]')) SFX.press();
+  try { navigator.vibrate && navigator.vibrate(12); } catch (er) {}
+  setTimeout(() => { rip.remove(); fx.remove(); b.classList.remove('reward'); if (pos === 'static') b.style.position = ''; }, 700);
+}, true);
+
+/* ===== v22: leaving animations: popups/cart animate out, cart rows slide away ===== */
+(() => {
+  const realClose = HTMLDialogElement.prototype.close, realShow = HTMLDialogElement.prototype.showModal;
+  HTMLDialogElement.prototype.close = function (rv) {
+    const d = this;
+    if (!d.open || d.classList.contains('closing') || matchMedia('(prefers-reduced-motion: reduce)').matches) return realClose.call(d, rv);
+    d.classList.add('closing'); d.__cancelClose = false;
+    const fin = () => { d.classList.remove('closing'); if (d.__cancelClose) { d.__cancelClose = false; return; } realClose.call(d, rv); };
+    d.addEventListener('animationend', function h(ev) { if (ev.target === d) { d.removeEventListener('animationend', h); fin(); } });
+    setTimeout(() => { if (d.classList.contains('closing')) fin(); }, 450);
+  };
+  // opening again while it is still leaving cancels the leave, so new content is never closed by an old animation
+  HTMLDialogElement.prototype.showModal = function () {
+    if (this.classList.contains('closing')) { this.__cancelClose = true; this.classList.remove('closing'); }
+    if (this.open) return;
+    return realShow.call(this);
+  };
+  document.addEventListener('cancel', (e) => { if (e.target instanceof HTMLDialogElement && e.target.open) { e.preventDefault(); e.target.close(); } }, true); // Esc
 })();
