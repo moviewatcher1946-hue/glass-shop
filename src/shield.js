@@ -1,5 +1,6 @@
 // Security switches (main admin only): lockdown, firewall, read-only, sign-up pause, bot blocking, IP blocklist, log everyone out.
 const express = require('express');
+const http = require('http');
 
 module.exports = function mount(app, { pool, auth }) {
   const NEW = ['throttle','throttleauto','ddos','datashield','sqlguard','xssguard','origin','honeypot','autoban','scrape','bigbody','noupload','slowlogin','forcehttps','nohotlink','secheaders'];
@@ -135,7 +136,7 @@ module.exports = function mount(app, { pool, auth }) {
   });
 
   // ---- More protocols ----
-  const NEW3 = ['ctypecheck','jsondepth','uaguard','hdrspoof','apinostore','tarpit','maxparams','rangeguard','tokenurl','logindelay','geoblock','corsstrict','referercheck'];
+  const NEW3 = ['attacktest','ctypecheck','jsondepth','uaguard','hdrspoof','apinostore','tarpit','maxparams','rangeguard','tokenurl','logindelay','geoblock','corsstrict','referercheck'];
   NEW.push(...NEW3); NEW3.forEach((k) => { if (state[k] === undefined) state[k] = false; stats[k] = 0; });
   const GEO = new Set(String(process.env.BLOCK_COUNTRIES || '').split(',').map((x) => x.trim().toUpperCase()).filter(Boolean));
   const depth = (o, d = 0) => (d > 12 || !o || typeof o !== 'object' ? d : Math.max(d, ...Object.values(o).slice(0, 200).map((v) => depth(v, d + 1))));
@@ -194,10 +195,94 @@ module.exports = function mount(app, { pool, auth }) {
 
   const J = express.json({ limit: '10kb' });
   const log = (req, a, d) => pool.query('INSERT INTO audit_log (user_id, username, role, action, detail) VALUES ($1,$2,$3,$4,$5)', [req.user.id, req.user.username, req.user.role, a, String(d || '').slice(0, 500)]).catch(() => {});
-  const view = () => ({ state: { ...Object.fromEntries(NEW.map((k) => [k, !!state[k]])), lockdown: state.lockdown, firewall: state.firewall, readonly: state.readonly, nosignup: state.nosignup, nobots: state.nobots, perf: state.perf, ips: state.ips }, stats, blocked, live: { perf: state.perf, ram: { mb: MEM.rssMb, limit: MEM.limitMb, pct: Math.round(MEM.ratio * 100), spills: MEM.spills, last: MEM.last }, throttle: thOn(), auto: TH.auto, lag: Math.round(TH.lag), open: TH.inflight, served: TH.served, shed: TH.shed, cached: TH.cached } });
+  const view = () => ({ state: { ...Object.fromEntries(NEW.map((k) => [k, !!state[k]])), lockdown: state.lockdown, firewall: state.firewall, readonly: state.readonly, nosignup: state.nosignup, nobots: state.nobots, perf: state.perf, ips: state.ips }, stats, blocked, live: { attack: { on: AT.on, capped: AT.capped, usedMb: AT.usedMb, cap: CAP_MB, caught: AT.caught, total: AT.total, cycles: AT.cycles, lastAt: AT.lastAt, results: AT.results }, perf: state.perf, ram: { mb: MEM.rssMb, limit: MEM.limitMb, pct: Math.round(MEM.ratio * 100), spills: MEM.spills, last: MEM.last }, throttle: thOn(), auto: TH.auto, lag: Math.round(TH.lag), open: TH.inflight, served: TH.served, shed: TH.shed, cached: TH.cached } });
   const A = [auth, (req, res, next) => (req.user.role === 'admin' ? next() : res.status(403).json({ error: 'Admins only.' }))];
 
   app.get('/api/shield', ...A, wrap(async (req, res) => res.json(view())));
+
+  // ---- Attack simulator: fires a batch of harmless-but-crafted test requests at THIS server only (127.0.0.1), so you can see
+  // which switches actually catch something. It never touches any other site. Each run uses a random fake visitor address
+  // (via X-Forwarded-For, trusted because trust proxy is on) so it doesn't trip your own real IP's bans.
+  const SIM_PORT = process.env.PORT || 3000;
+  const simReq = (opt, body) => new Promise((resolve) => {
+    const r = http.request({ host: '127.0.0.1', port: SIM_PORT, path: opt.path, method: opt.method || 'GET', headers: opt.headers || {}, timeout: 4000 }, (res) => {
+      let d = ''; res.on('data', (c) => { d += c; }); res.on('end', () => resolve({ status: res.statusCode, body: d.slice(0, 200) }));
+    });
+    r.on('error', (e) => resolve({ status: 0, body: e.message })); r.on('timeout', () => { r.destroy(); resolve({ status: 0, body: 'timeout' }); });
+    if (body) r.write(body); r.end();
+  });
+
+  // ---- Continuous self-attack switch: while ON, repeatedly fires the same kind of test traffic at every shield, all at once,
+  // but never lets its own RAM use climb more than 200 MB above where it started. It pauses itself (and resumes) automatically.
+  const AT = { on: false, baseline: null, usedMb: 0, capped: false, lastAt: null, caught: 0, total: 0, cycles: 0, results: [] };
+  const CAP_MB = 200;
+  const atBattery = (fakeIp) => {
+    const H = { 'x-forwarded-for': fakeIp, 'user-agent': 'ShieldSimulator/1.0' };
+    return [
+      { name: 'SQL injection', path: "/api/products?id=1' OR 1=1--", headers: H },
+      { name: 'Script injection (XSS)', path: '/api/products?x=<script>alert(1)</script>', headers: H },
+      { name: 'Secret file probe', path: '/.env', headers: H },
+      { name: 'Null byte', path: '/api/products?f=a%00.jpg', headers: H },
+      { name: 'Token in URL', path: '/api/products?token=abc123', headers: H },
+      { name: 'Long URL', path: '/api/products?pad=' + 'a'.repeat(2100), headers: H },
+      { name: 'Too many parameters', path: '/api/products?' + Array.from({ length: 45 }, (_, i) => 'p' + i + '=1').join('&'), headers: H },
+      { name: 'Forged header', path: '/api/products', headers: { ...H, 'x-forwarded-host': 'evil.example' } },
+      { name: 'Bot user-agent', path: '/api/products', headers: { 'x-forwarded-for': fakeIp, 'user-agent': 'python-requests/2.31' } },
+      { name: 'Oversized browser ID', path: '/api/products', headers: { 'x-forwarded-for': fakeIp, 'user-agent': 'A'.repeat(400) } },
+      { name: 'Cross-site origin', path: '/api/cart', method: 'POST', headers: { ...H, origin: 'https://attacker.example', 'content-type': 'application/json' }, body: '{"a":1}' },
+      { name: 'Wrong content-type', path: '/api/cart', method: 'POST', headers: { ...H, 'content-type': 'application/xml', 'content-length': '11' }, body: '<a>1</a>' },
+      { name: 'Deeply nested data', path: '/api/cart', method: 'POST', headers: { ...H, 'content-type': 'application/json' }, body: '{"a":'.repeat(15) + '1' + '}'.repeat(15) },
+      { name: 'Prototype pollution', path: '/api/cart', method: 'POST', headers: { ...H, 'content-type': 'application/json' }, body: '{"__proto__":{"x":1}}' },
+      { name: 'Bad method (TRACE)', path: '/api/products', method: 'TRACE', headers: H },
+      { name: 'Range abuse', path: '/api/products', headers: { ...H, range: 'bytes=0-1,2-3,4-5,6-7,8-9' } },
+    ];
+  };
+  const atRunCycle = async () => {
+    const fakeIp = '203.0.113.' + (1 + Math.floor(Math.random() * 250));
+    const tests = atBattery(fakeIp);
+    const results = [];
+    for (const t of tests) { const r = await simReq(t, t.body); results.push({ name: t.name, status: r.status, blocked: r.status === 403 || r.status === 400 || r.status === 404 || r.status === 405 || r.status === 413 || r.status === 414 || r.status === 415 || r.status === 416 || r.status === 429 }); }
+    let floodBlocked = 0; for (let i = 0; i < 20; i++) { const r = await simReq({ path: '/api/products', headers: { 'x-forwarded-for': fakeIp } }); if (r.status === 429 || r.status === 503) floodBlocked++; }
+    results.push({ name: 'Flood burst (20 requests)', status: floodBlocked ? 429 : 200, blocked: floodBlocked > 0, note: floodBlocked + '/20 blocked' });
+    autobans.delete(fakeIp); strikes.delete(fakeIp); rate.delete(fakeIp); burstHits.delete(fakeIp); scrapeHits.delete(fakeIp); loginHits.delete(fakeIp); ipConc.delete(fakeIp);
+    AT.results = results; AT.caught = results.filter((r) => r.blocked).length; AT.total = results.length; AT.cycles++; AT.lastAt = new Date().toISOString();
+  };
+  setInterval(async () => {
+    if (!state.attacktest) { if (AT.on) { AT.on = false; AT.baseline = null; AT.capped = false; } return; }
+    const m = process.memoryUsage(); if (AT.baseline == null) AT.baseline = m.rss;
+    AT.on = true; AT.usedMb = Math.round((m.rss - AT.baseline) / 1048576);
+    if (AT.usedMb >= CAP_MB) { AT.capped = true; if (global.gc) global.gc(); return; }
+    AT.capped = false;
+    try { await atRunCycle(); } catch (e) { /* keep going next tick */ }
+  }, 4000).unref();
+  app.post('/api/shield/simulate', ...A, wrap(async (req, res) => {
+    const fakeIp = '203.0.113.' + (1 + Math.floor(Math.random() * 250));
+    const H = { 'x-forwarded-for': fakeIp, 'user-agent': 'ShieldSimulator/1.0' };
+    const tests = [
+      { name: 'SQL injection in query', path: "/api/products?id=1' OR 1=1--", headers: H },
+      { name: 'Script injection (XSS)', path: '/api/products?x=<script>alert(1)</script>', headers: H },
+      { name: 'Secret file probe (.env)', path: '/.env', headers: H },
+      { name: 'Secret file probe (.git)', path: '/.git/config', headers: H },
+      { name: 'Null byte', path: '/api/products?f=a%00.jpg', headers: H },
+      { name: 'Token in URL', path: '/api/products?token=abc123', headers: H },
+      { name: 'Long URL', path: '/api/products?pad=' + 'a'.repeat(2100), headers: H },
+      { name: 'Forged header', path: '/api/products', headers: { ...H, 'x-forwarded-host': 'evil.example' } },
+      { name: 'Bot user-agent', path: '/api/products', headers: { 'x-forwarded-for': fakeIp, 'user-agent': 'python-requests/2.31' } },
+      { name: 'Cross-site origin', path: '/api/cart', method: 'POST', headers: { ...H, origin: 'https://attacker.example', 'content-type': 'application/json' }, body: '{"a":1}' },
+      { name: 'Oversized body', path: '/api/cart', method: 'POST', headers: { ...H, 'content-type': 'application/json', 'content-length': String(2100000) }, body: 'x'.repeat(2100000) },
+      { name: 'Prototype pollution', path: '/api/cart', method: 'POST', headers: { ...H, 'content-type': 'application/json' }, body: '{"__proto__":{"x":1}}' },
+      { name: 'Bad method (TRACE)', path: '/api/products', method: 'TRACE', headers: H },
+    ];
+    const results = [];
+    for (const t of tests) { try { const r = await simReq(t, t.body); results.push({ name: t.name, status: r.status, blocked: r.status === 403 || r.status === 400 || r.status === 404 || r.status === 405 || r.status === 413 || r.status === 414 || r.status === 429 }); } catch (e) { results.push({ name: t.name, status: 0, blocked: false }); } }
+    const floodStart = Date.now(); let floodBlocked = 0;
+    for (let i = 0; i < 40; i++) { const r = await simReq({ path: '/api/products', headers: H }); if (r.status === 429 || r.status === 503) floodBlocked++; }
+    results.push({ name: 'Flood (40 fast requests)', status: floodBlocked ? 429 : 200, blocked: floodBlocked > 0, note: floodBlocked + '/40 blocked in ' + (Date.now() - floodStart) + 'ms' });
+    autobans.delete(fakeIp); strikes.delete(fakeIp); rate.delete(fakeIp); burstHits.delete(fakeIp); scrapeHits.delete(fakeIp); loginHits.delete(fakeIp); ipConc.delete(fakeIp);
+    await log(req, 'shield-simulate', results.filter((r) => r.blocked).length + '/' + results.length + ' blocked');
+    res.json({ results, caught: results.filter((r) => r.blocked).length, total: results.length });
+  }));
+
   app.put('/api/shield/toggle', ...A, J, wrap(async (req, res) => {
     const k = String((req.body || {}).key || '');
     if (!['lockdown', 'firewall', 'readonly', 'nosignup', 'nobots', ...NEW].includes(k)) return res.status(400).json({ error: 'Unknown switch.' });
