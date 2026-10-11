@@ -136,7 +136,7 @@
     // The app's scripts start a moment after the startup animation does, so they can't freeze it.
     (function () {
       function load(src, cb) { var s = document.createElement('script'); s.src = src; if (cb) s.onload = cb; document.body.appendChild(s); }
-      function start() { load('app.js', function () { load('tour.js'); }); }
+      function start() { load('app.js', function () { load('tour.js'); load('admin-plus.js'); }); }
       if (document.getElementById('gw')) setTimeout(start, 300); else start();
       // Smooth scrolling (Lenis). Skipped for reduced-motion and lite mode. If the script cannot load, the page just scrolls normally.
       if (!matchMedia('(prefers-reduced-motion: reduce)').matches && document.documentElement.dataset.glass !== 'lite') {
