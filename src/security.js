@@ -20,11 +20,11 @@ function logEvent(type, who, detail = '') {
 const recentEvents = (n = 100) => events.slice(-n).reverse();
 
 /* ---------- Safe response headers ---------- */
-// CSP: the page may only load code, styles, fonts and pictures from this site plus the three hosts it really uses (Lenis, GSAP, Google Fonts).
+// CSP: the page may only load code, styles, fonts and pictures from this site plus Google Fonts (Lenis and GSAP are served from this site).
 // Nobody can put the shop inside another site (clickjacking), change its base address, or send its forms somewhere else.
 const CSP = [
   "default-src 'self'",
-  "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
+  "script-src 'self' 'unsafe-inline'",
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "font-src 'self' data: https://fonts.gstatic.com",
   "img-src 'self' data: blob:",
@@ -36,6 +36,7 @@ const CSP = [
   "base-uri 'self'",
   "form-action 'self'",
   "frame-ancestors 'none'",
+  'report-uri /api/boost/csp',
   ...(PROD ? ['upgrade-insecure-requests'] : []),
 ].join('; ');
 
@@ -48,12 +49,16 @@ function headers(req, res, next) {
     'Cross-Origin-Opener-Policy': 'same-origin',
     'Cross-Origin-Resource-Policy': 'same-origin',
     'X-Permitted-Cross-Domain-Policies': 'none',
+    'Origin-Agent-Cluster': '?1',
+    'X-DNS-Prefetch-Control': 'off',
+    'X-Download-Options': 'noopen',
     'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), bluetooth=()',
   });
   // Tell browsers to use HTTPS only, for a year (only when this request really came in over HTTPS).
   if (PROD && req.secure) res.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   // Login and account answers must never be kept by the browser or any cache.
-  if (req.path.startsWith('/api/auth')) res.set('Cache-Control', 'no-store');
+  if (req.path.startsWith('/api/auth') || req.path.startsWith('/api/admin')) res.set('Cache-Control', 'no-store');
+  if (req.path.startsWith('/api')) res.set('X-Robots-Tag', 'noindex');
   next();
 }
 
