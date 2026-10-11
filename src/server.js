@@ -20,6 +20,7 @@ app.set('trust proxy', 1); // Render sits behind a proxy; this makes req.ip the 
 const shieldGuard = require('./guard');
 shieldGuard.watchPool(pool);
 shieldGuard.early(app);
+require('./trust').early(app, pool); // addresses where an admin is logged in are exempt from limits and bans
 require('./ddos').early(app); // flood limits, auto-bans, attack mode
 require('./dataguard').early(app); // no password hash can leave in any answer
 // Gzip text responses (the JSON lists, HTML, CSS, JS) over 1 KB. Images are already compressed, so they are skipped. Same data, a fraction of the bytes; polling stays just as fresh.
