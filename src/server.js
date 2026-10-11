@@ -708,6 +708,8 @@ app.patch('/api/products/discount', auth, staff, wrap(async (req, res) => {
   res.json({ updated: rowCount, ...(await repriceSafe(list)) });
 }));
 
+require('./admin-plus')(app, { pool, auth, admin, wrap });
+
 // Brings every open (pending or packed) order up to the shop's current prices: all products for the owner, a seller's own for a seller.
 app.post('/api/orders/reprice', auth, staff, wrap(async (req, res) => {
   const { rows } = await pool.query('SELECT id FROM products WHERE ($1 OR owner_id=$2)', [isMain(req.user), req.user.id]);
@@ -1859,8 +1861,6 @@ app.post('/api/admin/sales-reset', auth, admin, wrap(async (req, res) => {
     c.release();
   }
 }));
-
-require('./admin-plus')(app, { pool, auth, admin, wrap });
 
 /* ---------- Errors & boot ---------- */
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found.' }));
