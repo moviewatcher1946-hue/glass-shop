@@ -13,12 +13,15 @@ const sec = require('./security');
 const app = express();
 const compression = require('compression');
 const sharp = require('sharp');
+sharp.cache({ memory: 16, files: 0, items: 32 }); sharp.concurrency(1); // lower native memory, same image quality
 app.set('trust proxy', 1); // Render sits behind a proxy; this makes req.ip the visitor's real address
 // Software protection (src/guard.js). It goes FIRST so /healthz answers instantly (no database, no other middleware in front of it),
 // visitors get a friendly "waking up" answer while the database is still starting, and overload is shed politely.
 const shieldGuard = require('./guard');
 shieldGuard.watchPool(pool);
 shieldGuard.early(app);
+require('./ddos').early(app); // flood limits, auto-bans, attack mode
+require('./dataguard').early(app); // no password hash can leave in any answer
 // Gzip text responses (the JSON lists, HTML, CSS, JS) over 1 KB. Images are already compressed, so they are skipped. Same data, a fraction of the bytes; polling stays just as fresh.
 app.use(compression({ threshold: 512, level: 5 }));
 // Safety headers on everything (content security policy, no framing, HTTPS-only, no sniffing...). See src/security.js.
@@ -118,7 +121,7 @@ app.use('/api', async (req, res, next) => {
   });
   next();
 });
-const json = express.json({ limit: '200kb' });
+const json = express.json({ limit: '200kb', reviver: (k, v) => (k === '__proto__' || k === 'constructor' || k === 'prototype' ? undefined : v) }); // blocks prototype-pollution keys
 // The restore route accepts big files, so it brings its own larger body parser.
 app.use((req, res, next) => (req.path === '/api/admin/import' ? next() : json(req, res, next)));
 // The service worker must never be cached hard, or a new version of the app would not reach phones.
@@ -137,7 +140,9 @@ const upload = multer({
 });
 // Shrinks an uploaded photo before it is stored: longest side at most 1400 px, WebP at quality 82 (looks the same on a phone, about a tenth of the size).
 // Animated GIFs are left alone, and if anything goes wrong the original photo is stored as it was, so an upload never fails because of this.
+const okImg = (b) => b && b.length > 12 && ((b[0] === 0xFF && b[1] === 0xD8) || (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47) || b.slice(0, 3).toString() === 'GIF' || (b.slice(0, 4).toString() === 'RIFF' && b.slice(8, 12).toString() === 'WEBP'));
 async function squeeze(f) {
+  if (f && !okImg(f.buffer)) throw Object.assign(new Error('That file is not a real picture.'), { status: 400 }); // the file's own bytes are checked, not just its label
   if (!f || f.mimetype === 'image/gif') return f || null;
   try {
     const buffer = await sharp(f.buffer).rotate().resize({ width: 1400, height: 1400, fit: 'inside', withoutEnlargement: true }).webp({ quality: 90, smartSubsample: true }).toBuffer();
@@ -736,6 +741,13 @@ app.patch('/api/products/discount', auth, staff, wrap(async (req, res) => {
 }));
 
 require('./admin-plus')(app, { pool, auth, admin, wrap });
+require('./admin-pack')(app, { pool, auth, admin, wrap });
+require('./ddos').mount(app, { auth, admin });
+require('./dataguard').mount(app, { pool, auth, admin, notify: (m) => notify(m) });
+require('./chatroom')(app, { pool, auth, wrap }); // in-site customer chat
+// Memory tools for the admin: see what the server uses and drop the in-memory picture cache on demand.
+app.get('/api/plus/p/mem-now', auth, admin, (req, res) => { const m = process.memoryUsage(), mb = (n) => Math.round(n / 1048576); res.json([{ rss_mb: mb(m.rss), heap_mb: mb(m.heapUsed), external_mb: mb(m.external), picture_cache_mb: mb(thumbBytes), pictures_cached: thumbs.size, uptime_min: Math.round(process.uptime() / 60) }]); });
+app.post('/api/plus/p/act-clear-pictures', auth, admin, (req, res) => { const n = thumbs.size; thumbs.clear(); thumbBytes = 0; if (global.gc) global.gc(); res.json({ message: `Cleared ${n} cached pictures. They are rebuilt on demand.` }); });
 boost.mount(app, { pool, auth, admin, wrap });
 shieldGuard.mount(app, { pool, auth, admin, wrap });
 
@@ -1249,24 +1261,45 @@ app.patch('/api/custom-requests/:id/respond', auth, wrap(async (req, res) => {
 /* ---------- Backup / restore (admin only) ---------- */
 const BACKUP_TABLES = ['users', 'customer_blocks', 'products', 'combos', 'combo_items', 'combo_approvals', 'promo_codes', 'settings', 'orders', 'order_items', 'custom_requests', 'order_approvals', 'order_stock', 'settlements', 'password_resets']; // parents first
 
-const buildBackup = async () => {
-  const tables = {};
+// Streams the backup piece by piece (photos are read 20 at a time) so memory stays flat no matter how big the shop grows.
+const streamBackup = async (push) => {
+  await push(`{"app":"glass-shop","version":1,"exported_at":${JSON.stringify(new Date().toISOString())},"tables":{`);
+  const fix = (row) => { for (const k in row) if (Buffer.isBuffer(row[k])) row[k] = { $b64: row[k].toString('base64') }; return row; };
+  let firstT = true;
   for (const t of BACKUP_TABLES) {
-    const { rows } = await pool.query(`SELECT * FROM ${t} ORDER BY ${{ order_approvals: 'order_id', combo_approvals: 'combo_id', order_stock: 'order_id' }[t] || 'id'}`);
-    tables[t] = rows.map((row) => {
-      for (const k in row) if (Buffer.isBuffer(row[k])) row[k] = { $b64: row[k].toString('base64') }; // product photos
-      return row;
-    });
+    await push((firstT ? '' : ',') + JSON.stringify(t) + ':['); firstT = false;
+    let first = true;
+    const emit = async (rows) => { for (const row of rows) { await push((first ? '' : ',') + JSON.stringify(fix(row))); first = false; } };
+    if (t === 'products') {
+      for (let last = 0; ;) {
+        const { rows } = await pool.query('SELECT * FROM products WHERE id>$1 ORDER BY id LIMIT 20', [last]);
+        if (!rows.length) break;
+        last = rows[rows.length - 1].id; await emit(rows);
+      }
+    } else {
+      const { rows } = await pool.query(`SELECT * FROM ${t} ORDER BY ${{ order_approvals: 'order_id', combo_approvals: 'combo_id', order_stock: 'order_id' }[t] || 'id'}`);
+      await emit(rows);
+    }
+    await push(']');
   }
-  return JSON.stringify({ app: 'glass-shop', version: 1, exported_at: new Date().toISOString(), tables });
+  await push('}}');
+};
+const buildBackupGz = async () => { // gzipped as it is produced: only the small compressed copy is ever held
+  const gz = zlib.createGzip({ level: 6 }), chunks = [];
+  gz.on('data', (c) => chunks.push(c));
+  const done = new Promise((ok, no) => { gz.on('end', ok); gz.on('error', no); });
+  await streamBackup((str) => (gz.write(str) ? null : new Promise((r) => gz.once('drain', r))));
+  gz.end(); await done;
+  return Buffer.concat(chunks);
 };
 const putSetting = (k, v) => pool.query('INSERT INTO settings (key, value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value', [k, String(v)]);
 const getSetting = async (k) => ((await pool.query('SELECT value FROM settings WHERE key=$1', [k])).rows[0] || {}).value || '';
 
 app.get('/api/admin/export', auth, admin, wrap(async (req, res) => {
   await putSetting('last_backup', new Date().toISOString()); // first, so the file itself carries it and a restore keeps the reminder accurate
-  const body = await buildBackup();
-  res.set('Content-Type', 'application/json').send(body);
+  res.set('Content-Type', 'application/json');
+  await streamBackup((str) => (res.write(str) ? null : new Promise((r) => res.once('drain', r))));
+  res.end();
 }));
 
 // For the Admin reminder: the last copy that would survive the database being deleted (a download you did, or one sent to Telegram/ntfy).
@@ -1279,6 +1312,7 @@ app.get('/api/admin/backup-status', auth, admin, wrap(async (req, res) => {
 
 // Replaces ALL data with the contents of a backup file, in one transaction (all or nothing).
 app.post('/api/admin/import', auth, admin, express.json({ limit: '100mb' }), wrap(async (req, res) => {
+  require('./dataguard').allowDrop();
   const data = req.body;
   if (!data || data.app !== 'glass-shop' || !data.tables) throw bad('This is not a valid backup file.');
   if (!(data.tables.users || []).some((u) => u.role === 'admin'))
@@ -1741,11 +1775,17 @@ app.get('/api/admin/report', auth, staff, wrap(async (req, res) => {
 /* ---------- Automatic backup (every 3 days) ---------- */
 // Each automatic backup is kept inside the site (Admin > Backup, newest 5). If Telegram or ntfy is set up, a copy is also sent there.
 const BACKUP_EVERY = 3 * 24 * 3600e3, KEEP_BACKUPS = 5;
+// With BACKUP_KEY set, the copy sent to Telegram/ntfy is encrypted (AES-256-GCM); decrypt with scripts/decrypt-backup.js.
+const encryptBackup = (buf) => {
+  const key = process.env.BACKUP_KEY; if (!key) return buf;
+  const c = require('crypto'), salt = c.randomBytes(16), iv = c.randomBytes(12), ci = c.createCipheriv('aes-256-gcm', c.scryptSync(key, salt, 32), iv);
+  const enc = Buffer.concat([ci.update(buf), ci.final()]);
+  return Buffer.concat([Buffer.from('GSB1'), salt, iv, ci.getAuthTag(), enc]);
+};
 async function autoBackup() {
-  const name = `shop-backup-${new Date().toISOString().slice(0, 10)}.json`;
+  const name = `shop-backup-${new Date().toISOString().slice(0, 10)}.json.gz${process.env.BACKUP_KEY ? '.enc' : ''}`; // off-site copy is gzipped (gunzip it, then restore the .json)
   try {
-    const body = await buildBackup();
-    const zipped = await gzip(Buffer.from(body));
+    const zipped = await buildBackupGz(), body = encryptBackup(zipped);
     await pool.query('INSERT INTO backups (size, data) VALUES ($1,$2)', [zipped.length, zipped]);
     await pool.query('DELETE FROM backups WHERE id NOT IN (SELECT id FROM backups ORDER BY created_at DESC, id DESC LIMIT $1)', [KEEP_BACKUPS]);
     await putSetting('last_auto_backup', new Date().toISOString());
@@ -1755,7 +1795,7 @@ async function autoBackup() {
     if (tg) {
       const fd = new FormData();
       fd.append('chat_id', process.env.TELEGRAM_CHAT_ID);
-      fd.append('document', new Blob([body], { type: 'application/json' }), name);
+      fd.append('document', new Blob([body], { type: 'application/gzip' }), name);
       r = await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendDocument`, { method: 'POST', body: fd });
     } else {
       r = await fetch(`https://ntfy.sh/${encodeURIComponent(nt)}`, { method: 'PUT', body, headers: { Filename: name, Title: 'Glass Shop backup' } });
@@ -1864,10 +1904,11 @@ app.delete('/api/favorites/:id', auth, wrap(async (req, res) => {
 // Removes the sales history: finished orders (and, if asked, open ones too), the cash settlements between sellers, and the promo
 // "times used" counters. Products, accounts, combos and promo codes stay. A full safety backup is saved first (Backup > Automatic backups).
 app.post('/api/admin/sales-reset', auth, admin, wrap(async (req, res) => {
+  require('./dataguard').allowDrop();
   const b = req.body || {};
   if (String(b.confirm || '').trim() !== 'RESET') throw bad('Type RESET to confirm.');
   const keepOpen = b.keepOpen !== false;
-  const zipped = await gzip(Buffer.from(await buildBackup()));
+  const zipped = await buildBackupGz();
   await pool.query('INSERT INTO backups (size, data) VALUES ($1,$2)', [zipped.length, zipped]);
   const c = await pool.connect();
   try {
