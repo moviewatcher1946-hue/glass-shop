@@ -3,6 +3,8 @@ const express = require('express');
 const http = require('http');
 
 module.exports = function mount(app, { pool, auth }) {
+  const RESET = process.env.SHIELD_RESET === '1';
+  const trust = require('./trust');
   const NEW = ['throttle','throttleauto','ddos','datashield','sqlguard','xssguard','origin','honeypot','autoban','scrape','bigbody','noupload','slowlogin','forcehttps','nohotlink','secheaders'];
   const state = { lockdown: false, firewall: false, readonly: false, nosignup: false, nobots: false, throttle: false, throttleauto: true, ddos: false, datashield: false, sqlguard: false, xssguard: false, origin: false, honeypot: false, autoban: false, scrape: false, bigbody: false, noupload: false, slowlogin: false, forcehttps: false, nohotlink: false, secheaders: false, ips: [], killBefore: 0, killExcept: 0 };
   const stats = { throttle: 0, ddos: 0, datashield: 0, sqlguard: 0, xssguard: 0, origin: 0, honeypot: 0, autoban: 0, scrape: 0, bigbody: 0, noupload: 0, slowlogin: 0, forcehttps: 0, nohotlink: 0, secheaders: 0, lockdown: 0, firewall: 0, readonly: 0, nosignup: 0, nobots: 0, ip: 0, session: 0 };
@@ -12,6 +14,10 @@ module.exports = function mount(app, { pool, auth }) {
   pool.query("CREATE TABLE IF NOT EXISTS plus_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')")
     .then(() => pool.query("SELECT value FROM plus_settings WHERE key='shield'"))
     .then((r) => { if (r.rows[0]) Object.assign(state, JSON.parse(r.rows[0].value)); })
+    .then(() => { if (RESET) { // EMERGENCY RESET: set SHIELD_RESET=1 on Render, deploy once, then delete the variable
+      for (const k of Object.keys(state)) { if (typeof state[k] === 'boolean') state[k] = false; }
+      state.throttleauto = true; state.ips = []; state.killBefore = 0; state.perf = 'balanced';
+      return save().then(() => pool.query('DELETE FROM shield_spill').catch(() => {})).then(() => console.warn('[shield] EMERGENCY RESET done: all switches off, bans cleared. Remove SHIELD_RESET now.')); } })
     .catch((e) => console.error('shield load:', e.message));
 
   const note = (req, type) => { stats[type]++; blocked.unshift({ at: new Date().toISOString(), ip: req.ip, type, path: String(req.originalUrl).slice(0, 120) }); if (blocked.length > (P[state.perf] || P.balanced).log) blocked.pop(); };
@@ -31,6 +37,7 @@ module.exports = function mount(app, { pool, auth }) {
     if (TH.cache.size > prof().cache) TH.cache.clear(); for (const [k, v] of TH.anon) if (n - v.t > 30000) TH.anon.delete(k); }, 500).unref();
   const thOn = () => state.throttle || TH.auto || state.perf === 'max' || (state.perf === 'low' && true);
   app.use((req, res, next) => {
+    if (trust.is(req.ip)) return next();
     const path = req.path; if (path === '/healthz' || path === '/readyz') return next();
     TH.recent.push(Date.now()); TH.inflight++; let done = false; const fin = () => { if (!done) { done = true; TH.inflight--; } }; res.on('finish', fin); res.on('close', fin);
     if (!thOn()) return next();
@@ -55,6 +62,7 @@ module.exports = function mount(app, { pool, auth }) {
   const SQLI = /(union\s+(all\s+)?select|select\s.+\sfrom\s|insert\s+into|drop\s+(table|database)|;\s*(delete|update)\s|sleep\s*\(|benchmark\s*\(|information_schema|pg_sleep|'\s*or\s*'?\d|--\s*$)/i;
   const XSS = /(<\s*script|javascript:|onerror\s*=|onload\s*=|<\s*iframe|<\s*svg[^>]*on\w+=|document\.cookie|<\s*img[^>]+onerror)/i;
   app.use((req, res, next) => {
+    if (trust.is(req.ip)) return next();
     const path = req.path;
     if (path === '/healthz' || path === '/readyz') return next();
     if (state.forcehttps && req.get('x-forwarded-proto') === 'http') return res.redirect(301, 'https://' + req.get('host') + req.originalUrl);
@@ -109,7 +117,7 @@ module.exports = function mount(app, { pool, auth }) {
       if (global.gc) global.gc();
     } catch (e) { console.error('shield spill:', e.message); } finally { spilling = false; }
   };
-  pool.query("SELECT data FROM shield_spill ORDER BY id DESC LIMIT 1").then((r) => { if (r.rows[0]) { const d = JSON.parse(r.rows[0].data); (d.autobans || []).forEach(([ip, t]) => { if (t > Date.now()) autobans.set(ip, t); }); } }).catch(() => {});
+  pool.query("SELECT data FROM shield_spill ORDER BY id DESC LIMIT 1").then((r) => { if (r.rows[0] && !RESET) { const d = JSON.parse(r.rows[0].data); (d.autobans || []).forEach(([ip, t]) => { if (t > Date.now()) autobans.set(ip, t); }); } }).catch(() => {});
   setInterval(() => {
     const m = process.memoryUsage(); MEM.rssMb = Math.round(m.rss / 1048576); MEM.ratio = m.rss / (MEM.limitMb * 1048576);
     if (MEM.ratio > prof().mem) { stats.memory++; spill('RAM ' + Math.round(MEM.ratio * 100) + '% of ' + MEM.limitMb + ' MB'); }
@@ -121,6 +129,7 @@ module.exports = function mount(app, { pool, auth }) {
   const DOT = /(^|\/)\.(git|env|svn|htaccess|htpasswd|ds_store|npmrc|aws|ssh)|\.(bak|old|sql|swp|orig|log|ini|pem|key)$|\/(node_modules|src|scripts|db)\//i;
   const POLL = /"(__proto__|constructor|prototype)"\s*:/;
   app.use((req, res, next) => {
+    if (trust.is(req.ip)) return next();
     const path = req.path; if (path === '/healthz' || path === '/readyz') return next();
     if (state.slowloris) { req.setTimeout(20000); res.setTimeout(30000); }
     if (state.methodlock && !['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'].includes(req.method)) { strike(req, 'methodlock'); return res.status(405).end(); }
@@ -141,6 +150,7 @@ module.exports = function mount(app, { pool, auth }) {
   const GEO = new Set(String(process.env.BLOCK_COUNTRIES || '').split(',').map((x) => x.trim().toUpperCase()).filter(Boolean));
   const depth = (o, d = 0) => (d > 12 || !o || typeof o !== 'object' ? d : Math.max(d, ...Object.values(o).slice(0, 200).map((v) => depth(v, d + 1))));
   app.use((req, res, next) => {
+    if (trust.is(req.ip)) return next();
     const path = req.path; if (path === '/healthz' || path === '/readyz') return next();
     const unsafe = !['GET', 'HEAD', 'OPTIONS'].includes(req.method), api = path.startsWith('/api');
     if (state.hdrspoof) { ['x-original-url', 'x-rewrite-url', 'x-forwarded-host', 'x-http-method-override', 'x-forwarded-server'].forEach((h) => { delete req.headers[h]; }); }
@@ -164,6 +174,7 @@ module.exports = function mount(app, { pool, auth }) {
   setInterval(() => { const t = Date.now(); for (const [k, v] of hits) if (t - v.t > 60000) hits.delete(k); }, 60000).unref();
 
   app.use('/api', (req, res, next) => {
+    if (trust.is(req.ip)) return next();
     const path = req.baseUrl + req.path;
     if (path.startsWith('/api/shield')) return next();
     if (state.ips.length && state.ips.includes(req.ip)) { note(req, 'ip'); return res.status(403).json({ error: 'Access blocked.' }); }
