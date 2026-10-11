@@ -2,6 +2,33 @@ const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const CURRENCY = '₱';
 const money = (n) => CURRENCY + Number(n).toFixed(2);
+
+/* ===== Sounds: made with the Web Audio API (no files to download). One mute switch, remembered on the device. ===== */
+const SFX = (() => {
+  let ctx = null, muted = false;
+  try { muted = localStorage.sfx === 'off'; } catch (e) {}
+  const ac = () => {
+    if (muted) return null;
+    try { ctx = ctx || new (window.AudioContext || window.webkitAudioContext)(); if (ctx.state === 'suspended') ctx.resume(); } catch (e) { return null; }
+    return ctx;
+  };
+  const tone = (c, f, t, d, vol, type = 'sine', to = 0) => {
+    const o = c.createOscillator(), g = c.createGain(), t0 = c.currentTime + t;
+    o.type = type; o.frequency.setValueAtTime(f, t0); if (to) o.frequency.exponentialRampToValueAtTime(to, t0 + d);
+    g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(vol, t0 + 0.012); g.gain.exponentialRampToValueAtTime(0.0001, t0 + d);
+    o.connect(g); g.connect(c.destination); o.start(t0); o.stop(t0 + d + 0.03);
+  };
+  const play = (fn) => () => { const c = ac(); if (c) fn(c); };
+  const api = {
+    click: play((c) => tone(c, 520, 0, 0.07, 0.06, 'triangle', 340)),
+    add: play((c) => { tone(c, 660, 0, 0.09, 0.07); tone(c, 990, 0.07, 0.14, 0.07); }),
+    order: play((c) => [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => { tone(c, f, i * 0.09, 0.45, 0.08); tone(c, f * 2, i * 0.09, 0.25, 0.025); })),
+    ding: play((c) => { tone(c, 880, 0, 0.5, 0.09); tone(c, 1760, 0, 0.3, 0.03); tone(c, 659.25, 0.28, 0.6, 0.09); }),
+    get muted() { return muted; },
+    toggle() { muted = !muted; try { localStorage.sfx = muted ? 'off' : 'on'; } catch (e) {} if (!muted) api.click(); return muted; }
+  };
+  return api;
+})();
 // Price after the product's % discount (the server works it out again when you order).
 const fin = (p) => Math.round(Number(p.price) * (100 - (Number(p.discount_percent) || 0))) / 100;
 // Bulk discount: buy bulk_min or more, get bulk_percent% off each (the lower of this and the normal discount; the server does the same maths).
@@ -249,7 +276,7 @@ function slideData() {
 function fillSlides() {
   const el = $('#slides'); if (!el) return;
   const list = slideData();
-  const html = list.length ? `<div class="slides glass" role="region" aria-roledescription="carousel" aria-label="Highlights"><div class="sl-track">${list.map((x, i) => `<article class="slide" aria-label="${i + 1} of ${list.length}"><img decoding="async" src="${esc(thumb(x.p.image_url, 800))}" alt=""><div class="sl-txt"><span class="sl-k">${x.kind}</span><h3>${esc(x.title)}</h3><p>${esc(x.sub)}</p><button type="button" class="primary sq" data-act="${x.act}" ${x.act === 'cat' ? `data-cat="${x.cat}"` : `data-id="${x.p.id}"`}>${x.btn}</button></div></article>`).join('')}</div>${list.length > 1 ? `<div class="sl-dots">${list.map((_, i) => `<button type="button" class="${i ? '' : 'on'}" data-act="slide-go" data-i="${i}" aria-label="Show slide ${i + 1}"></button>`).join('')}</div>` : ''}</div>` : '';
+  const html = list.length ? `<div class="slides glass" role="region" aria-roledescription="carousel" aria-label="Highlights"><div class="sl-track">${list.map((x, i) => `<article class="slide" data-kind="${x.kind}" aria-label="${i + 1} of ${list.length}"><img decoding="async" src="${esc(thumb(x.p.image_url, 800))}" alt=""><div class="sl-txt"><span class="sl-k">${x.kind}</span><h3>${esc(x.title)}</h3><p>${esc(x.sub)}</p><button type="button" class="primary sq" data-act="${x.act}" ${x.act === 'cat' ? `data-cat="${x.cat}"` : `data-id="${x.p.id}"`}>${x.btn}</button></div></article>`).join('')}</div>${list.length > 1 ? `<div class="sl-dots">${list.map((_, i) => `<button type="button" class="${i ? '' : 'on'}" data-act="slide-go" data-i="${i}" aria-label="Show slide ${i + 1}"></button>`).join('')}</div>` : ''}</div>` : '';
   if (html === slidesHtml) return;
   slidesHtml = html; el.innerHTML = html; clearInterval(slideTimer);
   const tr = el.querySelector('.sl-track'); if (!tr || list.length < 2) return;
@@ -578,7 +605,7 @@ async function refreshOrders() {
   const orders = await api('/api/orders?finished=' + want);
   ordHasMore = orders.filter((o) => o.status !== 'pending' && o.status !== 'packed').length >= want;
   const top = orders.reduce((m, o) => Math.max(m, o.id), 0);
-  if (lastOrderId !== null && top > lastOrderId) toast('New order received.');
+  if (lastOrderId !== null && top > lastOrderId) { toast('New order received.'); SFX.ding(); try { navigator.vibrate && navigator.vibrate([40, 60, 40]); } catch (e) {} }
   lastOrderId = top;
   pendingCount = orders.filter((o) => o.status === 'pending').length;
   const tb = $('#tab-orders');
@@ -1145,6 +1172,9 @@ function cartLines() {
   }).filter(Boolean);
 }
 function cartDialog() {
+  const dlg = $('#dlg'), again = dlg.open && dlg.dataset.kind === 'cart'; // already showing the cart: this is just a refresh after + / - / remove
+  const keep = again ? { d: dlg.scrollTop, b: (dlg.querySelector('.cart-body') || {}).scrollTop || 0 } : null;
+  const ae = again && document.activeElement && document.activeElement.dataset && document.activeElement.dataset.act === 'cart-step' ? { id: document.activeElement.dataset.id, d: document.activeElement.dataset.d } : null;
   const lines = cartLines();
   const sub = lines.reduce((s, l) => s + l.price * l.q, 0);
   // A promo discounts its owner's items, and only the chosen products when it is per-product.
@@ -1155,18 +1185,45 @@ function cartDialog() {
     return ok ? s + l.price * l.q : s;
   }, 0);
   const off = promo ? Math.round(base * promo.percent) / 100 : 0;
-  $('#dlg').innerHTML = `<h2>Your cart</h2>${lines.length ? '' : `<div class="empty">${EMPTY_ART}<p>Your cart is empty.<br><span class="muted">Tap + on anything you like.</span></p></div>`}${lines.map((l) => `<div class="cline"><span>${esc(l.title)}${l.note || ''}</span><div class="qty"><button data-act="cart-step" data-id="${l.key}" data-d="-1">-</button><b>${l.q}</b><button data-act="cart-step" data-id="${l.key}" data-d="1">+</button></div><b>${money(l.price * l.q)}</b><button data-act="remove" data-id="${l.key}">Remove</button></div>`).join('') || '<p>Your cart is empty.</p>'}
-    ${lines.length ? `<label>Promo code (optional)</label>
+  const n = lines.reduce((t, l) => t + l.q, 0), total = sub - off;
+  dlg.innerHTML = `<div class="cart-head"><div><h2>Your cart</h2><span class="cart-count">${n} item${n === 1 ? '' : 's'}</span></div><button type="button" class="cart-x" data-act="close" aria-label="Close cart">&times;</button></div>
+    <div class="cart-body">${lines.length ? '' : `<div class="empty">${EMPTY_ART}<p>Your cart is empty.<br><span class="muted">Tap + on anything you like.</span></p></div>`}${lines.map((l) => `<div class="cline"><span class="cl-t">${esc(l.title)}${l.note || ''}</span><div class="qty"><button data-act="cart-step" data-id="${l.key}" data-d="-1" aria-label="One less">-</button><b>${l.q}</b><button data-act="cart-step" data-id="${l.key}" data-d="1" aria-label="One more">+</button></div><b class="cl-p">${money(l.price * l.q)}</b><button class="cl-r" data-act="remove" data-id="${l.key}">Remove</button></div>`).join('')}
+    ${lines.length ? `<div class="cart-extra"><label>Promo code (optional)</label>
       <div class="actions"><input id="promoin" value="${esc(promo ? promo.code : '')}" placeholder="Enter code" style="flex:1;margin:0"><button data-act="applypromo">Apply</button></div>
       <label style="display:block;margin-top:12px">Note for the seller (your name, seat, anything helpful)</label>
-      <input id="ordernote" maxlength="300" value="${esc(cartNote)}">` : ''}
-    <p>Subtotal: <b>${money(sub)}</b>${off ? `<br>Promo ${esc(promo.code)} (-${promo.percent}%): <b>-${money(off)}</b>` : ''}<br><b>Total: ${money(sub - off)}</b></p>${deliveryLine()}
+      <input id="ordernote" maxlength="300" value="${esc(cartNote)}"></div>` : ''}</div>
+    <div class="cart-foot">
+    <p class="sum-m">Subtotal: <b>${money(sub)}</b>${off ? `<br>Promo ${esc(promo.code)} (-${promo.percent}%): <b>-${money(off)}</b>` : ''}<br><b>Total: ${money(total)}</b></p>
+    <div class="sum-d"><div><span>Subtotal</span><b>${money(sub)}</b></div>${off ? `<div class="sum-off"><span>Promo ${esc(promo.code)} (-${promo.percent}%)</span><b>-${money(off)}</b></div>` : ''}<div class="sum-total"><span>Total</span><b>${money(total)}</b></div></div>${deliveryLine()}
     <p class="notice">Cash on delivery: you pay when your order is handed to you in class.</p>
     <button class="primary" data-act="checkout" ${lines.length ? '' : 'disabled'}>Place order</button>
-    <button data-act="close">Close</button>`;
-  $('#dlg').dataset.kind = 'cart'; // desktop shows the cart as a side drawer, phones as a bottom sheet
-  $('#dlg').showModal();
+    <button class="close-btn" data-act="close">Close</button></div>`;
+  dlg.dataset.kind = 'cart'; // desktop shows the cart as a side drawer, phones as a bottom sheet
+  dlg.showModal();
+  // A refresh must not throw the person back to the top of the list or drop the keyboard focus.
+  if (keep) { dlg.scrollTop = keep.d; const cb = dlg.querySelector('.cart-body'); if (cb) cb.scrollTop = keep.b; }
+  if (ae) { const t = dlg.querySelector(`[data-act="cart-step"][data-id="${ae.id}"][data-d="${ae.d}"]`); if (t) t.focus({ preventScroll: true }); }
+  cartMotion(again, total);
 }
+// Desktop drawer motion (GSAP): rows slide in, the footer rises, and the total counts to its new value. Phones keep the plain sheet.
+let gsapP = null, lastCartTotal = null;
+const wideMotion = () => matchMedia('(min-width:641px)').matches && !matchMedia('(prefers-reduced-motion: reduce)').matches && document.documentElement.dataset.glass !== 'lite';
+const loadGsap = () => window.gsap ? Promise.resolve(window.gsap) : (gsapP = gsapP || new Promise((ok) => { const sc = document.createElement('script'); sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js'; sc.onload = () => ok(window.gsap || null); sc.onerror = () => ok(null); document.head.appendChild(sc); }));
+function cartMotion(again, total) {
+  const from = again && lastCartTotal !== null ? lastCartTotal : total;
+  lastCartTotal = total;
+  if (!wideMotion()) return;
+  const g = window.gsap;
+  if (!g) { loadGsap(); return; } // first open: fetch it quietly so the next opening is animated
+  const dlg = $('#dlg');
+  if (!again) {
+    g.from(dlg.querySelectorAll('.cline'), { opacity: 0, x: 26, duration: .5, stagger: .06, delay: .1, ease: 'power3.out', clearProps: 'all' });
+    g.from(dlg.querySelectorAll('.cart-extra, .cart-foot'), { opacity: 0, y: 14, duration: .45, stagger: .08, delay: .2, ease: 'power3.out', clearProps: 'all' });
+  }
+  const t = dlg.querySelector('.sum-total b');
+  if (t && from !== total) { const o = { v: from }; g.to(o, { v: total, duration: .5, ease: 'power2.out', onUpdate: () => { t.textContent = money(o.v); }, onComplete: () => { t.textContent = money(total); } }); }
+}
+if (wideMotion()) setTimeout(loadGsap, 4000); // prefetch after the shop has settled
 function quoteDialog(id) {
   const r = crList.find((x) => x.id == id);
   if (!r) return;
@@ -1231,7 +1288,7 @@ const actions = {
   omore: async () => { ordLimit += 30; await refreshOrders(); },
   ojump: (id, d) => { ordRange = d.r; ordDay = ''; paintOrderFilters(); drawOrders(); },
   'slide-go': (id, d) => { const tr = $('.sl-track'); if (tr) { holdUntil = Date.now() + 9000; tr.scrollTo({ left: Number(d.i) * tr.clientWidth, behavior: 'smooth' }); } },
-  seller: (id) => { sellerFilter = Number(id); catFilter = 'all'; document.querySelectorAll('.cats .tile').forEach((t) => t.classList.toggle('on', t.dataset.cat === 'all')); fillGrid(); const g = $('#grid'); if (g) g.scrollIntoView({ behavior: 'smooth', block: 'start' }); },
+  seller: (id) => { sellerFilter = Number(id); catFilter = 'all'; document.querySelectorAll('.cats .tile').forEach((t) => t.classList.toggle('on', t.dataset.cat === 'all')); fillGrid(); const g = $('#grid'); if (g) smoothTo(g); },
   'seller-clear': () => { sellerFilter = null; fillGrid(); },
   ofilter: (id, d) => { ordStatus = d.st; paintOrderFilters(); drawOrders(); },
   'print-orders': () => printOrders(shownOrders, 'list'),
@@ -1492,7 +1549,7 @@ const actions = {
     if (!user) { authDialog(); return toast('Log in to place your order.'); }
     const items = cartLines().map((l) => (l.key[0] === 'c' ? { combo_id: l.key.slice(1), quantity: l.q } : { product_id: l.key, quantity: l.q }));
     const o = await api('/api/orders', { method: 'POST', json: { items, promo: promo ? promo.code : '', note: cartNote } });
-    cart = {}; promo = null; cartNote = ''; saveCart(); $('#dlg').close(); toast(`Order #${o.id} placed.`); burst(); view = 'orders'; render();
+    cart = {}; promo = null; cartNote = ''; saveCart(); $('#dlg').close(); toast(`Order #${o.id} placed.`); burst(); orderCelebrate(o.id); view = 'orders'; render();
   },
   toggle: async (id) => { await api(`/api/products/${id}/sold-out`, { method: 'PATCH' }); await loadProducts(); },
   delete: async (id) => { if (confirm('Delete this product?')) { await api(`/api/products/${id}`, { method: 'DELETE' }); await loadProducts(); toast('Deleted.'); } },
@@ -1500,7 +1557,7 @@ const actions = {
     const p = products.find((x) => x.id == id), f = $('#pform');
     f.dataset.id = id; f.title.value = p.title; f.price.value = p.price; f.description.value = p.description; f.category.value = p.category || 'snacks'; f.discount_percent.value = p.discount_percent || 0; f.bulk_min.value = p.bulk_min ?? ''; f.bulk_percent.value = p.bulk_percent || 0; f.stock.value = p.stock ?? ''; f.cost.value = costMap[id] ?? ''; if (f.owner_id) f.owner_id.value = p.owner_id || user.id;
     $('#form-title').textContent = 'Edit product'; $('#save').textContent = 'Save changes';
-    f.scrollIntoView({ behavior: 'smooth' });
+    smoothTo(f);
   },
   'reset-form': () => renderAdmin(),
 };
@@ -1930,7 +1987,7 @@ function barChart(labels, vals, w = 640, h = 200) {
   const pad = { l: 34, r: 8, t: 10, b: 26 }, iw = w - pad.l - pad.r, ih = h - pad.t - pad.b, top = niceMax(Math.max(1, ...vals)), bw = iw / vals.length;
   const grid = [0, 2, 4].map((g) => `<line x1="${pad.l}" x2="${w - pad.r}" y1="${pad.t + ih - (ih * g) / 4}" y2="${pad.t + ih - (ih * g) / 4}" class="gl"/><text x="${pad.l - 6}" y="${pad.t + ih - (ih * g) / 4 + 4}" class="ax" text-anchor="end">${Math.round((top * g) / 4)}</text>`).join('');
   const bars = vals.map((v, i) => `<rect x="${pad.l + i * bw + bw * 0.18}" width="${bw * 0.64}" y="${pad.t + ih - (v / top) * ih}" height="${Math.max(v ? 2 : 0, (v / top) * ih)}" rx="${Math.min(6, bw * 0.3)}" class="bar" style="--i:${i}"><title>${labels[i]}: ${v} order${v === 1 ? '' : 's'}</title></rect>`).join('');
-  return `<svg viewBox="0 0 ${w} ${h}" class="chart" role="img">${grid}${bars}<text x="${pad.l}" y="${h - 8}" class="ax">${labels[0].slice(5)}</text><text x="${w - pad.r}" y="${h - 8}" class="ax" text-anchor="end">${labels[labels.length - 1].slice(5)}</text></svg>`;
+  return `<svg viewBox="0 0 ${w} ${h}" class="chart" role="img"><defs><linearGradient id="barg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5ac8fa"/><stop offset="1" stop-color="#0a84ff"/></linearGradient></defs>${grid}${bars}<text x="${pad.l}" y="${h - 8}" class="ax">${labels[0].slice(5)}</text><text x="${w - pad.r}" y="${h - 8}" class="ax" text-anchor="end">${labels[labels.length - 1].slice(5)}</text></svg>`;
 }
 const hBars = (rows) => { const mx = Math.max(1, ...rows.map((r) => r.v)); return rows.length ? `<div class="hbars">${rows.map((r, i) => `<div class="hb" style="--i:${i}"><span class="hl">${esc(r.label)}</span><span class="ht"><i style="width:${(r.v / mx) * 100}%;background:${PALETTE[i % PALETTE.length]}"></i></span><b>${money(r.v)}</b></div>`).join('')}</div>` : '<p class="muted">Nothing yet.</p>'; };
 function donut(rows) {
@@ -2040,13 +2097,84 @@ document.addEventListener('click', (e) => { // tapping a product counts as viewi
 
 /* ===== While the cart or any popup is open the page behind it cannot move (works on Android and iPhone too) ===== */
 let scrollLockY = null;
-const lockScroll = () => { if (scrollLockY !== null) return; scrollLockY = window.scrollY; document.body.style.cssText += `;position:fixed;top:${-scrollLockY}px;left:0;right:0;width:100%`; };
+const lockScroll = () => { if (scrollLockY !== null) return; scrollLockY = window.scrollY; document.body.style.cssText += `;position:fixed;top:${-scrollLockY}px;left:0;right:0;width:100%`; if (window.__lenis) window.__lenis.stop(); };
 const unlockScroll = () => {
   if (scrollLockY === null || document.querySelector('dialog[open]')) return;
   const y = scrollLockY; scrollLockY = null;
   const st = document.body.style; st.position = st.top = st.left = st.right = st.width = '';
   window.scrollTo({ top: y, behavior: 'instant' });
+  if (window.__lenis) window.__lenis.start();
 };
 const _showModal = HTMLDialogElement.prototype.showModal;
 HTMLDialogElement.prototype.showModal = function () { lockScroll(); return _showModal.call(this); };
 document.addEventListener('close', (e) => { if (e.target && e.target.tagName === 'DIALOG') unlockScroll(); }, true);
+
+/* ===== Desktop polish: wide screens with a mouse only. Phones and tablets are untouched. ===== */
+(() => {
+  const desk = matchMedia('(min-width:901px) and (pointer:fine)');
+  const on = () => desk.matches && !matchMedia('(prefers-reduced-motion: reduce)').matches && document.documentElement.dataset.glass !== 'lite';
+  // A glow ring pulses out of every button you press.
+  document.addEventListener('pointerdown', (e) => {
+    if (!on()) return;
+    const b = e.target.closest && e.target.closest('button:not(:disabled)');
+    if (!b || !b.animate) return;
+    b.animate([
+      { outline: '2px solid rgba(10,132,255,.9)', outlineOffset: '0px' },
+      { outline: '2px solid rgba(125,107,255,0)', outlineOffset: '14px' }
+    ], { duration: 650, easing: 'cubic-bezier(.22,1,.36,1)' });
+  }, { passive: true });
+  // The header gets a deeper shadow once the page has scrolled.
+  addEventListener('scroll', () => { document.documentElement.classList.toggle('scrolled', scrollY > 12); }, { passive: true });
+  // Dashboard numbers count up. Only when the value is new or changed, so a quiet refresh never replays it.
+  const seen = {};
+  const countUps = () => {
+    if (!on()) return;
+    const g = window.gsap;
+    if (!g) { loadGsap().then((x) => { if (x) countUps(); }); return; }
+    document.querySelectorAll('#app .kpi').forEach((k) => {
+      const lab = k.querySelector('span'), b = k.querySelector('b');
+      if (!lab || !b || b.dataset.cu) return;
+      b.dataset.cu = '1';
+      const txt = b.textContent.trim(), m = txt.match(/^(\D*?)(\d[\d,]*(?:\.\d+)?)(\D*)$/);
+      if (!m) return;
+      const to = parseFloat(m[2].replace(/,/g, '')), key = lab.textContent, from = key in seen ? seen[key] : 0;
+      seen[key] = to;
+      if (from === to) return;
+      const dec = (m[2].split('.')[1] || '').length, grp = m[2].includes(','), o = { v: from };
+      g.to(o, { v: to, duration: .9, ease: 'power2.out',
+        onUpdate: () => { b.textContent = m[1] + o.v.toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec, useGrouping: grp }) + m[3]; },
+        onComplete: () => { b.textContent = txt; } });
+    });
+  };
+  const app = document.getElementById('app');
+  let tm = 0;
+  if (app) new MutationObserver(() => { clearTimeout(tm); tm = setTimeout(countUps, 80); }).observe(app, { childList: true, subtree: true });
+})();
+
+/* ===== Order placed: a full-screen check, confetti, a chime and a buzz on phones ===== */
+function orderCelebrate(id) {
+  SFX.order();
+  try { navigator.vibrate && navigator.vibrate([25, 50, 25, 50, 60]); } catch (e) {}
+  const rm = matchMedia('(prefers-reduced-motion: reduce)').matches, cols = ['#0a84ff', '#bf5af2', '#ffd60a', '#30d158', '#ff375f', '#64d2ff'];
+  const bits = rm ? '' : Array.from({ length: 26 }, (_, i) => `<i style="--a:${Math.round((i * 360) / 26)}deg;--d:${110 + Math.round(Math.random() * 110)}px;--r:${Math.round(Math.random() * 360)}deg;--c:${cols[i % 6]}"></i>`).join('');
+  const o = document.createElement('div'); o.id = 'ordfx'; o.setAttribute('role', 'status');
+  o.innerHTML = `<div class="ordfx-card"><div class="ordfx-burst">${bits}</div><svg viewBox="0 0 52 52" class="ordfx-check" aria-hidden="true"><circle cx="26" cy="26" r="23"/><path d="M15 27l8 8 14-16"/></svg><h3>Order placed!</h3><p>Order #${Number(id)} is on its way to the seller.</p></div>`;
+  document.body.appendChild(o);
+  const done = () => { o.classList.add('out'); setTimeout(() => o.remove(), 400); };
+  o.addEventListener('click', done); setTimeout(done, 2600);
+}
+
+/* ===== Button sounds and the sound switch (works on phones too) ===== */
+(() => {
+  const btn = document.getElementById('sfx-btn');
+  const ON = '<svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9zM16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11"/></svg>', OFF = '<svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9zM17 9l5 6M22 9l-5 6"/></svg>';
+  const paint = () => { if (!btn) return; btn.innerHTML = SFX.muted ? OFF : ON; btn.title = SFX.muted ? 'Sounds are off' : 'Sounds are on'; btn.setAttribute('aria-pressed', String(!SFX.muted)); };
+  paint();
+  if (btn) btn.addEventListener('click', () => { SFX.toggle(); paint(); });
+  // A click starts audio on phones (they only allow sound after a tap); the capture phase means it runs for every button.
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest && e.target.closest('button');
+    if (!b || b.disabled || b.id === 'sfx-btn') return;
+    (b.matches('.add,[data-act="add"]') ? SFX.add : SFX.click)();
+  }, true);
+})();
