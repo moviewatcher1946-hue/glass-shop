@@ -11,9 +11,32 @@
   var money = function (n) { return Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
   var table = function (rows, cols) { return rows.length ? '<div class="ap-tbl"><table><tr>' + cols.map(function (c) { return '<th>' + c[0] + '</th>'; }).join('') + '</tr>' + rows.map(function (r) { return '<tr>' + cols.map(function (c) { return '<td>' + esc(c[1](r)) + '</td>'; }).join('') + '</tr>'; }).join('') + '</table></div>' : '<p class="muted">Nothing yet.</p>'; };
 
+  // Site-wide performance modes (set by the admin, applied for every visitor)
+  var perf = {}; try { perf = JSON.parse(localStorage.ap_perf || '{}') || {}; } catch (e) {}
+  var revCache = { t: 0, txt: null };
+  var realFetch = window.fetch;
+  window.fetch = function (u) {
+    var rev = typeof u === 'string' && u.indexOf('/api/rev') === 0;
+    if (rev && perf.slowrefresh && revCache.txt != null && Date.now() - revCache.t < 15000) return Promise.resolve(new Response(revCache.txt, { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    var p = realFetch.apply(this, arguments);
+    if (rev) p.then(function (r) { if (r.ok) r.clone().text().then(function (t) { revCache = { t: Date.now(), txt: t }; }); }).catch(function () {});
+    return p;
+  };
+  document.addEventListener('pointermove', function (e) { if (perf.nohover) e.stopImmediatePropagation(); }, true);
+  function lazyImgs(root) { (root.querySelectorAll ? root.querySelectorAll('img:not([loading])') : []).forEach(function (i) { i.loading = 'lazy'; i.decoding = 'async'; }); }
+  var lazyObs = null;
+  function applyPerf(p) {
+    perf = p || {}; var h = document.documentElement;
+    h.classList.toggle('ap-lite', !!perf.lite); h.classList.toggle('ap-nomotion', !!perf.nomotion); h.classList.toggle('ap-noglow', !!perf.noglow); h.classList.toggle('ap-nohover', !!perf.nohover);
+    if (perf.lazy && !lazyObs && window.MutationObserver) { lazyImgs(document); lazyObs = new MutationObserver(function (m) { m.forEach(function (x) { x.addedNodes.forEach(function (n) { if (n.nodeType === 1) { if (n.tagName === 'IMG' && !n.loading) { n.loading = 'lazy'; n.decoding = 'async'; } else lazyImgs(n); } }); }); }); lazyObs.observe(document.body, { childList: true, subtree: true }); }
+    if (!perf.lazy && lazyObs) { lazyObs.disconnect(); lazyObs = null; }
+  }
+  applyPerf(perf);
+
   // Announcement banner + maintenance notice (everyone)
   function banner() {
     fetch('/api/plus/public').then(function (r) { return r.json(); }).then(function (d) {
+      if (d.perf) { applyPerf(d.perf); try { localStorage.ap_perf = JSON.stringify(d.perf); } catch (e) {} }
       var b = $('#ap-banner'); var t = d.maintenance ? 'Shop is paused for maintenance. Orders are temporarily off.' : d.announcement;
       if (!t) { if (b) b.remove(); return; }
       if (!b) { b = document.createElement('div'); b.id = 'ap-banner'; document.body.prepend(b); }
@@ -90,50 +113,168 @@
     statTool('Order value stats', '/api/plus/aov', [['Average order', 'avg_order', money], ['Items per order', 'items_per_order'], ['Biggest order', 'biggest', money]])
   );
 
-  var ICONS = ['📣', '🛠️', '📦', '💸', '🧬', '🚚', '🧹', '🔎', '👤', '🏆', '📝', '😴', '📊', '🔥', '📈', '🗄️', '💚', '✂️', '📤', '⚡',
-    '⚠️', '🔢', '➕', '🈵', '🕸️', '🏷️', '❤️', '⏳', '🧮', '🕒', '📅', '🗓️', '🆕', '🔁', '👻', '🧾', '✅', '📌', '🎯', '🚫', '🗂️', '🔀', '🕵️', '👥', '🏪', '💰', '🖼️', '👯', '📥', '🧺'];
-  var GROUPS = [['Store', '🏬', [0, 1]], ['Catalog', '🧬', [2, 3, 4, 37, 38, 39, 40, 41, 25, 46, 47, 48]], ['Inventory', '📦', [20, 21, 22, 23, 24]], ['Orders', '🚚', [5, 6, 18, 27, 28, 35, 36]], ['People', '👥', [7, 8, 9, 10, 11, 33, 34]], ['Insights', '📊', [12, 13, 14, 26, 29, 30, 31, 32, 44, 45, 49]], ['System', '⚙️', [15, 16, 17, 19, 42, 43]]];
+  // ----- icons (no emoji) -----
+  var I = {
+    store: '<path d="M3 9l2-5h14l2 5"/><path d="M5 9v11h14V9"/><path d="M10 20v-5h4v5"/>',
+    box: '<path d="M12 3l8 4v10l-8 4-8-4V7z"/><path d="M4 7l8 4 8-4M12 11v10"/>',
+    tag: '<path d="M3 12V4h8l10 10-8 8z"/><path d="M7.5 8v.01"/>',
+    cart: '<path d="M3 4h2l2 12h11l2-8H6"/><circle cx="9" cy="20" r="1.2"/><circle cx="17" cy="20" r="1.2"/>',
+    users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6"/><path d="M16 4.5a3.5 3.5 0 010 7M18 14.5c2 .7 3.5 2.4 3.5 5.5"/>',
+    chart: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
+    gear: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',
+    bolt: '<path d="M13 2L4 14h7l-1 8 9-12h-7z"/>',
+    shield: '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/>',
+    lock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/>',
+    alert: '<path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17v.01"/>',
+    userplus: '<circle cx="10" cy="8" r="4"/><path d="M3 20c0-4 3-6 7-6M17 8v6M14 11h6"/>',
+    bot: '<rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M9 13v.01M15 13v.01"/>',
+    search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/>',
+    close: '<path d="M6 6l12 12M18 6L6 18"/>',
+    chev: '<path d="M9 6l6 6-6 6"/>'
+  };
+  var ico = function (n) { return '<svg viewBox="0 0 24 24" aria-hidden="true">' + I[n] + '</svg>'; };
 
-  function close() {
-    var o = $('#ap-full'); if (!o) return; o.remove(); document.body.style.overflow = ''; document.removeEventListener('keydown', onKey);
-    var t = document.querySelector('[data-act="admintab"][data-tab="dashboard"]'); if (t) t.click();
+  // ----- performance + system tools -----
+  var PERFK = ['lite', 'nomotion', 'noglow', 'lazy', 'nohover', 'slowrefresh'];
+  var PRESETS = [['Balanced', {}], ['Fast', { lite: 1, lazy: 1 }], ['Rush hour', { lite: 1, lazy: 1, slowrefresh: 1 }], ['Ultra light', { lite: 1, lazy: 1, nomotion: 1, noglow: 1, nohover: 1 }], ['Battery saver', { lite: 1, lazy: 1, nomotion: 1, noglow: 1, nohover: 1, slowrefresh: 1 }]];
+  var PSW = [
+    ['lite', 'Lite glass', 'Turns off blur and see-through panels. The biggest speed gain on older phones.'],
+    ['nomotion', 'Reduce animations', 'Removes most movement and transitions across the whole shop.'],
+    ['noglow', 'Hide background glow', 'Removes the coloured glow behind every page.'],
+    ['lazy', 'Lazy-load images', 'Loads pictures only when they scroll into view.'],
+    ['nohover', 'Disable hover effects', 'Stops the lift and highlight effects that follow the pointer.'],
+    ['slowrefresh', 'Slow live refresh', 'Checks for new orders every 15 seconds instead of every 5.']
+  ];
+  var sw = function (attrs, danger) { return '<span class="sh-sw' + (danger ? ' danger' : '') + '"><input type="checkbox" role="switch" ' + attrs + '><i></i></span>'; };
+  var swrow = function (title, desc, inner) { return '<label class="sh-row"><span class="sh-txt"><b>' + title + '</b><small>' + desc + '</small></span>' + inner + '</label>'; };
+  function putPerf(patch) { return api('/api/plus/perf', 'PUT', patch).then(function (p) { applyPerf(p); try { localStorage.ap_perf = JSON.stringify(p); } catch (e) {} return p; }); }
+  function perfTool(title, seg) {
+    return [title, function (b) {
+      function draw(p) {
+        var cur = -1; PRESETS.forEach(function (x, i) { if (PERFK.every(function (k) { return !!p[k] === !!x[1][k]; })) cur = i; });
+        b.innerHTML = seg ? '<div class="hy-seg">' + PRESETS.map(function (x, i) { return '<button type="button" data-p="' + i + '" class="' + (i === cur ? 'on' : '') + '">' + x[0] + '</button>'; }).join('') + '</div><p class="muted">' + (cur < 0 ? 'A custom mix is active.' : PRESETS[cur][0] + ' is active for every visitor.') + '</p>'
+          : PSW.map(function (x) { return swrow(x[1], x[2], sw('data-k="' + x[0] + '"' + (p[x[0]] ? ' checked' : ''))); }).join('');
+        b.querySelectorAll('[data-p]').forEach(function (btn) { btn.onclick = function () { var o = {}; PERFK.forEach(function (k) { o[k] = !!PRESETS[btn.dataset.p][1][k]; }); putPerf(o).then(draw).catch(function (e) { toast(e.message); }); }; });
+        b.querySelectorAll('[data-k]').forEach(function (i) { i.onchange = function () { var o = {}; o[i.dataset.k] = i.checked; putPerf(o).catch(function (e) { toast(e.message); i.checked = !i.checked; }); }; });
+      }
+      api('/api/plus/perf').then(draw);
+    }];
   }
+  function sysTool(title, desc, onKey, nums, extra) {
+    return [title, function (b) {
+      api('/api/plus/sys').then(function (d) {
+        var s = d.sys;
+        b.innerHTML = swrow(title, desc, sw('data-k="' + onKey + '"' + (s[onKey] ? ' checked' : ''))) + nums.map(function (n) { return '<label class="hy-num"><span>' + n[1] + '</span><input type="number" data-n="' + n[0] + '" min="' + n[2] + '" max="' + n[3] + '" value="' + s[n[0]] + '"></label>'; }).join('') + (extra ? extra(d) : '');
+        var put = function (key, val) { return api('/api/plus/sys', 'PUT', { key: key, value: val }).then(function () { toast('Saved'); }).catch(function (e) { toast(e.message); }); };
+        b.querySelector('[data-k]').onchange = function (e) { put(onKey, e.target.checked); };
+        b.querySelectorAll('[data-n]').forEach(function (i) { i.onchange = function () { put(i.dataset.n, Number(i.value)); }; });
+      });
+    }];
+  }
+  tools.push(
+    perfTool('Performance presets', true),
+    perfTool('Performance switches', false),
+    sysTool('Shop hours', 'Customers can only place orders between these hours (Philippine time).', 'hours', [['open', 'Opens at hour (0-23)', 0, 23], ['close', 'Closes at hour (1-24)', 1, 24]]),
+    sysTool('Slow request log', 'Records requests that take too long so you can spot what is slowing the shop.', 'slowlog', [['slowms', 'Log requests slower than (ms)', 100, 30000]], function (d) { return table(d.slow, [C('When', function (x) { return String(x.at).replace('T', ' ').slice(5, 19); }), C('ms', function (x) { return x.ms; }), C('Request', function (x) { return x.method + ' ' + x.path; })]); }),
+    sysTool('Auto-trim activity log', 'Deletes old activity lines once a day.', 'trim', [['trimdays', 'Keep days', 1, 3650]]),
+    sysTool('Auto-optimize database', 'Refreshes the database statistics once a day so pages stay quick.', 'optimize', []),
+    sysTool('Auto-clean cancelled orders', 'Permanently deletes old cancelled orders once a day.', 'purge', [['purgedays', 'Older than days', 1, 3650]]),
+    sysTool('Keep server awake', 'Pings the shop every 10 minutes so free hosting does not put it to sleep. Uses the RENDER_EXTERNAL_URL setting that Render provides.', 'awake', [])
+  );
+
+  var GROUPS = [
+    ['Store', 'store', 25, [0, 1, 52]],
+    ['Catalog', 'tag', 215, [2, 3, 4, 37, 38, 39, 40, 41, 25, 46, 47, 48]],
+    ['Inventory', 'box', 170, [20, 21, 22, 23, 24]],
+    ['Orders', 'cart', 265, [5, 6, 18, 27, 28, 35, 36]],
+    ['People', 'users', 335, [7, 8, 9, 10, 11, 33, 34]],
+    ['Insights', 'chart', 140, [12, 13, 14, 26, 29, 30, 31, 32, 44, 45, 49]],
+    ['Performance', 'bolt', 45, [50, 51, 53]],
+    ['System', 'gear', 205, [15, 16, 17, 19, 42, 43, 54, 55, 56, 57]]
+  ];
+
+  function close() { var o = $('#ap-dlg'); if (o) o.remove(); document.body.style.overflow = ''; document.removeEventListener('keydown', onKey); }
   function onKey(e) { if (e.key === 'Escape') close(); }
 
-  function mount(box) {
-    var old = $('#ap-full'); if (old) old.remove();
-    if (box) box.innerHTML = '<p class="muted">Admin+ is open.</p>';
-    var o = document.createElement('div'); o.id = 'ap-full';
-    o.innerHTML = '<div class="ap-top"><div class="ap-brand"><em>⚡</em><div><b>Admin<span>+</span></b><small>' + tools.length + ' tools</small></div></div><input class="ap-find" type="search" placeholder="Search ' + tools.length + ' tools..." aria-label="Search tools"><button class="ap-close" type="button" aria-label="Close">&times;</button></div>' +
-      '<div class="ap-kpis"></div><div class="ap-chips"></div><div class="ap-scroll"><div class="ap-groups"></div><p class="ap-none muted" hidden>No tools match.</p></div>';
-    document.body.appendChild(o); document.body.style.overflow = 'hidden'; document.addEventListener('keydown', onKey);
-    $('.ap-close', o).onclick = close;
-    api('/api/plus/summary').then(function (k) { $('.ap-kpis', o).innerHTML = [['Today', money(k.today)], ['7 days', money(k.week)], ['30 days', money(k.month)], ['Pending', k.pending], ['Orders', k.orders]].map(function (x) { return '<div class="ap-kpi"><small>' + x[0] + '</small><b>' + x[1] + '</b></div>'; }).join(''); }).catch(function () {});
-    var host = $('.ap-groups', o), chips = $('.ap-chips', o), cur = 'all';
-    chips.innerHTML = '<button class="on" data-g="all">All</button>' + GROUPS.map(function (g) { return '<button data-g="' + g[0] + '">' + g[1] + ' ' + g[0] + '</button>'; }).join('');
+  function open() {
+    close();
+    var d = document.createElement('div'); d.id = 'ap-dlg';
+    d.innerHTML = '<div class="hy-sheet" role="dialog" aria-label="Admin+"><div class="hy-bar"><div><h2>Admin+</h2><p>' + tools.length + ' tools and settings</p></div><button class="hy-x" type="button" aria-label="Close">' + ico('close') + '</button></div>' +
+      '<label class="hy-search">' + ico('search') + '<input type="search" placeholder="Search ' + tools.length + ' tools" aria-label="Search tools"></label><div class="hy-chips"></div>' +
+      '<div class="hy-scroll"><div class="hy-kpis"></div><div class="hy-groups"></div><p class="muted hy-none" hidden>No tools match.</p></div></div>';
+    document.body.appendChild(d); document.body.style.overflow = 'hidden'; document.addEventListener('keydown', onKey);
+    d.onclick = function (e) { if (e.target === d) close(); };
+    $('.hy-x', d).onclick = close;
+    api('/api/plus/summary').then(function (k) { $('.hy-kpis', d).innerHTML = [['Today', money(k.today), 25], ['7 days', money(k.week), 215], ['30 days', money(k.month), 265], ['Pending', k.pending, 45], ['Orders', k.orders, 140]].map(function (x) { return '<div class="hy-kpi" style="--h:' + x[2] + '"><small>' + x[0] + '</small><b>' + x[1] + '</b></div>'; }).join(''); }).catch(function () {});
+    var host = $('.hy-groups', d), chips = $('.hy-chips', d), cur = 'all', find = $('.hy-search input', d);
+    chips.innerHTML = '<button type="button" class="on" data-g="all">All</button>' + GROUPS.map(function (g) { return '<button type="button" data-g="' + g[0] + '">' + g[0] + '</button>'; }).join('');
     GROUPS.forEach(function (g) {
-      var sec = document.createElement('div'); sec.className = 'ap-group'; sec.dataset.g = g[0];
-      sec.innerHTML = '<h3>' + g[1] + ' ' + g[0] + '<span>' + g[2].length + '</span></h3><div class="ap-grid"></div>';
-      var grid = $('.ap-grid', sec);
-      g[2].forEach(function (i, n) {
-        var t = tools[i], c = document.createElement('div'); c.className = 'ap-item'; c.dataset.n = t[0].toLowerCase(); c.style.animationDelay = n * 25 + 'ms';
-        c.innerHTML = '<button class="ap-t" type="button"><em>' + ICONS[i] + '</em><b>' + t[0] + '</b></button><div class="ap-b" hidden></div>';
-        var body = $('.ap-b', c), done = false;
-        $('.ap-t', c).onclick = function () { var op = body.hidden; body.hidden = !op; c.classList.toggle('open', op); if (op && !done) { done = true; t[1](body); } if (op) setTimeout(function () { c.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }, 60); };
-        grid.appendChild(c);
+      var sec = document.createElement('section'); sec.className = 'hy-group'; sec.dataset.g = g[0]; sec.style.setProperty('--h', g[2]);
+      sec.innerHTML = '<h3>' + g[0] + '<span>' + g[3].length + '</span></h3><div class="hy-card"></div>';
+      var card = $('.hy-card', sec);
+      g[3].forEach(function (i) {
+        var t = tools[i], it = document.createElement('div'); it.className = 'hy-item'; it.dataset.n = t[0].toLowerCase();
+        it.innerHTML = '<button class="hy-row" type="button"><span class="hy-ic">' + ico(g[1]) + '</span><b>' + t[0] + '</b><span class="hy-chev">' + ico('chev') + '</span></button><div class="ap-b hy-body" hidden></div>';
+        var body = $('.hy-body', it), done = false;
+        $('.hy-row', it).onclick = function () { var op = body.hidden; body.hidden = !op; it.classList.toggle('open', op); if (op && !done) { done = true; t[1](body); } };
+        card.appendChild(it);
       });
       host.appendChild(sec);
     });
     function apply() {
-      var v = $('.ap-find', o).value.trim().toLowerCase(), shown = 0;
-      o.querySelectorAll('.ap-group').forEach(function (g) {
-        var any = 0; g.querySelectorAll('.ap-item').forEach(function (c) { var ok = !v || c.dataset.n.indexOf(v) > -1; c.style.display = ok ? '' : 'none'; if (ok) any++; });
-        g.style.display = any && (cur === 'all' || v || g.dataset.g === cur) ? '' : 'none'; shown += g.style.display === '' ? any : 0;
+      var v = find.value.trim().toLowerCase(), shown = 0;
+      d.querySelectorAll('.hy-group').forEach(function (g) {
+        var any = 0; g.querySelectorAll('.hy-item').forEach(function (c) { var ok = !v || c.dataset.n.indexOf(v) > -1; c.style.display = ok ? '' : 'none'; if (ok) any++; });
+        g.style.display = any && (cur === 'all' || v || g.dataset.g === cur) ? '' : 'none'; if (g.style.display === '') shown += any;
       });
-      $('.ap-none', o).hidden = shown > 0;
+      $('.hy-none', d).hidden = shown > 0;
     }
-    $('.ap-find', o).oninput = apply;
-    chips.onclick = function (e) { var b = e.target.closest('button'); if (!b) return; cur = b.dataset.g; chips.querySelectorAll('button').forEach(function (x) { x.classList.toggle('on', x === b); }); $('.ap-find', o).value = ''; apply(); };
+    find.oninput = apply;
+    chips.onclick = function (e) { var b = e.target.closest('button'); if (!b) return; cur = b.dataset.g; chips.querySelectorAll('button').forEach(function (x) { x.classList.toggle('on', x === b); }); find.value = ''; apply(); };
   }
-  window.AdminPlus = { mount: mount };
+
+  function mountBtn() {
+    var u = me(), b = $('#ap-fab');
+    if (!u || u.role !== 'admin') { if (b) b.remove(); return; }
+    if (b) return;
+    b = document.createElement('button'); b.id = 'ap-fab'; b.type = 'button'; b.innerHTML = ico('bolt') + '<span>Admin+</span>'; b.onclick = open; document.body.appendChild(b);
+  }
+  mountBtn(); setInterval(mountBtn, 2000);
+
+  // ----- Security switches (shown inside Admin > System > Security) -----
+  var SW = [
+    ['lockdown', 'alert', 'Lockdown', 'Shuts the shop for everyone except you. Customers and sellers see a maintenance message.', true],
+    ['firewall', 'shield', 'Firewall mode', 'Strict filter: blocks attack patterns and requests with no browser ID, and caps each visitor at 120 requests a minute.', false],
+    ['readonly', 'lock', 'Read-only mode', 'Everyone can browse but nobody except you can order or change anything.', true],
+    ['nosignup', 'userplus', 'Pause sign-ups', 'Stops new accounts from being created.', false],
+    ['nobots', 'bot', 'Block bots', 'Refuses scripts and scanners such as curl, python and sqlmap.', false]
+  ];
+  var LBL = { lockdown: 'Lockdown', firewall: 'Firewall', readonly: 'Read-only', nosignup: 'Sign-ups paused', nobots: 'Bots', ip: 'Blocked IP', session: 'Old logins ended' };
+  function shield(box) {
+    var u = me(); if (!box || !u || u.role !== 'admin') return;
+    var old = $('#shieldbox', box); if (old) old.remove();
+    var sec = document.createElement('section'); sec.id = 'shieldbox'; sec.className = 'panel glass sh';
+    sec.innerHTML = '<p class="muted">Loading security switches...</p>'; box.insertBefore(sec, box.firstChild);
+    function paint(d) {
+      var on = SW.filter(function (x) { return d.state[x[0]]; }).length;
+      sec.innerHTML = '<div class="sh-head"><div><h2>Security controls</h2><p class="muted">Flip a switch and it takes effect instantly. You stay logged in and keep full access.</p></div><span class="sh-pill' + (on ? ' hot' : '') + '">' + (on ? on + ' active' : 'All normal') + '</span></div>' +
+        SW.map(function (x) { return '<label class="sh-row' + (d.state[x[0]] ? ' on' : '') + '"><em class="sh-ic">' + ico(x[1]) + '</em><span class="sh-txt"><b>' + x[2] + '</b><small>' + x[3] + '</small></span><span class="sh-sw' + (x[4] ? ' danger' : '') + '"><input type="checkbox" role="switch" data-k="' + x[0] + '"' + (d.state[x[0]] ? ' checked' : '') + '><i></i></span></label>'; }).join('') +
+        '<div class="sh-ips"><b>Blocked IP addresses</b><small>One per line. Blocked visitors get "Access blocked".</small><textarea id="sh-ips" rows="3" placeholder="e.g. 203.0.113.7">' + esc(d.state.ips.join('\n')) + '</textarea><button type="button" id="sh-save">Save IP list</button></div>' +
+        '<div class="sh-btns"><button type="button" id="sh-out" class="sh-warn">Log everyone else out</button><button type="button" id="sh-clr">Clear blocked log</button></div>' +
+        '<h3>Blocked so far</h3><div class="ap-stats">' + Object.keys(d.stats).filter(function (k) { return d.stats[k]; }).map(function (k) { return '<div><b>' + d.stats[k] + '</b>' + (LBL[k] || k) + '</div>'; }).join('') + '</div>' +
+        (d.blocked.length ? table(d.blocked.slice(0, 15), [C('When', function (x) { return String(x.at).replace('T', ' ').slice(5, 19); }), C('Type', function (x) { return LBL[x.type] || x.type; }), C('IP', function (x) { return x.ip; }), C('Path', function (x) { return x.path; })]) : '<p class="muted">Nothing blocked since the last restart.</p>');
+      sec.querySelectorAll('input[data-k]').forEach(function (i) {
+        i.onchange = function () {
+          var k = i.dataset.k, v = i.checked, w = SW.filter(function (x) { return x[0] === k; })[0];
+          if (w[4] && v && !confirm('Turn on ' + w[2] + '? Customers will be affected right away.')) { i.checked = false; return; }
+          api('/api/shield/toggle', 'PUT', { key: k, on: v }).then(paint).catch(function (e) { toast(e.message); i.checked = !v; });
+        };
+      });
+      $('#sh-save', sec).onclick = function () { api('/api/shield/ips', 'PUT', { text: $('#sh-ips', sec).value }).then(function (r) { paint(r); toast('IP list saved'); }).catch(function (e) { toast(e.message); }); };
+      $('#sh-out', sec).onclick = function () { if (confirm('Log out every customer and seller? You stay logged in.')) api('/api/shield/logout-all', 'POST').then(function (r) { paint(r); toast('Everyone else was logged out'); }).catch(function (e) { toast(e.message); }); };
+      $('#sh-clr', sec).onclick = function () { api('/api/shield/clear-log', 'POST').then(paint); };
+    }
+    api('/api/shield').then(paint).catch(function (e) { sec.innerHTML = '<p class="muted">' + esc(e.message) + '</p>'; });
+  }
+  window.AdminPlus = { shield: shield };
 })();
