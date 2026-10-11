@@ -8,7 +8,7 @@
     try {
       document.documentElement.dataset.theme =
         localStorage.theme || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
-      if ((navigator.deviceMemory && navigator.deviceMemory <= 4) || localStorage.glass === 'lite') document.documentElement.dataset.glass = 'lite';
+      if (localStorage.glass === 'lite') document.documentElement.dataset.glass = 'lite'; // lite mode is only on when the person chose it (boost.js asks on slow devices)
     } catch (e) {}
   </script>
   <script>
