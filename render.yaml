@@ -14,7 +14,9 @@ services:
       - key: NODE_ENV
         value: production
       - key: NODE_OPTIONS
-        value: --max-old-space-size=384
+        value: --max-old-space-size=300 --max-semi-space-size=8
+      - key: MALLOC_ARENA_MAX
+        value: '2'
       - key: DATABASE_URL
         fromDatabase:
           name: glass-shop-db
