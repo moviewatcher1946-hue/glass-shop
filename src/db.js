@@ -8,7 +8,18 @@ if (!url) throw new Error('DATABASE_URL is not set');
 
 // Render's Postgres requires SSL; local Postgres usually doesn't.
 const local = /localhost|127\.0\.0\.1/.test(url);
-const pool = new Pool({ connectionString: url, ssl: local ? false : { rejectUnauthorized: false } });
+// Protection: never wait forever for a connection or a query. A sleeping or unreachable database now fails fast (10 s) instead of
+// piling up requests until the whole shop stops answering. Safe limits, tunable with PG_POOL_MAX.
+const pool = new Pool({
+  connectionString: url,
+  ssl: local ? false : { rejectUnauthorized: false },
+  max: Math.max(2, Math.min(30, Number(process.env.PG_POOL_MAX) || 10)),
+  connectionTimeoutMillis: 10e3,
+  idleTimeoutMillis: 30e3,
+  keepAlive: true,
+  statement_timeout: 60e3,
+  query_timeout: 70e3,
+});
 
 // Bug fix: when the database restarts, an idle connection reports an error. With no listener Node treats that as fatal and the whole shop went down.
 pool.on('error', (e) => console.error('Database connection error (idle client):', e.message));
