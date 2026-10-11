@@ -889,6 +889,7 @@ function renderAdmin() {
     ['orders', 'Orders', [['orders', 'Orders', pendingCount ? ` (${pendingCount})` : ''], ['custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : ''], ['prep', 'Prep list'], ['cash', 'Cash']]],
     ['products', 'Catalog', [['products', 'Products'], ['combos', 'Combos'], ['promos', 'Promos'], ...(isRaven() ? [['popups', 'Pop-ups']] : [])]],
     ['customers', 'People', isRaven() ? [['customers', 'Customers'], ['sellers', 'Sellers']] : [['customers', 'Customers'], ['alerts', 'Alerts']]],
+    ...(isRaven() ? [['plus', 'Admin+', [['plus', 'Tools']]]] : []),
     ...(isRaven() ? [['backup', 'System', [['backup', 'Backup'], ['audit', 'Activity'], ['security', 'Security']]]] : []),
   ];
   const cur = GROUPS.find((g) => g[2].some((x) => x[0] === adminTab)) || GROUPS[0];
@@ -1049,7 +1050,7 @@ function renderAdmin() {
   const customersView = `<h2>Customers</h2>
     <p class="muted">Block people who abuse the shop (fake orders, not showing up). ${isRaven() ? 'Your block covers the whole shop.' : 'Your block stops them ordering your items only.'} The list shows the most cancelled orders first.</p>
     <div id="custlist"><p>Loading...</p></div>`;
-  $('#app').innerHTML = tabs + subtabs + '<div id="attn"></div><div id="adminnotes"></div>' + (adminTab === 'dashboard' ? '<section class="dash" id="dashbox"><p class="panel glass muted">Loading your numbers...</p></section>' : adminTab === 'report' ? reportView : adminTab === 'cash' ? cashView : adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'audit' && isRaven() ? auditView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'alerts' && !isRaven() ? alertsView : adminTab === 'combos' ? combosView : adminTab === 'popups' && isRaven() ? popupsView : adminTab === 'security' && isRaven() ? '<div id="secbox"><section class="panel glass"><h2>Security</h2><p class="muted">Loading...</p></section></div>' : adminTab === 'prep' ? '<div id="prepbox"></div>' : adminTab === 'promos' ? promosView : adminTab === 'customers' ? customersView : productsView);
+  $('#app').innerHTML = tabs + subtabs + '<div id="attn"></div><div id="adminnotes"></div>' + (adminTab === 'dashboard' ? '<section class="dash" id="dashbox"><p class="panel glass muted">Loading your numbers...</p></section>' : adminTab === 'report' ? reportView : adminTab === 'cash' ? cashView : adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'audit' && isRaven() ? auditView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'alerts' && !isRaven() ? alertsView : adminTab === 'combos' ? combosView : adminTab === 'popups' && isRaven() ? popupsView : adminTab === 'security' && isRaven() ? '<div id="secbox"><section class="panel glass"><h2>Security</h2><p class="muted">Loading...</p></section></div>' : adminTab === 'plus' && isRaven() ? '<div id="plusbox"></div>' : adminTab === 'prep' ? '<div id="prepbox"></div>' : adminTab === 'promos' ? promosView : adminTab === 'customers' ? customersView : productsView);
   fillProducts();
   comboAdminHtml = ''; refreshAdminCombos().catch(() => {});
   promoAdminHtml = ''; refreshAdminPromos().catch(() => {});
@@ -1062,6 +1063,7 @@ function renderAdmin() {
   if (adminTab === 'report' || adminTab === 'dashboard') refreshReport().catch(() => {});
   refreshCosts().catch(() => {});
   refreshAttention().catch(() => {});
+  if (isRaven() && adminTab === 'plus' && window.AdminPlus) window.AdminPlus.mount($('#plusbox'));
   if (isRaven() && adminTab === 'backup') refreshBackup().catch(() => {});
   if (isRaven() && adminTab === 'popups') refreshPopups().catch(() => {});
   if (adminTab === 'prep') { drawPrep(); refreshOrders().then(drawPrep).catch(() => {}); }
@@ -2329,7 +2331,7 @@ function orderCelebrate(id) {
     ev.stopPropagation();
     const old = $('#sfxpanel'); if (old) { old.remove(); return; }
     const r = btn.getBoundingClientRect(), pn = document.createElement('div'); pn.id = 'sfxpanel'; pn.className = 'glass';
-    pn.style.top = Math.min(r.bottom + 10, Math.max(8, innerHeight - 120)) + 'px'; pn.style.left = '50%'; pn.style.maxHeight = 'calc(100dvh - ' + (Math.min(r.bottom + 10, Math.max(8, innerHeight - 120)) + 12) + 'px)';
+    pn.style.top = Math.min(r.bottom + 10, Math.max(8, innerHeight - 120)) + 'px'; pn.style.maxHeight = 'calc(100dvh - ' + (Math.min(r.bottom + 10, Math.max(8, innerHeight - 120)) + 12) + 'px)';
     pn.innerHTML = `<label class="sp-row"><span>Sounds</span><input type="checkbox" id="sfx-on" ${SFX.muted ? '' : 'checked'}></label><label class="sp-row"><span>Volume</span><input type="range" id="sfx-vol" min="0" max="150" value="${Math.round(SFX.vol * 100)}"></label><label class="sp-row"><span>Vibration</span><input type="checkbox" id="hap-on" ${HAPTICS() ? 'checked' : ''}></label>
       <div class="sp-row"><span>Colour</span><span class="sws">${ACCENTS.map((c, i) => `<button type="button" class="sw${Number(LS('accent', 0)) === i ? ' on' : ''}" data-i="${i}" aria-label="${c[0]} colours" style="background:linear-gradient(135deg,${c[1] || '#0a84ff'},${c[2] || '#bf5af2'})"></button>`).join('')}</span></div>
       <div class="sp-row"><span>Text size</span><span class="fzs"><button type="button" data-fz="-10" aria-label="Smaller text">A-</button><b id="fz-val">${Number(LS('fz', 100))}%</b><button type="button" data-fz="10" aria-label="Larger text">A+</button></span></div>
