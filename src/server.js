@@ -72,6 +72,7 @@ const AUDIT_RULES = [
   { m: 'DELETE', re: /^\/admin\/sellers\/(\d+)$/, snap: 'user', f: (b, o) => ['Removed a seller', o ? o.username : ''] },
   { m: 'POST', re: /^\/admin\/sellers\/(\d+)\/split-off$/, snap: 'user', f: (b, o) => ['Split off a seller', o ? o.username : ''] },
   { m: 'PUT', re: /^\/admin\/settings$/, f: (b) => ['Changed shop settings', brief(b)] },
+  { m: 'PUT', re: /^\/admin\/popups$/, f: (b) => ['Changed pop-ups', `${Array.isArray(b.popups) ? b.popups.length : 0} pop-up(s)`] },
   { m: 'POST', re: /^\/admin\/sales-reset$/, f: (b) => ['Reset sales', b.keepOpen === false ? 'every order removed' : 'finished orders removed, open orders kept'] },
   { m: 'POST', re: /^\/admin\/import$/, f: () => ['Restored a backup', ''] },
   { m: 'POST', re: /^\/promos$/, f: (b) => ['Created a promo code', brief({ code: b.code, percent: b.percent, amount: b.amount })] },
@@ -1453,7 +1454,21 @@ app.get('/api/settings', wrap(async (req, res) => {
   const { rows } = await pool.query('SELECT key,value FROM settings');
   const o = Object.fromEntries(rows.map((r) => [r.key, r.value]));
   const { rows: [m] } = await pool.query("SELECT id FROM users WHERE role='admin' ORDER BY id LIMIT 1"); // raven: his products are pinned to the top of the shop
-  res.json({ banner: o.banner || '', stamp_reward: o.stamp_reward || 'a free snack', main_owner_id: m ? m.id : null, edit_window: o.edit_window === undefined || o.edit_window === '' ? 10 : Number(o.edit_window), order_cutoff: o.order_cutoff || '', after_cutoff: o.after_cutoff === 'closed' ? 'closed' : 'tomorrow', order_window: await orderWindow(pool) });
+  res.json({ banner: o.banner || '', stamp_reward: o.stamp_reward || 'a free snack', main_owner_id: m ? m.id : null, edit_window: o.edit_window === undefined || o.edit_window === '' ? 10 : Number(o.edit_window), order_cutoff: o.order_cutoff || '', after_cutoff: o.after_cutoff === 'closed' ? 'closed' : 'tomorrow', order_window: await orderWindow(pool), popups: readPopups(o.popups).filter((p) => p.on) });
+}));
+
+/* ---------- Pop-ups: random messages the main admin adds; the shop shows one now and then ---------- */
+function readPopups(raw) { try { const a = JSON.parse(raw || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } }
+app.get('/api/admin/popups', auth, admin, wrap(async (req, res) => { res.json(readPopups(await getSetting('popups'))); }));
+app.put('/api/admin/popups', auth, admin, wrap(async (req, res) => {
+  const list = Array.isArray(req.body.popups) ? req.body.popups : null;
+  if (!list || list.length > 20) throw bad('You can keep up to 20 pop-ups.');
+  const clean = list.map((p) => {
+    const url = String(p.url || '').trim().slice(0, 300);
+    return { id: String(p.id || Date.now().toString(36) + Math.random().toString(36).slice(2, 6)).slice(0, 24), title: String(p.title || '').trim().slice(0, 80), text: String(p.text || '').trim().slice(0, 300), btn: String(p.btn || '').trim().slice(0, 30), url: /^(https?:\/\/|\/)/.test(url) ? url : '', on: p.on !== false };
+  }).filter((p) => p.title && p.text);
+  await putSetting('popups', JSON.stringify(clean));
+  res.json(clean);
 }));
 
 app.put('/api/admin/settings', auth, admin, wrap(async (req, res) => {
