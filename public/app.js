@@ -2037,3 +2037,16 @@ document.addEventListener('click', (e) => { // tapping a product counts as viewi
   const c = e.target.closest && e.target.closest('.grid>.card[data-sid]');
   if (c && !arrange && !e.target.closest('[data-grip],.pinbtn')) markRecent(c.dataset.sid);
 });
+
+/* ===== While the cart or any popup is open the page behind it cannot move (works on Android and iPhone too) ===== */
+let scrollLockY = null;
+const lockScroll = () => { if (scrollLockY !== null) return; scrollLockY = window.scrollY; document.body.style.cssText += `;position:fixed;top:${-scrollLockY}px;left:0;right:0;width:100%`; };
+const unlockScroll = () => {
+  if (scrollLockY === null || document.querySelector('dialog[open]')) return;
+  const y = scrollLockY; scrollLockY = null;
+  const st = document.body.style; st.position = st.top = st.left = st.right = st.width = '';
+  window.scrollTo({ top: y, behavior: 'instant' });
+};
+const _showModal = HTMLDialogElement.prototype.showModal;
+HTMLDialogElement.prototype.showModal = function () { lockScroll(); return _showModal.call(this); };
+document.addEventListener('close', (e) => { if (e.target && e.target.tagName === 'DIALOG') unlockScroll(); }, true);
