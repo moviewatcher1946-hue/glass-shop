@@ -1,9 +1,9 @@
 // Snack Shop service worker: makes the shop installable on Android Chrome.
 // Pages and files are fetched from the network first (so a new deploy shows up right away) and kept as a fallback for when the signal drops.
 // Live data (/api/...) is never stored.
-const CACHE = 'shop-v12-pinned';
+const CACHE = 'shop-v13-pinned';
 const IMG = 'shop-img-v1'; // product pictures: kept on the device, shown instantly, never re-downloaded
-const SHELL = ['/', '/style.css', '/app.js', '/tour.js', '/manifest.json', '/icon-192.png', '/icon-512.png'];
+const SHELL = ['/', '/style.css', '/app.js', '/tour.js', '/admin-plus.js', '/manifest.json', '/icon-192.png', '/icon-512.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => Promise.allSettled(SHELL.map((u) => c.add(u)))).then(() => self.skipWaiting()));
