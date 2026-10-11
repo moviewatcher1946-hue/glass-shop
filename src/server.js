@@ -8,6 +8,7 @@ const zlib = require('zlib');
 const gzip = promisify(zlib.gzip), gunzip = promisify(zlib.gunzip);
 const { pool, init } = require('./db');
 const { sign, auth, softAuth, admin, staff, invalidateUser } = require('./auth');
+const sec = require('./security');
 
 const app = express();
 const compression = require('compression');
@@ -15,12 +16,15 @@ const sharp = require('sharp');
 app.set('trust proxy', 1); // Render sits behind a proxy; this makes req.ip the visitor's real address
 // Gzip text responses (the JSON lists, HTML, CSS, JS) over 1 KB. Images are already compressed, so they are skipped. Same data, a fraction of the bytes; polling stays just as fresh.
 app.use(compression({ threshold: 1024 }));
-// Small safety headers on everything.
+// Safety headers on everything (content security policy, no framing, HTTPS-only, no sniffing...). See src/security.js.
 app.disable('x-powered-by');
-app.use((req, res, next) => {
-  res.set({ 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'same-origin', 'X-Frame-Options': 'SAMEORIGIN' });
-  next();
-});
+app.use(sec.headers);
+// Flood protection, per visitor address. Generous, because a whole class may share one Wi-Fi address. The 5-second "has anything changed" check and pictures are not counted.
+app.use('/api', sec.limiter({ name: 'api', windowMs: 60e3, max: 1500, skip: (r) => r.path === '/rev' || /^\/products\/\d+\/image/.test(r.path) }));
+app.use('/api', sec.limiter({ name: 'changes', windowMs: 60e3, max: 300, skip: (r) => r.method === 'GET' || r.method === 'HEAD' }));
+// Bug fix: an id like /api/products/abc or 99999999999999 used to reach the database and come back as a 500 error. Now it is a clean 404.
+app.param('id', (req, res, next, v) => (/^\d{1,9}$/.test(v) ? next() : res.status(404).json({ error: 'Not found.' })));
+app.use('/api/auth', sec.limiter({ name: 'login-signup', windowMs: 10 * 60e3, max: 120, skip: (r) => r.method === 'GET' || r.method === 'HEAD' }));
 // "Revision": a counter that goes up whenever anything is changed through the API. Phones ask /api/rev (a few bytes) every few
 // seconds and only download the real lists when it moved. Same live feel as before, a fraction of the outbound traffic.
 // (One server process, which is what Render's free plan runs. After a restart the id changes, so every phone refreshes once.)
@@ -255,8 +259,10 @@ const ensureCategory = () => pool.query("ALTER TABLE products ADD COLUMN IF NOT 
 
 // Discounts and combos (safe to run every start; never touches existing data).
 const ensureCombos = () => pool.query(`
+  -- (orders.slot is no longer used; the column stays so old data is kept)
   ALTER TABLE orders ADD COLUMN IF NOT EXISTS slot VARCHAR(20);
   ALTER TABLE orders ADD COLUMN IF NOT EXISTS cancel_reason TEXT;
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS pw_changed_at TIMESTAMPTZ;
   ALTER TABLE products ADD COLUMN IF NOT EXISTS discount_until TIMESTAMPTZ;
   ALTER TABLE products ADD COLUMN IF NOT EXISTS discount_percent INT NOT NULL DEFAULT 0 CHECK (discount_percent BETWEEN 0 AND 90);
   ALTER TABLE products ADD COLUMN IF NOT EXISTS bulk_min INT CHECK (bulk_min IS NULL OR bulk_min BETWEEN 2 AND 999);
@@ -380,8 +386,12 @@ const lockedOut = (ip) => {
 };
 const failLogin = (ip) => {
   const f = loginFails.get(ip);
-  loginFails.set(ip, f && Date.now() - f.t <= LOGIN_WINDOW ? { n: f.n + 1, t: f.t } : { n: 1, t: Date.now() });
+  const n = f && Date.now() - f.t <= LOGIN_WINDOW ? f.n + 1 : 1;
+  loginFails.set(ip, { n, t: n === 1 ? Date.now() : f.t });
+  if (n === LOGIN_MAX) sec.logEvent('lockout', ip, `${LOGIN_MAX} wrong passwords: locked out for ${LOGIN_WINDOW / 60e3} minutes`);
 };
+// A real-looking hash to compare against when the username does not exist, so "no such user" takes as long as "wrong password" (no way to guess which names exist by timing).
+const DUMMY_HASH = bcrypt.hashSync('not-a-real-password', 12);
 setInterval(() => { for (const [ip, f] of loginFails) if (Date.now() - f.t > LOGIN_WINDOW) loginFails.delete(ip); }, LOGIN_WINDOW).unref();
 // Signup guard: each IP address can own at most 10 accounts in total (the address is saved on the account).
 const MAX_ACCOUNTS_PER_IP = 10, MAX_ACCOUNTS_PER_DEVICE = 5;
@@ -389,8 +399,8 @@ app.post('/api/auth/signup', wrap(async (req, res) => {
   const { rows: [n] } = await pool.query('SELECT count(*)::int AS n FROM users WHERE signup_ip=$1', [req.ip]);
   if (n.n >= MAX_ACCOUNTS_PER_IP) throw bad('This connection has reached the limit of accounts. Please talk to the seller.', 429);
   const { username = '', password = '' } = req.body || {};
-  if (!/^[a-zA-Z0-9_]{3,30}$/.test(username) || password.length < 8)
-    throw bad('Username: 3-30 letters, numbers or _. Password: at least 8 characters.');
+  if (typeof username !== 'string' || !/^[a-zA-Z0-9_]{3,30}$/.test(username)) throw bad('Username: 3-30 letters, numbers or _.');
+  { const pw = sec.passwordProblem(password, username); if (pw) throw bad(pw); }
   // Device guard: each browser/device gets a random ID and can own at most 5 accounts.
   const device = String((req.body || {}).device_id || '');
   if (!/^[A-Za-z0-9-]{16,64}$/.test(device)) throw bad('Please refresh the page and try again.');
@@ -410,14 +420,18 @@ app.post('/api/auth/signup', wrap(async (req, res) => {
 
 app.post('/api/auth/login', wrap(async (req, res) => {
   const { username = '', password = '' } = req.body || {};
+  if (typeof username !== 'string' || typeof password !== 'string' || username.length > 100 || password.length > 200) throw bad('Wrong username or password.', 401);
   const wait = lockedOut(req.ip);
-  if (wait) throw bad(`Too many wrong attempts. Try again in ${wait} minute${wait === 1 ? '' : 's'}.`, 429);
+  if (wait) { sec.logEvent('login_blocked', req, `locked out, tried "${username}"`); throw bad(`Too many wrong attempts. Try again in ${wait} minute${wait === 1 ? '' : 's'}.`, 429); }
   const { rows: [u] } = await pool.query('SELECT * FROM users WHERE lower(username)=lower($1)', [username]);
-  if (!u || !(await bcrypt.compare(password, u.password_hash))) {
+  const passOk = await bcrypt.compare(password, u ? u.password_hash : DUMMY_HASH);
+  if (!u || !passOk) {
     failLogin(req.ip);
+    sec.logEvent('login_failed', req, `username "${username}"`);
     throw bad('Wrong username or password.', 401);
   }
   loginFails.delete(req.ip);
+  if (u.role !== 'customer') sec.logEvent('staff_login', { ip: req.ip, user: u }, `${u.role} signed in`);
   if (u.must_change && u.temp_expires && new Date(u.temp_expires) < new Date())
     throw bad('That temporary password expired. Ask the seller for a new one.', 401);
   const user = { id: u.id, username: u.username, role: u.role };
@@ -429,11 +443,13 @@ app.post('/api/auth/change-password', auth, wrap(async (req, res) => {
   const { current_password = '', new_password = '' } = req.body || {};
   const wait = lockedOut(req.ip);
   if (wait) throw bad(`Too many wrong attempts. Try again in ${wait} minute${wait === 1 ? '' : 's'}.`, 429);
-  if (String(new_password).length < 8) throw bad('New password: at least 8 characters.');
   const { rows: [u] } = await pool.query('SELECT * FROM users WHERE id=$1', [req.user.id]);
+  { const pw = sec.passwordProblem(new_password, u && u.username); if (pw) throw bad(pw.replace(/^Password/, 'New password')); }
   if (!u || !(await bcrypt.compare(String(current_password), u.password_hash))) { failLogin(req.ip); throw bad('The current password is wrong.', 401); }
   if (current_password === new_password) throw bad('Pick a different password.');
-  await pool.query('UPDATE users SET password_hash=$1, must_change=false, temp_expires=NULL WHERE id=$2', [await bcrypt.hash(String(new_password), 12), u.id]);
+  await pool.query('UPDATE users SET password_hash=$1, must_change=false, temp_expires=NULL, pw_changed_at=now() WHERE id=$2', [await bcrypt.hash(String(new_password), 12), u.id]);
+  invalidateUser(u.id); // every older login of this account stops working right now
+  sec.logEvent('password_changed', { ip: req.ip, user: u }, 'changed their own password');
   const user = { id: u.id, username: u.username, role: u.role };
   res.json({ token: sign(user), user });
 }));
@@ -578,12 +594,12 @@ const repriceSafe = async (ids) => {
   catch (e) { return { repriced_orders: 0, reprice_info: null, reprice_error: e.message }; }
 };
 
-app.post('/api/products', auth, staff, upload.single('image'), wrap(async (req, res) => {
+app.post('/api/products', auth, staff, upload.single('image'), sec.checkUpload, wrap(async (req, res) => {
   const { title, description = '', price, category = 'snacks', discount_percent = 0 } = req.body;
   const stock = req.body.stock === undefined || req.body.stock === '' ? null : parseInt(req.body.stock);
-  if (stock !== null && !(stock >= 0)) throw bad('Stock must be 0 or more.');
+  if (stock !== null && !(stock >= 0 && stock <= 1000000)) throw bad('Stock must be between 0 and 1,000,000.');
   const cost = req.body.cost === undefined || req.body.cost === '' ? null : Number(req.body.cost);
-  if (cost !== null && !(cost >= 0)) throw bad('Cost must be 0 or more.');
+  if (cost !== null && !(cost >= 0 && cost <= 99999999)) throw bad('Cost must be between 0 and 99,999,999.');
   if (!String(title || '').trim() || price === '' || price === undefined || isNaN(price) || price < 0 || price > 99999999) throw bad('Title and a valid price are required.');
   if (String(title).trim().length > 200) throw bad('The name can be up to 200 characters.');
   if (String(description).length > 2000) throw bad('The description can be up to 2000 characters.');
@@ -600,7 +616,7 @@ app.post('/api/products', auth, staff, upload.single('image'), wrap(async (req, 
   res.status(201).json(await withImage(p.id));
 }));
 
-app.put('/api/products/:id', auth, staff, upload.single('image'), wrap(async (req, res) => {
+app.put('/api/products/:id', auth, staff, upload.single('image'), sec.checkUpload, wrap(async (req, res) => {
   await guard('products', req.params.id, req.user);
   const { title, description, price, category, discount_percent } = req.body;
   const newOwner = isMain(req.user) && req.body.owner_id ? await pickOwner(req.user, req.body.owner_id) : null;
@@ -613,10 +629,10 @@ app.put('/api/products/:id', auth, staff, upload.single('image'), wrap(async (re
   const f = await squeeze(req.file);
   const setStock = req.body.stock !== undefined; // empty = stop counting
   const stock = !setStock || req.body.stock === '' ? null : parseInt(req.body.stock);
-  if (stock !== null && !(stock >= 0)) throw bad('Stock must be 0 or more.');
+  if (stock !== null && !(stock >= 0 && stock <= 1000000)) throw bad('Stock must be between 0 and 1,000,000.');
   const setCost = req.body.cost !== undefined; // empty = clear the cost
   const cost = !setCost || req.body.cost === '' ? null : Number(req.body.cost);
-  if (cost !== null && !(cost >= 0)) throw bad('Cost must be 0 or more.');
+  if (cost !== null && !(cost >= 0 && cost <= 99999999)) throw bad('Cost must be between 0 and 99,999,999.');
   const setBulk = req.body.bulk_percent !== undefined || req.body.bulk_min !== undefined; // 0 / empty = remove the bulk deal
   const bulk = setBulk ? parseBulk(req.body) : { min: null, pct: 0 };
   const { rowCount } = await pool.query(
@@ -874,8 +890,8 @@ const createOrder = wrap(async (req, res) => {
     const discount = promo ? Math.round(base * promo.percent) / 100 : 0;
     const note = String(req.body.note || '').trim().slice(0, 300);
     const { rows: [o] } = await c.query(
-      'INSERT INTO orders (user_id, total, note, promo_code, discount, deliver_for, slot) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id,total,status,created_at',
-      [req.user.id, (total - discount).toFixed(2), note, promo ? promo.code : null, discount.toFixed(2), win.date, ['recess', 'lunch', 'dismissal'].includes(req.body.slot) ? req.body.slot : null]
+      'INSERT INTO orders (user_id, total, note, promo_code, discount, deliver_for) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id,total,status,created_at',
+      [req.user.id, (total - discount).toFixed(2), note, promo ? promo.code : null, discount.toFixed(2), win.date]
     );
     if (promo) await c.query('UPDATE promo_codes SET used_count = used_count + 1 WHERE id=$1', [promo.id]);
     for (const l of lines)
@@ -922,7 +938,7 @@ app.post('/api/staff/orders', auth, staff, wrap(async (req, res, next) => {
   return createOrder(req, res, next);
 }));
 
-const ORDER_SQL = `SELECT o.id,o.user_id,o.total,o.status,o.note,o.promo_code,o.discount,o.created_at,o.paid_by,o.paid_at,o.slot,o.cancel_reason,to_char(o.deliver_for,'YYYY-MM-DD') AS deliver_for,(SELECT username FROM users WHERE id=o.paid_by) AS paid_name,u.username,
+const ORDER_SQL = `SELECT o.id,o.user_id,o.total,o.status,o.note,o.promo_code,o.discount,o.created_at,o.paid_by,o.paid_at,o.cancel_reason,to_char(o.deliver_for,'YYYY-MM-DD') AS deliver_for,(SELECT username FROM users WHERE id=o.paid_by) AS paid_name,u.username,
   (SELECT json_agg(json_build_object('product_id',product_id,'title',title,'unit_price',unit_price,'quantity',quantity,'owner_id',owner_id))
    FROM order_items WHERE order_id=o.id) AS items,
   (SELECT json_agg(json_build_object('owner_id',x.owner_id,'username',pu.username,'status',COALESCE(a.status,'pending')) ORDER BY x.owner_id)
@@ -1298,8 +1314,8 @@ app.get('/api/admin/sellers', auth, admin, wrap(async (req, res) => {
 
 app.post('/api/admin/sellers', auth, admin, wrap(async (req, res) => {
   const { username = '', password = '' } = req.body || {};
-  if (!/^[a-zA-Z0-9_]{3,30}$/.test(username) || password.length < 8)
-    throw bad('Username: 3-30 letters, numbers or _. Password: at least 8 characters.');
+  if (typeof username !== 'string' || !/^[a-zA-Z0-9_]{3,30}$/.test(username)) throw bad('Username: 3-30 letters, numbers or _.');
+  { const pw = sec.passwordProblem(password, username); if (pw) throw bad(pw); }
   try {
     const { rows: [u] } = await pool.query(
       "INSERT INTO users (username, password_hash, role) VALUES ($1,$2,'seller') RETURNING id,username,created_at",
@@ -1334,9 +1350,10 @@ app.patch('/api/admin/sellers/:id/hidden', auth, admin, wrap(async (req, res) =>
 
 app.patch('/api/admin/sellers/:id/password', auth, admin, wrap(async (req, res) => {
   const password = String((req.body || {}).password || '');
-  if (password.length < 8) throw bad('Password: at least 8 characters.');
-  const { rowCount } = await pool.query("UPDATE users SET password_hash=$1 WHERE id=$2 AND role='seller'",
+  { const pw = sec.passwordProblem(password); if (pw) throw bad(pw); }
+  const { rowCount } = await pool.query("UPDATE users SET password_hash=$1, pw_changed_at=now() WHERE id=$2 AND role='seller'",
     [await bcrypt.hash(password, 12), req.params.id]);
+  invalidateUser(req.params.id);
   if (!rowCount) throw bad('Seller not found.', 404);
   // Her old login stops working at once: she has to use the new password. (The "must change" flag is not used for sellers.)
   invalidateUser(req.params.id);
@@ -1581,7 +1598,7 @@ app.post('/api/admin/customers/:id/reset-password', auth, admin, wrap(async (req
   const { rows: [u] } = await pool.query("SELECT id, username FROM users WHERE id=$1 AND role='customer'", [id]);
   if (!u) throw bad('Customer not found.', 404);
   const temp = Array.from(crypto.randomBytes(10), (b) => TEMP_CHARS[b % TEMP_CHARS.length]).join('');
-  await pool.query("UPDATE users SET password_hash=$1, must_change=true, temp_expires=now() + interval '24 hours' WHERE id=$2", [await bcrypt.hash(temp, 12), u.id]);
+  await pool.query("UPDATE users SET password_hash=$1, must_change=true, temp_expires=now() + interval '24 hours', pw_changed_at=now() WHERE id=$2", [await bcrypt.hash(temp, 12), u.id]);
   await pool.query('INSERT INTO password_resets (user_id, by_id) VALUES ($1,$2)', [u.id, req.user.id]);
   notify(`Password reset for ${u.username} by ${req.user.username}.`);
   res.json({ username: u.username, password: temp });
@@ -1737,6 +1754,28 @@ app.get('/api/admin/audit', auth, admin, wrap(async (req, res) => {
   res.json((await pool.query('SELECT id, at, username, role, action, detail FROM audit_log WHERE ($1::bigint IS NULL OR id < $1::bigint) ORDER BY id DESC LIMIT 50', [before])).rows);
 }));
 
+// Admin > System > Security: a health check of the shop's protection plus the newest security events (failed logins, lockouts, floods, fake pictures).
+app.get('/api/admin/security', auth, admin, wrap(async (req, res) => {
+  const now = Date.now();
+  const locked = [...loginFails.values()].filter((f) => f.n >= LOGIN_MAX && now - f.t <= LOGIN_WINDOW).length;
+  const events = sec.recentEvents(100);
+  // The password this shop used to ship with is public in the old source code, so make sure no admin account still uses it.
+  const { rows: admins } = await pool.query("SELECT password_hash FROM users WHERE role='admin'");
+  let oldDefault = false;
+  for (const a of admins) if (await bcrypt.compare('MAMA5577', a.password_hash)) oldDefault = true;
+  res.json({
+    checks: [
+      { ok: !!req.secure, label: 'This connection is HTTPS (encrypted)' },
+      { ok: sec.PROD, label: 'Server runs in production mode' },
+      { ok: String(process.env.JWT_SECRET || '').length >= 32, label: 'Login tokens are signed with a long secret key' },
+      { ok: !oldDefault, label: oldDefault ? 'An admin account still uses the old built-in password. Change it now (Account > change password).' : 'No admin account uses the old built-in password' },
+    ],
+    locked,
+    failed24h: events.filter((e) => e.type === 'login_failed' && now - Date.parse(e.at) < 864e5).length,
+    events,
+  });
+}));
+
 // One row per item sold. Raven gets every seller's items, a seller only her own. Opens in Excel / Google Sheets.
 const csvCell = (v) => {
   let t = v == null ? '' : String(v);
@@ -1825,11 +1864,27 @@ app.post('/api/admin/sales-reset', auth, admin, wrap(async (req, res) => {
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found.' }));
 app.use((err, req, res, next) => {
   if (err.code === 'LIMIT_FILE_SIZE') err = bad('Image must be 5 MB or smaller.');
+  if (err.code === '22P02' || err.code === '22003' || err.code === '22001') err = bad('One of the values is not valid (a number is missing, too big or too long).'); // Postgres: bad text for a number, out of range, too long
+  if (err.type === 'entity.parse.failed') err = bad('That request was not valid.'); // never echo the parser's own message
+  if (err.type === 'entity.too.large') err = bad('That request is too large.', 413);
   if (!err.status) console.error(err);
   res.status(err.status || 500).json({ error: err.status ? err.message : 'Something went wrong on the server.' });
 });
 
 const PORT = process.env.PORT || 3000;
+// A forgotten .catch() somewhere used to be able to take the whole server down. Now it is logged and the shop keeps running.
+process.on('unhandledRejection', (e) => console.error('Unhandled promise rejection:', e && e.stack ? e.stack : e));
+process.on('uncaughtException', (e) => { console.error('Uncaught exception:', e && e.stack ? e.stack : e); process.exit(1); }); // state is unknown: restart cleanly
+// When the host stops the server (a deploy, a restart) finish the requests in flight and close the database connections first.
+let httpServer = null;
+const shutdown = (sig) => {
+  console.log(`${sig} received, shutting down`);
+  setTimeout(() => process.exit(0), 10e3).unref();
+  const done = () => pool.end().catch(() => {}).finally(() => process.exit(0));
+  if (httpServer) httpServer.close(done); else done();
+};
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 init()
   .then(ensureCustomRequests)
   .then(ensureCategory)
@@ -1891,5 +1946,8 @@ init()
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       UNIQUE (user_id, blocked_by)
     );`))
-  .then(() => app.listen(PORT, () => { console.log(`Glass Shop running on :${PORT}`); setInterval(tick, 5 * 60 * 1000); setTimeout(tick, 20000); }))
+  .then(() => {
+    const srv = httpServer = app.listen(PORT, () => { console.log(`Glass Shop running on :${PORT}`); setInterval(tick, 5 * 60 * 1000); setTimeout(tick, 20000); });
+    srv.keepAliveTimeout = 61e3; srv.headersTimeout = 65e3; // slow or half-open connections are dropped instead of piling up
+  })
   .catch((e) => { console.error('Startup failed:', e); process.exit(1); });
