@@ -1231,13 +1231,40 @@ function changePwDialog() {
   if (!$('#dlg').open) $('#dlg').showModal();
 }
 function authDialog() {
-  $('#dlg').innerHTML = `<h2>Welcome</h2><form data-form="auth">
-    <label>Username</label><input name="username" required autocomplete="username">
-    <label>Password (8+ characters to sign up)</label><input name="password" type="password" required autocomplete="current-password">
-    <button class="primary" data-mode="login">Log in</button>
-    <button data-mode="signup">Create account</button>
-    <button type="button" data-act="close">Cancel</button></form>`;
+  $('#dlg').innerHTML = `<style>
+    .au-tabs{display:flex;gap:6px;padding:4px;border-radius:14px;background:rgba(128,128,128,.16);margin:6px 0 12px}
+    .au-tabs button{flex:1;margin:0;padding:10px 8px;border:0;border-radius:11px;background:transparent;font-weight:700;cursor:pointer;color:inherit;opacity:.7}
+    .au-tabs button.on{background:var(--acc,#0a84ff);color:#fff;opacity:1}
+    .au-hint{margin:0 0 8px;font-size:.95em;opacity:.85}.au-note{display:block;margin:6px 0 12px;opacity:.7}
+    .au-pw{position:relative}.au-pw input{width:100%;box-sizing:border-box;padding-right:64px}
+    .au-eye{position:absolute;right:6px;top:50%;transform:translateY(-50%);margin:0;padding:6px 10px;border:0;border-radius:8px;background:rgba(128,128,128,.2);cursor:pointer;font-size:.85em;color:inherit}
+    .au-go{width:100%;margin-top:4px;padding:12px}.au-x{width:100%;margin-top:6px}
+  </style>
+  <h2>Welcome to the shop</h2>
+  <div class="au-tabs" role="tablist"><button type="button" class="on" data-t="login" role="tab">Log in</button><button type="button" data-t="signup" role="tab">New here? Sign up</button></div>
+  <p class="au-hint" id="au-hint"></p>
+  <form data-form="auth">
+    <label for="au-user">Username</label><input id="au-user" name="username" required maxlength="30" autocomplete="username" autocapitalize="none" spellcheck="false">
+    <label for="au-pass">Password</label><div class="au-pw"><input id="au-pass" name="password" type="password" required autocomplete="current-password"><button type="button" class="au-eye" aria-label="Show or hide password">Show</button></div>
+    <small class="au-note" id="au-note"></small>
+    <button class="primary au-go" data-mode="login" id="au-go">Log in</button>
+    <button type="button" class="au-x" data-act="close">Cancel</button></form>`;
+  const dlg = $('#dlg'), tabs = dlg.querySelectorAll('.au-tabs button'), go = dlg.querySelector('#au-go'), pass = dlg.querySelector('#au-pass'), user = dlg.querySelector('#au-user');
+  const setMode = (m) => {
+    const su = m === 'signup';
+    tabs.forEach((t) => t.classList.toggle('on', t.dataset.t === m));
+    go.dataset.mode = m; go.textContent = su ? 'Create my account' : 'Log in';
+    pass.minLength = su ? 8 : 0; pass.autocomplete = su ? 'new-password' : 'current-password';
+    user.placeholder = su ? 'Pick any name you like' : 'Your username';
+    pass.placeholder = su ? 'At least 8 characters' : 'Your password';
+    dlg.querySelector('#au-hint').textContent = su ? 'Make a shop account in a few seconds.' : 'Welcome back! Enter your username and password.';
+    dlg.querySelector('#au-note').textContent = su ? 'No email needed. Just a username and a password you will remember.' : 'Forgot your password? Ask the shop to reset it for you.';
+  };
+  tabs.forEach((t) => { t.onclick = () => { setMode(t.dataset.t); user.focus(); }; });
+  dlg.querySelector('.au-eye').onclick = (e) => { const show = pass.type === 'password'; pass.type = show ? 'text' : 'password'; e.currentTarget.textContent = show ? 'Hide' : 'Show'; };
+  setMode('login');
   $('#dlg').showModal();
+  user.focus();
 }
 // Splits a combo's price between the sellers whose products are in it (by value), like the server does.
 function comboParts(c) {
