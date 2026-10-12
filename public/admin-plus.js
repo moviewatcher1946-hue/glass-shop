@@ -17,7 +17,7 @@
   var realFetch = window.fetch;
   window.fetch = function (u) {
     var rev = typeof u === 'string' && u.indexOf('/api/rev') === 0;
-    if (rev && perf.slowrefresh && revCache.txt != null && Date.now() - revCache.t < 15000) return Promise.resolve(new Response(revCache.txt, { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    if (rev && revCache.txt != null && ((perf.slowrefresh || perf.slowerrefresh) && Date.now() - revCache.t < (perf.slowerrefresh ? 30000 : 15000) || perf.pausehidden && document.hidden)) return Promise.resolve(new Response(revCache.txt, { status: 200, headers: { 'Content-Type': 'application/json' } }));
     var p = realFetch.apply(this, arguments);
     if (rev) p.then(function (r) { if (r.ok) r.clone().text().then(function (t) { revCache = { t: Date.now(), txt: t }; }); }).catch(function () {});
     return p;
@@ -27,7 +27,7 @@
   var lazyObs = null;
   function applyPerf(p) {
     perf = p || {}; var h = document.documentElement;
-    h.classList.toggle('ap-lite', !!perf.lite); h.classList.toggle('ap-nomotion', !!perf.nomotion); h.classList.toggle('ap-noglow', !!perf.noglow); h.classList.toggle('ap-nohover', !!perf.nohover);
+    h.classList.toggle('ap-lite', !!perf.lite); h.classList.toggle('ap-nomotion', !!perf.nomotion); h.classList.toggle('ap-noglow', !!perf.noglow); h.classList.toggle('ap-nohover', !!perf.nohover); h.classList.toggle('ap-noshadow', !!perf.noshadow); h.classList.toggle('ap-nofilter', !!perf.nofilter); h.classList.toggle('ap-sysfont', !!perf.sysfont);
     if (perf.lazy && !lazyObs && window.MutationObserver) { lazyImgs(document); lazyObs = new MutationObserver(function (m) { m.forEach(function (x) { x.addedNodes.forEach(function (n) { if (n.nodeType === 1) { if (n.tagName === 'IMG' && !n.loading) { n.loading = 'lazy'; n.decoding = 'async'; } else lazyImgs(n); } }); }); }); lazyObs.observe(document.body, { childList: true, subtree: true }); }
     if (!perf.lazy && lazyObs) { lazyObs.disconnect(); lazyObs = null; }
   }
@@ -135,15 +135,20 @@
   var ico = function (n) { return '<svg viewBox="0 0 24 24" aria-hidden="true">' + I[n] + '</svg>'; };
 
   // ----- performance + system tools -----
-  var PERFK = ['lite', 'nomotion', 'noglow', 'lazy', 'nohover', 'slowrefresh'];
-  var PRESETS = [['Balanced', {}], ['Fast', { lite: 1, lazy: 1 }], ['Rush hour', { lite: 1, lazy: 1, slowrefresh: 1 }], ['Ultra light', { lite: 1, lazy: 1, nomotion: 1, noglow: 1, nohover: 1 }], ['Battery saver', { lite: 1, lazy: 1, nomotion: 1, noglow: 1, nohover: 1, slowrefresh: 1 }]];
+  var PERFK = ['lite', 'nomotion', 'noglow', 'lazy', 'nohover', 'slowrefresh', 'slowerrefresh', 'pausehidden', 'noshadow', 'nofilter', 'sysfont'];
+  var PRESETS = [['Balanced', {}], ['Fast', { lite: 1, lazy: 1 }], ['Rush hour', { lite: 1, lazy: 1, slowrefresh: 1 }], ['Ultra light', { lite: 1, lazy: 1, nomotion: 1, noglow: 1, nohover: 1 }], ['Battery saver', { lite: 1, lazy: 1, nomotion: 1, noglow: 1, nohover: 1, slowrefresh: 1, pausehidden: 1 }], ['Potato phone', { lite: 1, lazy: 1, nomotion: 1, noglow: 1, nohover: 1, slowerrefresh: 1, pausehidden: 1, noshadow: 1, nofilter: 1, sysfont: 1 }]];
   var PSW = [
     ['lite', 'Lite glass', 'Turns off blur and see-through panels. The biggest speed gain on older phones.'],
     ['nomotion', 'Reduce animations', 'Removes most movement and transitions across the whole shop.'],
     ['noglow', 'Hide background glow', 'Removes the coloured glow behind every page.'],
     ['lazy', 'Lazy-load images', 'Loads pictures only when they scroll into view.'],
     ['nohover', 'Disable hover effects', 'Stops the lift and highlight effects that follow the pointer.'],
-    ['slowrefresh', 'Slow live refresh', 'Checks for new orders every 15 seconds instead of every 5.']
+    ['slowrefresh', 'Slow live refresh', 'Checks for new orders every 15 seconds instead of every 5.'],
+    ['slowerrefresh', 'Very slow live refresh', 'Checks for new orders only every 30 seconds. Overrides the 15 second option.'],
+    ['pausehidden', 'Pause when tab is hidden', 'Stops live checking while the page is in the background or the phone is locked.'],
+    ['noshadow', 'Remove shadows', 'Takes off drop shadows from cards, buttons and text. Cheaper to draw on weak phones.'],
+    ['nofilter', 'Remove filter effects', 'Turns off blur, glow and colour filters that are not part of the glass panels.'],
+    ['sysfont', 'Use the phone\'s own font', 'Skips the custom font so text appears instantly and uses less data.']
   ];
   var sw = function (attrs, danger) { return '<span class="sh-sw' + (danger ? ' danger' : '') + '"><input type="checkbox" role="switch" ' + attrs + '><i></i></span>'; };
   var swrow = function (title, desc, inner) { return '<label class="sh-row"><span class="sh-txt"><b>' + title + '</b><small>' + desc + '</small></span>' + inner + '</label>'; };
@@ -504,13 +509,33 @@
     app.insertBefore(b, $('#attn', app));
     function paint(d) {
       var l = d.live || {}, r = l.ram || {};
-      b.innerHTML = '<div class="sh-head"><div><h2>Performance mode</h2><p class="muted">RAM ' + (r.mb || 0) + ' / ' + (r.limit || 0) + ' MB (' + (r.pct || 0) + '%). If RAM runs short, logs, bans and caches are exported to the database and freed' + (r.spills ? ' (' + r.spills + ' export' + (r.spills > 1 ? 's' : '') + ' so far)' : '') + '. Needed data is fetched back from the database in small packets.' + (r.store ? ' In RAM now: ' + r.store.hot_kb + ' KB hot, ' + r.store.pending_log + ' log lines waiting.' : '') + (r.error ? ' <b style="color:#e5484d">Last export failed: ' + esc(r.error) + '</b>' : '') + '</p></div></div>' +
+      b.innerHTML = '<div class="sh-head"><div><h2>Performance mode</h2><p class="muted">RAM ' + (r.mb || 0) + ' / ' + (r.limit || 0) + ' MB (' + (r.pct || 0) + '%). If RAM runs short, logs, bans and caches are exported to the database and freed' + (r.spills ? ' (' + r.spills + ' export' + (r.spills > 1 ? 's' : '') + ' so far)' : '') + '.</p></div></div>' +
         '<div class="sh-btns">' + PM.map(function (m) { return '<button type="button" data-m="' + m[0] + '" title="' + m[2] + '"' + (d.state.perf === m[0] ? ' style="background:var(--acc);color:#fff"' : '') + '>' + m[1] + '</button>'; }).join('') + '<button type="button" id="pf-spill">Export RAM to database now</button></div>';
+      var th = l.throttle || {}, chip = document.createElement('p'); chip.className = 'muted'; chip.innerHTML = (th.on ? '<b style="color:#d98200">Throttling is ON</b> (' + esc(th.why || 'on') + '), ' + (th.shed || 0) + ' requests slowed or turned away so far.' : 'Throttling is off.') + (r.last ? ' Last RAM export: ' + esc(new Date(r.last).toLocaleTimeString()) + (r.freed ? ', freed ' + r.freed + ' MB' : '') + '.' : ''); b.insertBefore(chip, b.querySelector('.sh-btns'));
       b.querySelectorAll('[data-m]').forEach(function (x) { x.onclick = function () { api('/api/shield/perf', 'PUT', { mode: x.dataset.m }).then(function (r2) { paint(r2); toast(x.textContent + ' mode on'); }).catch(function (e) { toast(e.message); }); }; });
-      $('#pf-spill', b).onclick = function () { api('/api/shield/spill-now', 'POST').then(function (r2) { paint(r2); toast('Exported to database'); }).catch(function (e) { toast(e.message); }); };
+      $('#pf-spill', b).onclick = function () { api('/api/shield/spill-now', 'POST').then(function (r2) { paint(r2); toast('Exported to database' + (r2.freed ? ', freed ' + r2.freed + ' MB' : r2.freed === 0 ? ' (RAM did not shrink, Node keeps freed memory until needed)' : '')); }).catch(function (e) { toast(e.message); }); };
     }
     api('/api/shield').then(paint).catch(function (e) { b.innerHTML = '<p class="muted">' + esc(e.message) + '</p>'; });
   }
   setInterval(perfBar, 1500);
   window.AdminPlus = { shield: shield };
+})();
+
+/* Throttle indicator + extra performance CSS */
+;(function () {
+  var chip = null;
+  var role = function () { try { return (JSON.parse(localStorage.user || 'null') || {}).role || ''; } catch (e) { return ''; } };
+  var st = document.createElement('style');
+  st.textContent = '#ap-throttle{position:fixed;top:10px;left:50%;transform:translateX(-50%);z-index:9500;padding:7px 14px;border-radius:99px;background:rgba(255,170,0,.96);color:#201400;font:600 13px system-ui,sans-serif;box-shadow:0 6px 20px rgba(0,0,0,.25);max-width:92vw;text-align:center;pointer-events:none}'
+    + 'html.ap-noshadow *{box-shadow:none!important;text-shadow:none!important}html.ap-nofilter *:not(.glass):not(.gl){filter:none!important}'
+    + 'html.ap-sysfont,html.ap-sysfont *{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif!important}';
+  document.head.appendChild(st);
+  function paint(d) {
+    var show = d && d.on && (role() === 'admin' || d.why !== 'low mode');
+    if (!show) { if (chip) { chip.remove(); chip = null; } return; }
+    if (!chip) { chip = document.createElement('div'); chip.id = 'ap-throttle'; chip.setAttribute('role', 'status'); document.body.appendChild(chip); }
+    chip.textContent = role() === 'admin' ? 'Throttling is ON (' + d.why + '): ' + d.shed + ' requests slowed' : 'The shop is busy right now, so pages may load a little slower.';
+  }
+  function poll() { if (document.hidden) return; fetch('/api/shield/throttle', { cache: 'no-store' }).then(function (r) { return r.ok ? r.json() : null; }).then(paint).catch(function () {}); }
+  poll(); setInterval(poll, 10000); document.addEventListener('visibilitychange', poll);
 })();
