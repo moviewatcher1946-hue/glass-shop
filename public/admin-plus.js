@@ -1,516 +1,209 @@
-// Admin+ : 20 extra admin tools (main admin only) + shop announcement banner for everyone.
-(function () {
-  var $ = function (s, r) { return (r || document).querySelector(s); };
-  var tok = function () { try { return localStorage.getItem('token') || ''; } catch (e) { return ''; } };
-  var me = function () { try { return JSON.parse(localStorage.getItem('user') || 'null'); } catch (e) { return null; } };
-  var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
-  function api(url, method, body) {
-    var h = { Authorization: 'Bearer ' + tok() }; if (body) h['Content-Type'] = 'application/json';
-    return fetch(url, { method: method || 'GET', headers: h, body: body ? JSON.stringify(body) : undefined }).then(function (r) { return r.json().catch(function () { return {}; }).then(function (d) { if (!r.ok) throw new Error(d.error || 'Failed'); return d; }); });
-  }
-  var money = function (n) { return Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
-  var table = function (rows, cols) { return rows.length ? '<div class="ap-tbl"><table><tr>' + cols.map(function (c) { return '<th>' + c[0] + '</th>'; }).join('') + '</tr>' + rows.map(function (r) { return '<tr>' + cols.map(function (c) { return '<td>' + esc(c[1](r)) + '</td>'; }).join('') + '</tr>'; }).join('') + '</table></div>' : '<p class="muted">Nothing yet.</p>'; };
+// 20 extra admin tools (main admin only). Mounted from server.js: require('./admin-plus')(app, { pool, auth, admin, wrap }).
+const os = require('os');
 
-  // Site-wide performance modes (set by the admin, applied for every visitor)
-  var perf = {}; try { perf = JSON.parse(localStorage.ap_perf || '{}') || {}; } catch (e) {}
-  var revCache = { t: 0, txt: null };
-  var realFetch = window.fetch;
-  window.fetch = function (u) {
-    var rev = typeof u === 'string' && u.indexOf('/api/rev') === 0;
-    if (rev && perf.slowrefresh && revCache.txt != null && Date.now() - revCache.t < 15000) return Promise.resolve(new Response(revCache.txt, { status: 200, headers: { 'Content-Type': 'application/json' } }));
-    var p = realFetch.apply(this, arguments);
-    if (rev) p.then(function (r) { if (r.ok) r.clone().text().then(function (t) { revCache = { t: Date.now(), txt: t }; }); }).catch(function () {});
-    return p;
-  };
-  document.addEventListener('pointermove', function (e) { if (perf.nohover) e.stopImmediatePropagation(); }, true);
-  function lazyImgs(root) { (root.querySelectorAll ? root.querySelectorAll('img:not([loading])') : []).forEach(function (i) { i.loading = 'lazy'; i.decoding = 'async'; }); }
-  var lazyObs = null;
-  function applyPerf(p) {
-    perf = p || {}; var h = document.documentElement;
-    h.classList.toggle('ap-lite', !!perf.lite); h.classList.toggle('ap-nomotion', !!perf.nomotion); h.classList.toggle('ap-noglow', !!perf.noglow); h.classList.toggle('ap-nohover', !!perf.nohover);
-    if (perf.lazy && !lazyObs && window.MutationObserver) { lazyImgs(document); lazyObs = new MutationObserver(function (m) { m.forEach(function (x) { x.addedNodes.forEach(function (n) { if (n.nodeType === 1) { if (n.tagName === 'IMG' && !n.loading) { n.loading = 'lazy'; n.decoding = 'async'; } else lazyImgs(n); } }); }); }); lazyObs.observe(document.body, { childList: true, subtree: true }); }
-    if (!perf.lazy && lazyObs) { lazyObs.disconnect(); lazyObs = null; }
-  }
-  applyPerf(perf);
+const SYS = { hours: false, open: 8, close: 22, slowlog: false, slowms: 1000, trim: false, trimdays: 30, optimize: false, purge: false, purgedays: 90, awake: false };
+const SYSR = { hours: 'b', open: [0, 23], close: [1, 24], slowlog: 'b', slowms: [100, 30000], trim: 'b', trimdays: [1, 3650], optimize: 'b', purge: 'b', purgedays: [1, 3650], awake: 'b' };
+const PERF = { lite: false, nomotion: false, noglow: false, lazy: false, nohover: false, slowrefresh: false };
+const shared = { sys: { ...SYS }, slow: [] };
 
-  // Announcement banner + maintenance notice (everyone)
-  function banner() {
-    fetch('/api/plus/public').then(function (r) { return r.json(); }).then(function (d) {
-      if (d.perf) { applyPerf(d.perf); try { localStorage.ap_perf = JSON.stringify(d.perf); } catch (e) {} }
-      var b = $('#ap-banner'); var t = d.maintenance ? 'Shop is paused for maintenance. Orders are temporarily off.' : d.announcement;
-      if (!t) { if (b) b.remove(); return; }
-      if (!b) { b = document.createElement('div'); b.id = 'ap-banner'; document.body.prepend(b); }
-      b.textContent = t;
-    }).catch(function () {});
-  }
-  banner(); setInterval(function () { if (!document.hidden) banner(); }, 60000);
+module.exports = function mount(app, { pool, auth, admin, wrap }) {
+  const q = (s, p) => pool.query(s, p);
+  const bad = (m, c = 400) => Object.assign(new Error(m), { status: c });
+  const log = (req, a, d) => q('INSERT INTO audit_log (user_id, username, role, action, detail) VALUES ($1,$2,$3,$4,$5)', [req.user.id, req.user.username, req.user.role, a, String(d || '').slice(0, 500)]).catch(() => {});
+  const ready = q(`CREATE TABLE IF NOT EXISTS customer_notes (user_id INT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, note TEXT NOT NULL DEFAULT '', updated_at TIMESTAMPTZ NOT NULL DEFAULT now());
+    CREATE TABLE IF NOT EXISTS plus_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '');
+    CREATE INDEX IF NOT EXISTS orders_user_created ON orders (user_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS orders_status ON orders (status);
+    CREATE INDEX IF NOT EXISTS order_items_order ON order_items (order_id);
+    CREATE INDEX IF NOT EXISTS order_items_product ON order_items (product_id);
+    CREATE INDEX IF NOT EXISTS audit_log_at ON audit_log (at);`).catch((e) => console.error('admin-plus init:', e.message));
 
-  var tools = [
-    ['Announcement banner', function (b) { b.innerHTML = '<input id="a1" maxlength="300" placeholder="Message for all visitors (empty = hide)"><button data-go>Save</button>'; $('[data-go]', b).onclick = function () { run(api('/api/plus/announcement', 'PUT', { text: $('#a1').value }).then(banner), 'Saved'); }; }],
-    ['Maintenance mode', function (b) { b.innerHTML = '<p class="muted">Blocks customers from placing orders.</p><button data-on>Turn on</button> <button data-off>Turn off</button>'; $('[data-on]', b).onclick = function () { run(api('/api/plus/maintenance', 'PUT', { on: true }).then(banner), 'Maintenance on'); }; $('[data-off]', b).onclick = function () { run(api('/api/plus/maintenance', 'PUT', { on: false }).then(banner), 'Maintenance off'); }; }],
-    ['Bulk sold-out / in stock', function (b) { b.innerHTML = '<input id="a3" placeholder="Product IDs, comma separated"><button data-so>Mark sold out</button> <button data-in>Mark in stock</button>'; var f = function (v) { return function () { run(api('/api/plus/products/soldout', 'POST', { ids: $('#a3').value.split(/[ ,]+/), soldOut: v }), 'Updated'); }; }; $('[data-so]', b).onclick = f(true); $('[data-in]', b).onclick = f(false); }],
-    ['Bulk price change %', function (b) { b.innerHTML = '<input id="a4" type="number" placeholder="Percent, e.g. 10 or -15"><input id="a4i" placeholder="Product IDs (empty = ALL products)"><button data-go>Apply</button>'; $('[data-go]', b).onclick = function () { if (confirm('Change prices?')) run(api('/api/plus/products/price', 'POST', { percent: $('#a4').value, ids: $('#a4i').value.split(/[ ,]+/) }), 'Prices updated'); }; }],
-    ['Duplicate product', function (b) { b.innerHTML = '<input id="a5" placeholder="Product ID"><button data-go>Duplicate</button>'; $('[data-go]', b).onclick = function () { run(api('/api/plus/products/' + encodeURIComponent($('#a5').value) + '/duplicate', 'POST'), 'Duplicated'); }; }],
-    ['Bulk order status', function (b) { b.innerHTML = '<input id="a6" placeholder="Order IDs, comma separated"><input id="a6s" placeholder="Status, e.g. packed"><button data-go>Apply</button>'; $('[data-go]', b).onclick = function () { run(api('/api/plus/orders/status', 'POST', { ids: $('#a6').value.split(/[ ,]+/), status: $('#a6s').value.trim() }), 'Updated'); }; }],
-    ['Purge old cancelled orders', function (b) { b.innerHTML = '<input id="a7" type="number" value="30"><button data-go>Delete older than N days</button>'; $('[data-go]', b).onclick = function () { if (confirm('Permanently delete?')) run(api('/api/plus/orders/purge-cancelled', 'POST', { days: $('#a7').value }), 'Purged'); }; }],
-    ['Customer search', function (b) { b.innerHTML = '<input id="a8" placeholder="Username"><button data-go>Search</button><div id="a8o"></div>'; var go = function () { api('/api/plus/customers?q=' + encodeURIComponent($('#a8').value)).then(function (r) { $('#a8o').innerHTML = table(r, [['ID', function (x) { return x.id; }], ['User', function (x) { return x.username; }], ['Orders', function (x) { return x.orders; }], ['Spent', function (x) { return money(x.spent); }]]); }); }; $('[data-go]', b).onclick = go; go(); }],
-    ['Customer detail + order history', function (b) { b.innerHTML = '<input id="a9" placeholder="Customer ID"><button data-go>Open</button><div id="a9o"></div>'; $('[data-go]', b).onclick = function () { api('/api/plus/customers/' + encodeURIComponent($('#a9').value)).then(function (d) { $('#a9o').innerHTML = '<h4>' + esc(d.user.username) + '</h4>' + table(d.orders, [['Order', function (x) { return '#' + x.id; }], ['Total', function (x) { return money(x.total); }], ['Status', function (x) { return x.status; }]]); }).catch(function (e) { toast(e.message); }); }; }],
-    ['Top customers', function (b) { api('/api/plus/top-customers').then(function (r) { b.innerHTML = table(r, [['User', function (x) { return x.username; }], ['Orders', function (x) { return x.orders; }], ['Spent', function (x) { return money(x.spent); }]]); }); }],
-    ['Customer notes', function (b) { b.innerHTML = '<input id="a11" placeholder="Customer ID"><textarea id="a11n" maxlength="1000" placeholder="Private note"></textarea><button data-go>Save note</button>'; $('[data-go]', b).onclick = function () { run(api('/api/plus/customers/' + encodeURIComponent($('#a11').value) + '/note', 'PUT', { note: $('#a11n').value }), 'Saved'); }; }],
-    ['Inactive customers (60+ days)', function (b) { api('/api/plus/inactive').then(function (r) { b.innerHTML = table(r, [['ID', function (x) { return x.id; }], ['User', function (x) { return x.username; }], ['Last order', function (x) { return x.last_order ? x.last_order.slice(0, 10) : 'never'; }]]); }); }],
-    ['Sales summary', function (b) { api('/api/plus/summary').then(function (s) { b.innerHTML = '<div class="ap-stats"><div><b>' + money(s.today) + '</b>Today</div><div><b>' + money(s.week) + '</b>7 days</div><div><b>' + money(s.month) + '</b>30 days</div><div><b>' + s.pending + '</b>Pending</div></div>'; }); }],
-    ['Best sellers', function (b) { api('/api/plus/best-sellers').then(function (r) { b.innerHTML = table(r, [['Item', function (x) { return x.title; }], ['Sold', function (x) { return x.sold; }], ['Revenue', function (x) { return money(x.revenue); }]]); }); }],
-    ['Revenue, last 14 days', function (b) { api('/api/plus/daily').then(function (r) { var m = Math.max.apply(null, r.map(function (x) { return x.revenue; }).concat([1])); b.innerHTML = '<div class="ap-bars">' + r.map(function (x) { return '<i title="' + x.day + ': ' + money(x.revenue) + '" style="height:' + Math.max(4, x.revenue / m * 100) + '%"><span>' + x.day.slice(3) + '</span></i>'; }).join('') + '</div>'; }); }],
-    ['Database stats', function (b) { api('/api/plus/db-stats').then(function (r) { b.innerHTML = table(r, [['Table', function (x) { return x.name; }], ['Rows', function (x) { return x.rows; }], ['Size', function (x) { return x.size; }]]); }); }],
-    ['Server health', function (b) { api('/api/plus/health').then(function (h) { b.innerHTML = table([['Uptime', h.uptimeMin + ' min'], ['Memory', h.rssMB + ' MB (heap ' + h.heapMB + ')'], ['DB ping', h.dbPingMs + ' ms'], ['Node', h.node], ['CPU load', h.load], ['DB pool', h.pool.total + ' total, ' + h.pool.idle + ' idle, ' + h.pool.waiting + ' waiting']], [['Metric', function (x) { return x[0]; }], ['Value', function (x) { return x[1]; }]]); }); }],
-    ['Trim activity log', function (b) { b.innerHTML = '<input id="a18" type="number" value="30"><button data-go>Delete older than N days</button>'; $('[data-go]', b).onclick = function () { if (confirm('Delete old log lines?')) run(api('/api/plus/audit/trim', 'POST', { days: $('#a18').value }), 'Trimmed'); }; }],
-    ['Export orders CSV', function (b) { b.innerHTML = '<button data-go>Download</button>'; $('[data-go]', b).onclick = function () { fetch('/api/plus/orders.csv', { headers: { Authorization: 'Bearer ' + tok() } }).then(function (r) { return r.blob(); }).then(function (bl) { var a = document.createElement('a'); a.href = URL.createObjectURL(bl); a.download = 'orders.csv'; a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000); }); }; }],
-    ['Optimize database', function (b) { b.innerHTML = '<p class="muted">Refreshes query statistics so pages load faster.</p><button data-go>Run now</button>'; $('[data-go]', b).onclick = function () { run(api('/api/plus/optimize', 'POST'), 'Optimized'); }; }]
-  ];
+  const cache = {};
+  const get = async (k) => { if (cache[k] !== undefined) return cache[k]; await ready; const r = await q('SELECT value FROM plus_settings WHERE key=$1', [k]); return (cache[k] = r.rows[0] ? r.rows[0].value : ''); };
+  const set = async (k, v) => { await ready; await q('INSERT INTO plus_settings (key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=$2', [k, v]); cache[k] = v; };
+  const A = [auth, admin];
+  const num = (v, d, lo, hi) => Math.max(lo, Math.min(hi, Number.isFinite(Number(v)) ? Number(v) : d));
+  const ids = (a) => (Array.isArray(a) ? a.map(Number).filter(Number.isInteger).slice(0, 500) : []);
 
-  function toast(m) { var t = $('#toast'); if (t) { t.textContent = m; t.classList.add('show'); setTimeout(function () { t.classList.remove('show'); }, 2500); } else alert(m); }
-  function run(p, ok) { p.then(function (d) { toast(ok + (d && d.changed != null ? ' (' + d.changed + ')' : d && d.deleted != null ? ' (' + d.deleted + ')' : '')); }).catch(function (e) { toast(e.message); }); }
-
-  // ----- helpers for the extra tools -----
-  var C = function (h, f) { return [h, f]; };
-  function listTool(title, url, cols) { return [title, function (b) { b.innerHTML = '<p class="muted">Loading...</p>'; api(url).then(function (r) { b.innerHTML = table(r, cols); }).catch(function (e) { b.innerHTML = '<p class="muted">' + esc(e.message) + '</p>'; }); }]; }
-  function statTool(title, url, defs) { return [title, function (b) { api(url).then(function (r) { r = Array.isArray(r) ? r[0] || {} : r; b.innerHTML = '<div class="ap-stats">' + defs.map(function (d) { return '<div><b>' + esc(d[2] ? d[2](r[d[1]]) : r[d[1]]) + '</b>' + d[0] + '</div>'; }).join('') + '</div>'; }); }]; }
-  function barTool(title, url, lab, val, fmt) { return [title, function (b) { api(url).then(function (r) { var m = Math.max.apply(null, r.map(function (x) { return Number(x[val]); }).concat([1])); b.innerHTML = r.length ? '<div class="ap-hbars">' + r.map(function (x) { return '<div><span>' + esc(x[lab]) + '</span><i style="width:' + Math.max(3, Number(x[val]) / m * 100) + '%"></i><b>' + esc(fmt ? fmt(x[val]) : x[val]) + '</b></div>'; }).join('') + '</div>' : '<p class="muted">Nothing yet.</p>'; }); }]; }
-  function formTool(title, fields, btn, url, method, confirmMsg, mk) { return [title, function (b) { b.innerHTML = fields.map(function (f, i) { return '<input data-f="' + i + '" placeholder="' + f[0] + '"' + (f[1] ? ' type="' + f[1] + '"' : '') + (f[2] != null ? ' value="' + f[2] + '"' : '') + '>'; }).join('') + '<button data-go>' + btn + '</button>'; $('[data-go]', b).onclick = function () { var v = Array.prototype.map.call(b.querySelectorAll('[data-f]'), function (x) { return x.value; }); if (confirmMsg && !confirm(confirmMsg)) return; run(api(url(v), method, mk ? mk(v) : undefined), 'Done'); }; }]; }
-  var idl = function (x) { return x.split(/[ ,]+/).filter(Boolean); };
-  var d10 = function (x) { return x ? String(x).slice(0, 10) : ''; };
-
-  tools.push(
-    listTool('Low stock (5 or fewer)', '/api/plus/low-stock?n=5', [C('ID', function (x) { return x.id; }), C('Product', function (x) { return x.title; }), C('Stock', function (x) { return x.stock; })]),
-    formTool('Set stock', [['Product IDs, comma separated'], ['New stock', 'number', 0]], 'Set stock', function () { return '/api/plus/products/stock'; }, 'POST', null, function (v) { return { ids: idl(v[0]), stock: v[1] }; }),
-    formTool('Adjust stock +/-', [['Product IDs, comma separated'], ['Change, e.g. 10 or -3', 'number']], 'Adjust', function () { return '/api/plus/products/stock-adjust'; }, 'POST', null, function (v) { return { ids: idl(v[0]), delta: v[1] }; }),
-    listTool('Sold-out products', '/api/plus/sold-out', [C('ID', function (x) { return x.id; }), C('Product', function (x) { return x.title; }), C('Price', function (x) { return money(x.price); })]),
-    listTool('Never sold', '/api/plus/never-sold', [C('ID', function (x) { return x.id; }), C('Product', function (x) { return x.title; }), C('Price', function (x) { return money(x.price); })]),
-    statTool('Price overview', '/api/plus/price-overview', [['Products', 'products'], ['Cheapest', 'cheapest', money], ['Priciest', 'priciest', money], ['Average', 'average', money]]),
-    barTool('Most favorited', '/api/plus/favorited', 'title', 'hearts'),
-    listTool('Pending over 24 hours', '/api/plus/stale-pending', [C('Order', function (x) { return '#' + x.id; }), C('Customer', function (x) { return x.username; }), C('Total', function (x) { return money(x.total); }), C('Placed', function (x) { return d10(x.created_at); })]),
-    barTool('Orders by status', '/api/plus/status-counts', 'status', 'orders'),
-    barTool('Peak hours', '/api/plus/peak-hours', 'label', 'orders'),
-    barTool('Orders by weekday', '/api/plus/weekdays', 'label', 'orders'),
-    barTool('Revenue, last 12 months', '/api/plus/monthly', 'label', 'revenue', money),
-    barTool('New signups, 14 days', '/api/plus/signups', 'label', 'signups'),
-    statTool('Repeat vs one-time buyers', '/api/plus/repeat-customers', [['One-time', 'one_time'], ['Repeat', 'repeat'], ['All buyers', 'buyers']]),
-    listTool('Customers who never ordered', '/api/plus/never-ordered', [C('ID', function (x) { return x.id; }), C('User', function (x) { return x.username; }), C('Joined', function (x) { return d10(x.created_at); })]),
-    [ 'Find order by ID', function (b) { b.innerHTML = '<input id="o35" placeholder="Order ID"><button data-go>Look up</button><div id="o35o"></div>'; $('[data-go]', b).onclick = function () { api('/api/plus/orders/' + encodeURIComponent($('#o35').value) + '/detail').then(function (d) { $('#o35o').innerHTML = '<h4>#' + d.order.id + ' - ' + esc(d.order.username) + ' - ' + esc(d.order.status) + ' - ' + money(d.order.total) + '</h4>' + table(d.items, [C('Item', function (x) { return x.title; }), C('Qty', function (x) { return x.quantity; }), C('Price', function (x) { return money(x.unit_price); })]); }).catch(function (e) { toast(e.message); }); }; }],
-    formTool('Mark orders completed', [['Order IDs, comma separated']], 'Complete', function () { return '/api/plus/orders/complete'; }, 'POST', null, function (v) { return { ids: idl(v[0]) }; }),
-    [ 'Pin / unpin products', function (b) { b.innerHTML = '<input id="p37" placeholder="Product IDs, comma separated"><button data-pin>Pin</button> <button data-unpin>Unpin</button>'; var f = function (v) { return function () { run(api('/api/plus/products/pin', 'POST', { ids: idl($('#p37').value), pinned: v }), 'Done'); }; }; $('[data-pin]', b).onclick = f(true); $('[data-unpin]', b).onclick = f(false); }],
-    formTool('Bulk discount', [['Percent off (0-90)', 'number', 10], ['Days', 'number', 7], ['Product IDs (empty = ALL)']], 'Apply discount', function () { return '/api/plus/products/discount'; }, 'POST', 'Apply this discount?', function (v) { return { percent: v[0], days: v[1], ids: idl(v[2]) }; }),
-    ['Clear all discounts', function (b) { b.innerHTML = '<button data-go>Remove every discount</button>'; $('[data-go]', b).onclick = function () { if (confirm('Remove all discounts?')) run(api('/api/plus/products/clear-discounts', 'POST'), 'Cleared'); }; }],
-    listTool('Category summary', '/api/plus/categories', [C('Category', function (x) { return x.category; }), C('Products', function (x) { return x.products; }), C('Revenue', function (x) { return money(x.revenue); })]),
-    formTool('Move category', [['From category'], ['To category']], 'Move products', function () { return '/api/plus/products/move-category'; }, 'POST', 'Move all products?', function (v) { return { from: v[0], to: v[1] }; }),
-    listTool('Recent activity', '/api/plus/recent-activity', [C('When', function (x) { return String(x.at).replace('T', ' ').slice(5, 16); }), C('Who', function (x) { return x.username; }), C('Action', function (x) { return x.action; }), C('Detail', function (x) { return x.detail; })]),
-    listTool('Activity by user (7 days)', '/api/plus/activity-users', [C('User', function (x) { return x.username; }), C('Actions', function (x) { return x.actions; }), C('Last', function (x) { return d10(x.last); })]),
-    barTool('Revenue by owner', '/api/plus/owner-revenue', 'owner', 'revenue', money),
-    statTool('Profit estimate', '/api/plus/profit', [['Revenue', 'revenue', money], ['Cost', 'cost', money], ['Profit', 'profit', money]]),
-    listTool('Products missing images', '/api/plus/missing-images', [C('ID', function (x) { return x.id; }), C('Product', function (x) { return x.title; })]),
-    listTool('Duplicate titles', '/api/plus/duplicate-titles', [C('Title', function (x) { return x.title; }), C('Copies', function (x) { return x.copies; }), C('IDs', function (x) { return x.ids; })]),
-    ['Export products CSV', function (b) { b.innerHTML = '<button data-go>Download</button>'; $('[data-go]', b).onclick = function () { fetch('/api/plus/products.csv', { headers: { Authorization: 'Bearer ' + tok() } }).then(function (r) { return r.blob(); }).then(function (bl) { var a = document.createElement('a'); a.href = URL.createObjectURL(bl); a.download = 'products.csv'; a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000); }); }; }],
-    statTool('Order value stats', '/api/plus/aov', [['Average order', 'avg_order', money], ['Items per order', 'items_per_order'], ['Biggest order', 'biggest', money]])
-  );
-
-  // ----- icons (no emoji) -----
-  var I = {
-    store: '<path d="M3 9l2-5h14l2 5"/><path d="M5 9v11h14V9"/><path d="M10 20v-5h4v5"/>',
-    box: '<path d="M12 3l8 4v10l-8 4-8-4V7z"/><path d="M4 7l8 4 8-4M12 11v10"/>',
-    tag: '<path d="M3 12V4h8l10 10-8 8z"/><path d="M7.5 8v.01"/>',
-    cart: '<path d="M3 4h2l2 12h11l2-8H6"/><circle cx="9" cy="20" r="1.2"/><circle cx="17" cy="20" r="1.2"/>',
-    users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6"/><path d="M16 4.5a3.5 3.5 0 010 7M18 14.5c2 .7 3.5 2.4 3.5 5.5"/>',
-    chart: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
-    gear: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',
-    bolt: '<path d="M13 2L4 14h7l-1 8 9-12h-7z"/>',
-    shield: '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/>',
-    lock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/>',
-    alert: '<path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17v.01"/>',
-    userplus: '<circle cx="10" cy="8" r="4"/><path d="M3 20c0-4 3-6 7-6M17 8v6M14 11h6"/>',
-    bot: '<rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M9 13v.01M15 13v.01"/>',
-    search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/>',
-    close: '<path d="M6 6l12 12M18 6L6 18"/>',
-    chev: '<path d="M9 6l6 6-6 6"/>'
-  };
-  var ico = function (n) { return '<svg viewBox="0 0 24 24" aria-hidden="true">' + I[n] + '</svg>'; };
-
-  // ----- performance + system tools -----
-  var PERFK = ['lite', 'nomotion', 'noglow', 'lazy', 'nohover', 'slowrefresh'];
-  var PRESETS = [['Balanced', {}], ['Fast', { lite: 1, lazy: 1 }], ['Rush hour', { lite: 1, lazy: 1, slowrefresh: 1 }], ['Ultra light', { lite: 1, lazy: 1, nomotion: 1, noglow: 1, nohover: 1 }], ['Battery saver', { lite: 1, lazy: 1, nomotion: 1, noglow: 1, nohover: 1, slowrefresh: 1 }]];
-  var PSW = [
-    ['lite', 'Lite glass', 'Turns off blur and see-through panels. The biggest speed gain on older phones.'],
-    ['nomotion', 'Reduce animations', 'Removes most movement and transitions across the whole shop.'],
-    ['noglow', 'Hide background glow', 'Removes the coloured glow behind every page.'],
-    ['lazy', 'Lazy-load images', 'Loads pictures only when they scroll into view.'],
-    ['nohover', 'Disable hover effects', 'Stops the lift and highlight effects that follow the pointer.'],
-    ['slowrefresh', 'Slow live refresh', 'Checks for new orders every 15 seconds instead of every 5.']
-  ];
-  var sw = function (attrs, danger) { return '<span class="sh-sw' + (danger ? ' danger' : '') + '"><input type="checkbox" role="switch" ' + attrs + '><i></i></span>'; };
-  var swrow = function (title, desc, inner) { return '<label class="sh-row"><span class="sh-txt"><b>' + title + '</b><small>' + desc + '</small></span>' + inner + '</label>'; };
-  function putPerf(patch) { return api('/api/plus/perf', 'PUT', patch).then(function (p) { applyPerf(p); try { localStorage.ap_perf = JSON.stringify(p); } catch (e) {} return p; }); }
-  function perfTool(title, seg) {
-    return [title, function (b) {
-      function draw(p) {
-        var cur = -1; PRESETS.forEach(function (x, i) { if (PERFK.every(function (k) { return !!p[k] === !!x[1][k]; })) cur = i; });
-        b.innerHTML = seg ? '<div class="hy-seg">' + PRESETS.map(function (x, i) { return '<button type="button" data-p="' + i + '" class="' + (i === cur ? 'on' : '') + '">' + x[0] + '</button>'; }).join('') + '</div><p class="muted">' + (cur < 0 ? 'A custom mix is active.' : PRESETS[cur][0] + ' is active for every visitor.') + '</p>'
-          : PSW.map(function (x) { return swrow(x[1], x[2], sw('data-k="' + x[0] + '"' + (p[x[0]] ? ' checked' : ''))); }).join('');
-        b.querySelectorAll('[data-p]').forEach(function (btn) { btn.onclick = function () { var o = {}; PERFK.forEach(function (k) { o[k] = !!PRESETS[btn.dataset.p][1][k]; }); putPerf(o).then(draw).catch(function (e) { toast(e.message); }); }; });
-        b.querySelectorAll('[data-k]').forEach(function (i) { i.onchange = function () { var o = {}; o[i.dataset.k] = i.checked; putPerf(o).catch(function (e) { toast(e.message); i.checked = !i.checked; }); }; });
-      }
-      api('/api/plus/perf').then(draw);
-    }];
-  }
-  function sysTool(title, desc, onKey, nums, extra) {
-    return [title, function (b) {
-      api('/api/plus/sys').then(function (d) {
-        var s = d.sys;
-        b.innerHTML = swrow(title, desc, sw('data-k="' + onKey + '"' + (s[onKey] ? ' checked' : ''))) + nums.map(function (n) { return '<label class="hy-num"><span>' + n[1] + '</span><input type="number" data-n="' + n[0] + '" min="' + n[2] + '" max="' + n[3] + '" value="' + s[n[0]] + '"></label>'; }).join('') + (extra ? extra(d) : '');
-        var put = function (key, val) { return api('/api/plus/sys', 'PUT', { key: key, value: val }).then(function () { toast('Saved'); }).catch(function (e) { toast(e.message); }); };
-        b.querySelector('[data-k]').onchange = function (e) { put(onKey, e.target.checked); };
-        b.querySelectorAll('[data-n]').forEach(function (i) { i.onchange = function () { put(i.dataset.n, Number(i.value)); }; });
-      });
-    }];
-  }
-  tools.push(
-    perfTool('Performance presets', true),
-    perfTool('Performance switches', false),
-    sysTool('Shop hours', 'Customers can only place orders between these hours (Philippine time).', 'hours', [['open', 'Opens at hour (0-23)', 0, 23], ['close', 'Closes at hour (1-24)', 1, 24]]),
-    sysTool('Slow request log', 'Records requests that take too long so you can spot what is slowing the shop.', 'slowlog', [['slowms', 'Log requests slower than (ms)', 100, 30000]], function (d) { return table(d.slow, [C('When', function (x) { return String(x.at).replace('T', ' ').slice(5, 19); }), C('ms', function (x) { return x.ms; }), C('Request', function (x) { return x.method + ' ' + x.path; })]); }),
-    sysTool('Auto-trim activity log', 'Deletes old activity lines once a day.', 'trim', [['trimdays', 'Keep days', 1, 3650]]),
-    sysTool('Auto-optimize database', 'Refreshes the database statistics once a day so pages stay quick.', 'optimize', []),
-    sysTool('Auto-clean cancelled orders', 'Permanently deletes old cancelled orders once a day.', 'purge', [['purgedays', 'Older than days', 1, 3650]]),
-    sysTool('Keep server awake', 'Pings the shop every 10 minutes so free hosting does not put it to sleep. Uses the RENDER_EXTERNAL_URL setting that Render provides.', 'awake', [])
-  );
-
-  // ----- 50 more tools (v3) -----
-  var base = tools.length;
-  var K = function (a) { return a.map(function (c) { return C(c[0], function (x) { var v = x[c[1]]; return c[2] ? c[2](v) : v; }); }); };
-  var dt = function (v) { return String(v || '').replace('T', ' ').slice(5, 16); };
-  var yn = function (v) { return v ? 'yes' : 'no'; };
-  var noEnd = function (v) { return v ? d10(v) : 'no end'; };
-  var num0 = function (v) { return v == null ? 'none' : v; };
-  var kb = function (v) { return Math.max(1, Math.round(Number(v || 0) / 1024)) + ' KB'; };
-  var ord = function (v) { return '#' + v; };
-  var dur = function (s) { return s < 90 ? s + ' s' : s < 5400 ? Math.round(s / 60) + ' min' : s < 172800 ? Math.round(s / 3600) + ' h' : Math.round(s / 86400) + ' days'; };
-  function btnTool(title, note, label, url, confirmMsg, okMsg) {
-    return [title, function (b) {
-      b.innerHTML = '<p class="muted">' + note + '</p><button data-go>' + label + '</button>';
-      $('[data-go]', b).onclick = function () { if (!confirmMsg || confirm(confirmMsg)) run(api(url, 'POST'), okMsg || 'Done'); };
-    }];
-  }
-  var statsHtml = function (rows) { return '<div class="ap-stats">' + rows.map(function (r) { return '<div><b>' + esc(r[1]) + '</b>' + esc(r[0]) + '</div>'; }).join('') + '</div>'; };
-
-  // Software protection: live status of the server's self-defence (src/guard.js)
-  function guardTool() {
-    return ['Software protection', function (b) {
-      function paint(g) {
-        var i = g.integrity || {}, shed = g.shed || {};
-        b.innerHTML = statsHtml([
-          ['Status', g.ready ? (g.overloaded ? 'Busy, shedding' : 'Healthy') : 'Starting'],
-          ['Database answer', g.dbMs < 0 ? 'Not answering' : g.dbMs + ' ms'],
-          ['Event loop delay', g.lagMs + ' ms (peak ' + g.peakLag + ')'],
-          ['Memory', g.rssMb + ' of ' + g.limits.rssMb + ' MB'],
-          ['Requests running', g.inflight + ' (peak ' + g.peakInflight + ')'],
-          ['Up for', dur(g.uptime)],
-          ['Started in', g.bootSeconds == null ? '-' : g.bootSeconds + ' s'],
-          ['Files', i.ok === false ? 'CHANGED' : 'Unchanged']
-        ]) +
-          swrow('Load shedding', 'When the server is overloaded, extra requests get a polite "try again" instead of slowing everyone down. Your admin pages are never refused.', sw('data-shed' + (g.shedding ? ' checked' : ''))) +
-          '<h4>Turned away so far</h4>' + statsHtml([['Still starting', shed.starting], ['Too many at once', shed.busy], ['Overloaded', shed.lag], ['Memory full', shed.memory], ['Database down', shed.db], ['Too slow', shed.timeout]]) +
-          '<p class="muted">Database pool: ' + g.pool.total + ' open, ' + g.pool.idle + ' idle, ' + g.pool.waiting + ' waiting. Breaker opened ' + g.breaker.opened + ' time(s)' + (g.breaker.open ? ' (open now)' : '') + '. Auto restart on memory limit: ' + (g.limits.autoRestart ? 'on' : 'off') + '.' + (g.restartReason ? ' Last restart reason: ' + esc(g.restartReason) + '.' : '') + '</p>' +
-          '<button data-refresh>Refresh</button>';
-        b.querySelector('[data-shed]').onchange = function (e) { api('/api/admin/guard/shedding', 'POST', { on: e.target.checked }).then(paint).catch(function (x) { toast(x.message); }); };
-        b.querySelector('[data-refresh]').onclick = load;
-      }
-      function load() { b.insertAdjacentHTML('afterbegin', ''); api('/api/admin/guard').then(paint).catch(function (e) { b.innerHTML = '<p class="muted">' + esc(e.message) + '</p>'; }); }
-      load();
-    }];
-  }
-  function integrityTool() {
-    return ['File integrity check', function (b) {
-      function paint(g) {
-        var i = g.integrity || {}, bad = (i.changed || []).concat(i.added || [], i.removed || []);
-        b.innerHTML = '<p class="muted">Every app file gets a fingerprint when the server starts and is checked again every 10 minutes. On Render the files only change when you deploy, so a change means something modified the code.</p>' +
-          statsHtml([['Result', i.ok === false ? 'FILES CHANGED' : 'All unchanged'], ['Files watched', i.files || 0], ['Fingerprint', i.digest || '-'], ['Last check', i.checkedAt ? new Date(i.checkedAt).toLocaleTimeString() : 'not yet']]) +
-          (bad.length ? '<h4>Different since start</h4>' + table(bad.map(function (f) { return { f: f, w: (i.changed || []).indexOf(f) > -1 ? 'changed' : (i.added || []).indexOf(f) > -1 ? 'new' : 'removed' }; }), K([['File', 'f'], ['What', 'w']])) : '') +
-          '<button data-scan>Check now</button>';
-        b.querySelector('[data-scan]').onclick = function () { api('/api/admin/guard/scan', 'POST').then(function (r) { paint(r); toast(r.integrity.ok ? 'Files unchanged' : 'Files changed!'); }).catch(function (e) { toast(e.message); }); };
-      }
-      api('/api/admin/guard').then(paint).catch(function (e) { b.innerHTML = '<p class="muted">' + esc(e.message) + '</p>'; });
-    }];
-  }
-  function healthTool() {
-    return ['Health check test', function (b) {
-      b.innerHTML = '<p class="muted">Asks /healthz (the page your host checks) three times from this device. Render fails a health check that takes longer than 5 seconds.</p><button data-go>Run test</button><div class="hc-out"></div>';
-      $('[data-go]', b).onclick = function () {
-        var out = $('.hc-out', b), times = [], n = 0; out.innerHTML = '<p class="muted">Testing...</p>';
-        function one() {
-          var t = performance.now();
-          fetch('/healthz', { cache: 'no-store' }).then(function (r) { return r.text().then(function (x) { times.push({ ms: Math.round(performance.now() - t), ok: r.ok && x === 'ok' }); }); }).catch(function () { times.push({ ms: -1, ok: false }); }).then(function () { if (++n < 3) one(); else done(); });
-        }
-        function done() {
-          var worst = Math.max.apply(null, times.map(function (x) { return x.ms; })), allOk = times.every(function (x) { return x.ok; });
-          api('/api/admin/guard').then(function (g) {
-            out.innerHTML = statsHtml([['Verdict', allOk && worst < 5000 ? 'PASS' : 'FAIL'], ['Slowest answer', worst + ' ms'], ['Time to spare', allOk ? Math.max(0, 5000 - worst) + ' ms' : '-'], ['Ready for visitors', g.ready ? 'yes' : 'no'], ['Database answer', g.dbMs < 0 ? 'down' : g.dbMs + ' ms'], ['Server started in', g.bootSeconds == null ? '-' : g.bootSeconds + ' s']]);
-          }).catch(function () { out.innerHTML = statsHtml([['Verdict', allOk && worst < 5000 ? 'PASS' : 'FAIL'], ['Slowest answer', worst + ' ms']]); });
-        }
-        one();
-      };
-    }];
-  }
-  function auditSearchTool() {
-    return ['Search activity log', function (b) {
-      b.innerHTML = '<input id="al-q" placeholder="Word to find (person, action or detail)"><button data-go>Search</button><div id="al-o"></div>';
-      var go = function () { var v = $('#al-q').value.trim(); if (!v) return; api('/api/plus/audit-search?q=' + encodeURIComponent(v)).then(function (r) { $('#al-o').innerHTML = table(r, K([['When', 'at', dt], ['Who', 'username'], ['Action', 'action'], ['Detail', 'detail']])); }).catch(function (e) { toast(e.message); }); };
-      $('[data-go]', b).onclick = go; $('#al-q').onkeydown = function (e) { if (e.key === 'Enter') go(); };
-    }];
-  }
-  var ORDER_COLS = K([['Order', 'id', ord], ['Customer', 'username'], ['Total', 'total', money], ['Status', 'status'], ['Placed', 'created_at', dt]]);
-  tools.push(
-    // Catalog (10)
-    listTool('Free or zero-price products', '/api/plus/free-products', K([['ID', 'id'], ['Product', 'title'], ['Price', 'price', money]])),
-    listTool('Active discounts', '/api/plus/active-discounts', K([['ID', 'id'], ['Product', 'title'], ['Off %', 'pct'], ['Until', 'discount_until', noEnd]])),
-    listTool('Discounts ending within 7 days', '/api/plus/discounts-ending', K([['ID', 'id'], ['Product', 'title'], ['Off %', 'pct'], ['Ends', 'discount_until', dt]])),
-    listTool('Lowest margins', '/api/plus/low-margin', K([['ID', 'id'], ['Product', 'title'], ['Price', 'price', money], ['Cost', 'cost', money], ['Margin %', 'margin']])),
-    listTool('Products with no cost set', '/api/plus/no-cost', K([['ID', 'id'], ['Product', 'title'], ['Price', 'price', money]])),
-    listTool('Bulk-deal products', '/api/plus/bulk-deals', K([['ID', 'id'], ['Product', 'title'], ['From qty', 'bulk_min'], ['Off %', 'bulk_percent']])),
-    listTool('Newest products', '/api/plus/newest-products', K([['ID', 'id'], ['Product', 'title'], ['Price', 'price', money], ['Added', 'created_at', d10]])),
-    barTool('Products per owner', '/api/plus/products-per-owner', 'owner', 'products'),
-    btnTool('Unpin all products', 'Removes the pin from every pinned product so the shop order is back to normal.', 'Unpin everything', '/api/plus/products/unpin-all', 'Unpin all products?', 'Unpinned'),
-    listTool('Products hidden by seller', '/api/plus/hidden-products', K([['ID', 'id'], ['Product', 'title'], ['Seller', 'owner']])),
-    // Inventory (6)
-    listTool('Out of stock (0 left)', '/api/plus/out-of-stock', K([['ID', 'id'], ['Product', 'title'], ['Marked sold out', 'is_sold_out', yn]])),
-    statTool('Stock value', '/api/plus/stock-value', [['Units in stock', 'units'], ['Products tracked', 'tracked'], ['Worth at cost', 'at_cost', money], ['Worth at price', 'at_price', money]]),
-    listTool('Overstocked (50 or more)', '/api/plus/overstocked', K([['ID', 'id'], ['Product', 'title'], ['Stock', 'stock']])),
-    listTool('Days of stock left', '/api/plus/stock-runway', K([['ID', 'id'], ['Product', 'title'], ['Stock', 'stock'], ['Sold 30d', 'sold30'], ['Days left', 'days_left']])),
-    btnTool('Sync sold-out with stock', 'Marks products with 0 stock as sold out, and puts products that have stock back in stock.', 'Sync now', '/api/plus/products/sync-soldout', 'Update every sold-out flag to match the stock numbers?', 'Synced'),
-    listTool('Products not tracking stock', '/api/plus/untracked-stock', K([['ID', 'id'], ['Product', 'title'], ['Price', 'price', money]])),
-    // Orders (10)
-    listTool("Today's orders", '/api/plus/orders-today', ORDER_COLS),
-    listTool('Unpaid orders', '/api/plus/unpaid-orders', ORDER_COLS),
-    listTool('Recent cancelled orders', '/api/plus/cancelled-recent', K([['Order', 'id', ord], ['Customer', 'username'], ['Total', 'total', money], ['Reason', 'reason'], ['Placed', 'created_at', dt]])),
-    barTool('Cancellation reasons', '/api/plus/cancel-reasons', 'reason', 'orders'),
-    listTool('Biggest orders', '/api/plus/biggest-orders', ORDER_COLS),
-    listTool('Orders with customer notes', '/api/plus/orders-with-notes', K([['Order', 'id', ord], ['Customer', 'username'], ['Note', 'note'], ['Status', 'status']])),
-    barTool('Pending orders by age', '/api/plus/pending-age', 'label', 'orders'),
-    statTool('Today vs yesterday', '/api/plus/today-vs-yesterday', [['Today', 'today', money], ['Yesterday', 'yesterday', money], ['Same day last week', 'last_week', money], ['Orders today', 'orders_today'], ['Orders yesterday', 'orders_yesterday']]),
-    barTool('Items sold today', '/api/plus/items-today', 'title', 'qty'),
-    listTool('Promo code performance', '/api/plus/promo-performance', K([['Code', 'code'], ['Off %', 'percent'], ['Used', 'used_count'], ['Limit', 'max_uses', num0], ['Active', 'is_active', yn]])),
-    // People (8)
-    listTool('New customers (7 days)', '/api/plus/new-customers', K([['ID', 'id'], ['User', 'username'], ['Joined', 'created_at', dt]])),
-    listTool('Sellers overview', '/api/plus/sellers-overview', K([['ID', 'id'], ['Seller', 'username'], ['Products', 'products'], ['Revenue', 'revenue', money], ['Hidden', 'hidden', yn]])),
-    listTool('Top spenders (30 days)', '/api/plus/top-spenders-30', K([['User', 'username'], ['Orders', 'orders'], ['Spent', 'spent', money]])),
-    listTool('Must change password', '/api/plus/must-change', K([['ID', 'id'], ['User', 'username'], ['Role', 'role'], ['Temp password ends', 'temp_expires', dt]])),
-    listTool('Recent password resets', '/api/plus/recent-resets', K([['User', 'username'], ['When', 'created_at', dt], ['Reset by', 'reset_by']])),
-    listTool('Blocked customers', '/api/plus/blocked-customers', K([['User', 'username'], ['Shop-wide', 'shop_wide', yn], ['Reason', 'reason'], ['Blocked by', 'blocker'], ['When', 'created_at', d10]])),
-    listTool('Many accounts, one sign-up address (5+)', '/api/plus/shared-signup-ip', K([['Address', 'ip'], ['Accounts', 'accounts'], ['Users', 'users']])),
-    listTool('Custom requests waiting', '/api/plus/requests-waiting', K([['ID', 'id'], ['Customer', 'username'], ['Request', 'request'], ['Sent', 'created_at', dt]])),
-    // Insights (8)
-    barTool('Revenue, last 7 days', '/api/plus/revenue-week', 'label', 'revenue', money),
-    barTool('Orders by hour today', '/api/plus/sales-by-hour-today', 'label', 'orders'),
-    barTool('Best sellers (7 days)', '/api/plus/best-sellers-7', 'title', 'sold'),
-    listTool('Slow movers (30 days)', '/api/plus/slow-movers', K([['ID', 'id'], ['Product', 'title'], ['Sold 30d', 'sold30']])),
-    listTool('Favorited but never sold', '/api/plus/fav-never-sold', K([['ID', 'id'], ['Product', 'title'], ['Hearts', 'hearts']])),
-    barTool('Revenue by category (30 days)', '/api/plus/category-30', 'label', 'revenue', money),
-    statTool('This month vs last month', '/api/plus/month-compare', [['This month', 'this_month', money], ['Last month', 'last_month', money], ['Orders this month', 'orders_this'], ['Orders last month', 'orders_last']]),
-    statTool('Discounts given (30 days)', '/api/plus/discount-given', [['Money discounted', 'given', money], ['Orders with a discount', 'orders_with_discount'], ['All orders', 'orders']]),
-    // System (8)
-    guardTool(),
-    integrityTool(),
-    healthTool(),
-    listTool('Security events (latest 50)', '/api/admin/guard/events', K([['When', 'at', dt], ['Type', 'type'], ['IP', 'ip'], ['User', 'user'], ['Detail', 'detail']])),
-    listTool('Environment check', '/api/admin/guard/env', K([['Setting', 'name'], ['OK', 'ok', yn], ['Note', 'note']])),
-    listTool('Saved backups', '/api/plus/backup-list', K([['ID', 'id'], ['Size', 'size', kb], ['Made', 'created_at', dt]])),
-    barTool('Top actions (7 days)', '/api/plus/top-actions', 'label', 'n'),
-    auditSearchTool()
-  );
-  var R = function (a, n) { var o = []; for (var j = 0; j < n; j++) o.push(base + a + j); return o; };
-
-  var GROUPS = [
-    ['Store', 'store', 25, [0, 1, 52]],
-    ['Catalog', 'tag', 215, [2, 3, 4, 37, 38, 39, 40, 41, 25, 46, 47, 48].concat(R(0, 10))],
-    ['Inventory', 'box', 170, [20, 21, 22, 23, 24].concat(R(10, 6))],
-    ['Orders', 'cart', 265, [5, 6, 18, 27, 28, 35, 36].concat(R(16, 10))],
-    ['People', 'users', 335, [7, 8, 9, 10, 11, 33, 34].concat(R(26, 8))],
-    ['Insights', 'chart', 140, [12, 13, 14, 26, 29, 30, 31, 32, 44, 45, 49].concat(R(34, 8))],
-    ['Performance', 'bolt', 45, [50, 51, 53]],
-    ['System', 'gear', 205, [15, 16, 17, 19, 42, 43, 54, 55, 56, 57].concat(R(42, 8))]
-  ];
-
-  // Admin+ Pack: more tools, listed by the server (/api/plus/pack). Columns come from the data itself.
-  var packP = null;
-  function loadPack() {
-    if (packP) return packP;
-    var lab = function (k) { k = String(k).replace(/_/g, ' '); return k.charAt(0).toUpperCase() + k.slice(1); };
-    function auto(t) {
-      if (t.k === 'b') return barTool(t.t, t.u, 'label', 'value')[1];
-      if (t.k === 'a') return function (b) { b.innerHTML = '<button type="button" data-go>Run</button> <span class="muted" data-msg></span>'; $('[data-go]', b).onclick = function () { if (!confirm(t.t + '?')) return; var m = $('[data-msg]', b); m.textContent = 'Working...'; api(t.u, 'POST', {}).then(function (r) { m.textContent = r.message || 'Done.'; }).catch(function (e) { m.textContent = e.message; }); }; };
-      return function (b) {
-        b.innerHTML = '<p class="muted">Loading...</p>';
-        api(t.u).then(function (r) {
-          if (!r.length) { b.innerHTML = '<p class="muted">Nothing to show.</p>'; return; }
-          var ks = Object.keys(r[0]), f = function (k) { return /(^at$|_at$)/.test(k) ? dt : typeof r[0][k] === 'number' && r[0][k] % 1 ? money : null; };
-          if (t.k === 's') { var rows = ks.map(function (k) { var v = r[0][k]; return { s: lab(k), v: f(k) && v != null ? f(k)(v) : v == null ? '-' : v }; }); b.innerHTML = table(rows, K([['Measure', 's'], ['Value', 'v']])); return; }
-          b.innerHTML = table(r, K(ks.map(function (k) { return [lab(k), k, f(k)]; })));
-        }).catch(function (e) { b.innerHTML = '<p class="muted">' + esc(e.message) + '</p>'; });
-      };
+  // 1 + 2: public announcement and maintenance flag
+  const readJ = async (k, d) => { try { return { ...d, ...JSON.parse((await get(k)) || '{}') }; } catch (e) { return { ...d }; } };
+  ready.then(() => readJ('sys', SYS)).then((v) => Object.assign(shared.sys, v)).catch(() => {});
+  app.get('/api/plus/public', wrap(async (req, res) => { res.set('Cache-Control', 'public, max-age=15'); res.json({ announcement: await get('announcement'), maintenance: (await get('maintenance')) === '1', perf: await readJ('perf', PERF) }); }));
+  app.put('/api/plus/announcement', ...A, wrap(async (req, res) => { await set('announcement', String((req.body || {}).text || '').slice(0, 300)); await log(req, 'announcement', req.body.text); res.json({ ok: true }); }));
+  app.put('/api/plus/maintenance', ...A, wrap(async (req, res) => { await set('maintenance', (req.body || {}).on ? '1' : '0'); await log(req, 'maintenance', req.body.on ? 'on' : 'off'); res.json({ ok: true }); }));
+  // Maintenance and shop hours only stop customers placing new orders; staff keep working.
+  app.use('/api/orders', async (req, res, next) => {
+    if (req.method !== 'POST' || req.path !== '/') return next();
+    if ((await get('maintenance')) === '1') return res.status(503).json({ error: 'The shop is paused for maintenance. Please try again soon.' });
+    const c = shared.sys;
+    if (c.hours) {
+      const h = new Date(Date.now() + 8 * 3600e3).getUTCHours();
+      const open = c.open <= c.close ? h >= c.open && h < c.close : h >= c.open || h < c.close;
+      if (!open) return res.status(503).json({ error: `The shop takes orders from ${c.open}:00 to ${c.close}:00 (Philippine time).` });
     }
-    packP = api('/api/plus/pack').then(function (d) {
-      var hue = { 'Security': 5, 'Data health': 190, 'Orders+': 265, 'Catalog+': 215, 'People+': 335, 'Insights+': 140, 'System+': 205 }, by = {}, order = [];
-      d.tools.forEach(function (t) { var i = tools.push([t.t, auto(t)]) - 1; if (!by[t.g]) { by[t.g] = []; order.push(t.g); } by[t.g].push(i); });
-      order.forEach(function (g) { GROUPS.push([g, 'gear', hue[g] || 205, by[g]]); });
-    }).catch(function () { packP = null; });
-    return packP;
-  }
+    next();
+  });
 
-  function close() { var o = $('#ap-dlg'); if (o) o.remove(); document.body.style.overflow = ''; document.removeEventListener('keydown', onKey); }
-  function onKey(e) { if (e.key === 'Escape') close(); }
+  // Performance modes (applied by every visitor's browser) and system settings
+  app.get('/api/plus/perf', ...A, wrap(async (req, res) => res.json(await readJ('perf', PERF))));
+  app.put('/api/plus/perf', ...A, wrap(async (req, res) => { const cur = await readJ('perf', PERF), b = req.body || {}; for (const k of Object.keys(PERF)) if (k in b) cur[k] = !!b[k]; await set('perf', JSON.stringify(cur)); await log(req, 'performance', Object.keys(cur).filter((k) => cur[k]).join(',') || 'balanced'); res.json(cur); }));
+  app.get('/api/plus/sys', ...A, wrap(async (req, res) => res.json({ sys: shared.sys, slow: shared.slow })));
+  app.put('/api/plus/sys', ...A, wrap(async (req, res) => { const { key, value } = req.body || {}, r = SYSR[key]; if (!r) throw bad('Unknown setting.'); shared.sys[key] = r === 'b' ? !!value : Math.round(num(value, shared.sys[key], r[0], r[1])); await set('sys', JSON.stringify(shared.sys)); await log(req, 'system-setting', `${key} = ${shared.sys[key]}`); res.json({ sys: shared.sys }); }));
+  let lastDaily = 0;
+  const tick = async () => {
+    const c = shared.sys;
+    try {
+      if (c.awake && process.env.RENDER_EXTERNAL_URL && typeof fetch === 'function') fetch(process.env.RENDER_EXTERNAL_URL + '/healthz').catch(() => {});
+      if (Date.now() - lastDaily > 24 * 3600e3) {
+        lastDaily = Date.now();
+        if (c.trim) await q("DELETE FROM audit_log WHERE at < now() - ($1||' days')::interval", [c.trimdays]);
+        if (c.purge) await q("DELETE FROM orders WHERE status='cancelled' AND created_at < now() - ($1||' days')::interval", [c.purgedays]);
+        if (c.optimize) await q('ANALYZE');
+      }
+    } catch (e) { console.error('admin-plus tick:', e.message); }
+  };
+  setInterval(tick, 10 * 60e3).unref(); setTimeout(tick, 60e3).unref();
 
-  function open() { loadPack().then(openNow, openNow); }
-  function openNow() {
-    close();
-    var d = document.createElement('div'); d.id = 'ap-dlg';
-    d.innerHTML = '<div class="hy-sheet" role="dialog" aria-label="Admin+"><div class="hy-bar"><div><h2>Admin+</h2><p>' + tools.length + ' tools and settings</p></div><button class="hy-x" type="button" aria-label="Close">' + ico('close') + '</button></div>' +
-      '<label class="hy-search">' + ico('search') + '<input type="search" placeholder="Search ' + tools.length + ' tools" aria-label="Search tools"></label><div class="hy-chips"></div>' +
-      '<div class="hy-scroll"><div class="hy-kpis"></div><div class="hy-groups"></div><p class="muted hy-none" hidden>No tools match.</p></div></div>';
-    document.body.appendChild(d); document.body.style.overflow = 'hidden'; document.addEventListener('keydown', onKey);
-    d.onclick = function (e) { if (e.target === d) close(); };
-    $('.hy-x', d).onclick = close;
-    api('/api/plus/summary').then(function (k) { $('.hy-kpis', d).innerHTML = [['Today', money(k.today), 25], ['7 days', money(k.week), 215], ['30 days', money(k.month), 265], ['Pending', k.pending, 45], ['Orders', k.orders, 140]].map(function (x) { return '<div class="hy-kpi" style="--h:' + x[2] + '"><small>' + x[0] + '</small><b>' + x[1] + '</b></div>'; }).join(''); }).catch(function () {});
-    var host = $('.hy-groups', d), chips = $('.hy-chips', d), cur = 'all', find = $('.hy-search input', d);
-    chips.innerHTML = '<button type="button" class="on" data-g="all">All</button>' + GROUPS.map(function (g) { return '<button type="button" data-g="' + g[0] + '">' + g[0] + '</button>'; }).join('');
-    GROUPS.forEach(function (g) {
-      var sec = document.createElement('section'); sec.className = 'hy-group'; sec.dataset.g = g[0]; sec.style.setProperty('--h', g[2]);
-      sec.innerHTML = '<h3>' + g[0] + '<span>' + g[3].length + '</span></h3><div class="hy-card"></div>';
-      var card = $('.hy-card', sec);
-      g[3].forEach(function (i) {
-        var t = tools[i], it = document.createElement('div'); it.className = 'hy-item'; it.dataset.n = t[0].toLowerCase();
-        it.innerHTML = '<button class="hy-row" type="button"><span class="hy-ic">' + ico(g[1]) + '</span><b>' + t[0] + '</b><span class="hy-chev">' + ico('chev') + '</span></button><div class="ap-b hy-body" hidden></div>';
-        var body = $('.hy-body', it), done = false;
-        $('.hy-row', it).onclick = function () { var op = body.hidden; body.hidden = !op; it.classList.toggle('open', op); if (op && !done) { done = true; t[1](body); } };
-        card.appendChild(it);
-      });
-      host.appendChild(sec);
+  // 3 bulk sold-out toggle, 4 bulk price change, 5 duplicate product
+  app.post('/api/plus/products/soldout', ...A, wrap(async (req, res) => { const i = ids(req.body.ids); const r = await q('UPDATE products SET is_sold_out=$2 WHERE id=ANY($1)', [i, !!req.body.soldOut]); await log(req, 'bulk-soldout', `${r.rowCount} items -> ${!!req.body.soldOut}`); res.json({ changed: r.rowCount }); }));
+  app.post('/api/plus/products/price', ...A, wrap(async (req, res) => { const pct = num(req.body.percent, 0, -90, 500); const i = ids(req.body.ids); const r = await q('UPDATE products SET price=ROUND(price*(1+$2::numeric/100),2) WHERE ($1::int[] = ARRAY[]::int[] OR id=ANY($1))', [i, pct]); await log(req, 'bulk-price', `${pct}% on ${r.rowCount} items`); res.json({ changed: r.rowCount }); }));
+  app.post('/api/plus/products/:id/duplicate', ...A, wrap(async (req, res) => { const r = await q("INSERT INTO products (title,description,price,is_sold_out,image_data,image_mime,category,discount_until,discount_percent,bulk_min,bulk_percent,stock,cost,owner_id) SELECT left(title||' (copy)',200),description,price,is_sold_out,image_data,image_mime,category,discount_until,discount_percent,bulk_min,bulk_percent,stock,cost,owner_id FROM products WHERE id=$1 RETURNING id", [req.params.id]); if (!r.rows[0]) throw bad('Product not found.', 404); await q("UPDATE products SET image_url='/api/products/'||id||'/image' WHERE id=$1 AND image_data IS NOT NULL", [r.rows[0].id]); await log(req, 'duplicate-product', req.params.id); res.json({ id: r.rows[0].id }); }));
+
+// 6 bulk order status, 7 purge old cancelled orders
+  app.post('/api/plus/orders/status', ...A, wrap(async (req, res) => { const s = String(req.body.status || ''); if (!['pending', 'packed', 'completed', 'cancelled'].includes(s)) throw bad('Status must be pending, packed, completed or cancelled.'); const r = await q('UPDATE orders SET status=$2 WHERE id=ANY($1)', [ids(req.body.ids), s]); await log(req, 'bulk-order-status', `${r.rowCount} -> ${s}`); res.json({ changed: r.rowCount }); }));
+  app.post('/api/plus/orders/purge-cancelled', ...A, wrap(async (req, res) => { const d = num(req.body.days, 30, 1, 3650); const r = await q("DELETE FROM orders WHERE status='cancelled' AND created_at < now() - ($1||' days')::interval", [d]); await log(req, 'purge-cancelled', `${r.rowCount} older than ${d}d`); res.json({ deleted: r.rowCount }); }));
+
+  // 8 customer search, 9 customer detail, 10 top customers, 11 notes, 12 inactive customers
+  app.get('/api/plus/customers', ...A, wrap(async (req, res) => { const s = '%' + String(req.query.q || '').replace(/[%_\\]/g, '') + '%'; res.json((await q("SELECT u.id,u.username,u.created_at,COUNT(o.id)::int orders,COALESCE(SUM(o.total) FILTER (WHERE o.status<>'cancelled'),0)::float spent,MAX(o.created_at) last_order FROM users u LEFT JOIN orders o ON o.user_id=u.id WHERE u.role='customer' AND u.username ILIKE $1 GROUP BY u.id ORDER BY u.created_at DESC LIMIT 50", [s])).rows); }));
+  app.get('/api/plus/customers/:id', ...A, wrap(async (req, res) => { const [u, o, n] = await Promise.all([q('SELECT id,username,role,created_at FROM users WHERE id=$1', [req.params.id]), q('SELECT id,total::float,status,created_at FROM orders WHERE user_id=$1 ORDER BY id DESC LIMIT 30', [req.params.id]), q('SELECT note FROM customer_notes WHERE user_id=$1', [req.params.id])]); if (!u.rows[0]) throw bad('Customer not found.', 404); res.json({ user: u.rows[0], orders: o.rows, note: (n.rows[0] || {}).note || '' }); }));
+  app.get('/api/plus/top-customers', ...A, wrap(async (req, res) => res.json((await q("SELECT u.id,u.username,COUNT(o.id)::int orders,SUM(o.total)::float spent FROM users u JOIN orders o ON o.user_id=u.id WHERE o.status<>'cancelled' GROUP BY u.id ORDER BY spent DESC LIMIT 10")).rows)));
+  app.put('/api/plus/customers/:id/note', ...A, wrap(async (req, res) => { await ready; await q('INSERT INTO customer_notes (user_id,note) VALUES ($1,$2) ON CONFLICT (user_id) DO UPDATE SET note=$2, updated_at=now()', [req.params.id, String(req.body.note || '').slice(0, 1000)]); res.json({ ok: true }); }));
+  app.get('/api/plus/inactive', ...A, wrap(async (req, res) => res.json((await q("SELECT u.id,u.username,u.created_at,MAX(o.created_at) last_order FROM users u LEFT JOIN orders o ON o.user_id=u.id WHERE u.role='customer' GROUP BY u.id HAVING MAX(o.created_at) IS NULL OR MAX(o.created_at) < now() - interval '60 days' ORDER BY u.created_at DESC LIMIT 50")).rows)));
+
+  // 13 sales summary, 14 best sellers, 15 revenue by day
+  app.get('/api/plus/summary', ...A, wrap(async (req, res) => res.json((await q("SELECT COALESCE(SUM(total) FILTER (WHERE created_at>=date_trunc('day',now())),0)::float today, COALESCE(SUM(total) FILTER (WHERE created_at>=now()-interval '7 days'),0)::float week, COALESCE(SUM(total) FILTER (WHERE created_at>=now()-interval '30 days'),0)::float month, COUNT(*) FILTER (WHERE status='pending')::int pending, COUNT(*)::int orders FROM orders WHERE status<>'cancelled'")).rows[0])));
+  app.get('/api/plus/best-sellers', ...A, wrap(async (req, res) => res.json((await q("SELECT i.title,SUM(i.quantity)::int sold,SUM(i.quantity*i.unit_price)::float revenue FROM order_items i JOIN orders o ON o.id=i.order_id WHERE o.status<>'cancelled' GROUP BY i.title ORDER BY sold DESC LIMIT 10")).rows)));
+  app.get('/api/plus/daily', ...A, wrap(async (req, res) => res.json((await q("SELECT to_char(d,'MM-DD') day, COALESCE(SUM(o.total),0)::float revenue, COUNT(o.id)::int orders FROM generate_series(current_date-13,current_date,'1 day') d LEFT JOIN orders o ON o.created_at::date=d AND o.status<>'cancelled' GROUP BY d ORDER BY d")).rows)));
+
+  // 16 database stats, 17 server health, 18 trim audit log, 19 orders CSV, 20 optimize database
+  app.get('/api/plus/db-stats', ...A, wrap(async (req, res) => res.json((await q("SELECT relname name, n_live_tup::int rows, pg_size_pretty(pg_total_relation_size(relid)) size FROM pg_stat_user_tables ORDER BY pg_total_relation_size(relid) DESC")).rows)));
+  app.get('/api/plus/health', ...A, wrap(async (req, res) => { const t = Date.now(); await q('SELECT 1'); const m = process.memoryUsage(); res.json({ uptimeMin: Math.round(process.uptime() / 60), rssMB: Math.round(m.rss / 1048576), heapMB: Math.round(m.heapUsed / 1048576), dbPingMs: Date.now() - t, node: process.version, load: os.loadavg()[0].toFixed(2), pool: { total: pool.totalCount, idle: pool.idleCount, waiting: pool.waitingCount } }); }));
+  app.post('/api/plus/audit/trim', ...A, wrap(async (req, res) => { const d = num(req.body.days, 30, 1, 3650); const r = await q("DELETE FROM audit_log WHERE at < now() - ($1||' days')::interval", [d]); await log(req, 'trim-audit', `${r.rowCount} rows`); res.json({ deleted: r.rowCount }); }));
+  app.get('/api/plus/orders.csv', ...A, wrap(async (req, res) => { const r = await q('SELECT o.id,u.username,o.total,o.status,o.created_at FROM orders o JOIN users u ON u.id=o.user_id ORDER BY o.id DESC LIMIT 10000'); const esc = (v) => { v = String(v instanceof Date ? v.toISOString() : v); return /^[=+\-@]/.test(v) ? "'" + v : v; }; const row = (a) => a.map((v) => '"' + esc(v).replace(/"/g, '""') + '"').join(','); res.set({ 'Content-Type': 'text/csv', 'Content-Disposition': 'attachment; filename=orders.csv' }); res.send([row(['id', 'customer', 'total', 'status', 'created'])].concat(r.rows.map((x) => row([x.id, x.username, x.total, x.status, x.created_at]))).join('\n')); }));
+  app.post('/api/plus/optimize', ...A, wrap(async (req, res) => { await q('ANALYZE'); await log(req, 'optimize-db', 'ANALYZE'); res.json({ ok: true }); }));
+
+  // ===== 30 more tools =====
+  const G = (path, sql, fn) => app.get('/api/plus/' + path, ...A, wrap(async (req, res) => { const r = await q(sql, fn ? fn(req) : []); res.json(r.rows); }));
+  // Inventory
+  G('low-stock', "SELECT id,title,stock FROM products WHERE stock IS NOT NULL AND stock <= $1 ORDER BY stock,id LIMIT 100", (r) => [num(r.query.n, 5, 0, 9999)]);
+  app.post('/api/plus/products/stock', ...A, wrap(async (req, res) => { const n = Math.round(num(req.body.stock, 0, 0, 999999)); const r = await q('UPDATE products SET stock=$2 WHERE id=ANY($1)', [ids(req.body.ids), n]); await log(req, 'set-stock', `${r.rowCount} items -> ${n}`); res.json({ changed: r.rowCount }); }));
+  app.post('/api/plus/products/stock-adjust', ...A, wrap(async (req, res) => { const n = Math.round(num(req.body.delta, 0, -99999, 99999)); const r = await q('UPDATE products SET stock=GREATEST(0,stock+$2) WHERE stock IS NOT NULL AND id=ANY($1)', [ids(req.body.ids), n]); await log(req, 'adjust-stock', `${r.rowCount} items by ${n}`); res.json({ changed: r.rowCount }); }));
+  G('sold-out', 'SELECT id,title,price::float FROM products WHERE is_sold_out ORDER BY id DESC LIMIT 200');
+  G('never-sold', "SELECT p.id,p.title,p.price::float FROM products p WHERE NOT EXISTS (SELECT 1 FROM order_items i WHERE i.product_id=p.id) ORDER BY p.id DESC LIMIT 100");
+  // Catalog
+  G('price-overview', 'SELECT COUNT(*)::int products, MIN(price)::float cheapest, MAX(price)::float priciest, ROUND(AVG(price),2)::float average FROM products');
+  app.post('/api/plus/products/pin', ...A, wrap(async (req, res) => { const r = await q('UPDATE products SET pinned=$2 WHERE id=ANY($1)', [ids(req.body.ids), !!req.body.pinned]); await log(req, 'pin', `${r.rowCount} -> ${!!req.body.pinned}`); res.json({ changed: r.rowCount }); }));
+  app.post('/api/plus/products/discount', ...A, wrap(async (req, res) => { const pct = Math.round(num(req.body.percent, 0, 0, 90)); const days = num(req.body.days, 7, 1, 365); const i = ids(req.body.ids); const r = await q("UPDATE products SET discount_percent=$2, discount_until=now()+($3||' days')::interval WHERE ($1::int[]=ARRAY[]::int[] OR id=ANY($1))", [i, pct, days]); await log(req, 'bulk-discount', `${pct}% for ${days}d on ${r.rowCount}`); res.json({ changed: r.rowCount }); }));
+  app.post('/api/plus/products/clear-discounts', ...A, wrap(async (req, res) => { const r = await q('UPDATE products SET discount_percent=0, discount_until=NULL WHERE discount_percent>0'); await log(req, 'clear-discounts', r.rowCount); res.json({ changed: r.rowCount }); }));
+  G('categories', "SELECT p.category, COUNT(DISTINCT p.id)::int products, COALESCE(SUM(i.quantity*i.unit_price) FILTER (WHERE o.status<>'cancelled'),0)::float revenue FROM products p LEFT JOIN order_items i ON i.product_id=p.id LEFT JOIN orders o ON o.id=i.order_id GROUP BY p.category ORDER BY revenue DESC");
+  app.post('/api/plus/products/move-category', ...A, wrap(async (req, res) => { const f = String(req.body.from || '').slice(0, 30), t = String(req.body.to || '').slice(0, 30); if (!f || !t) throw bad('Fill both categories.'); const r = await q('UPDATE products SET category=$2 WHERE category=$1', [f, t]); await log(req, 'move-category', `${f} -> ${t} (${r.rowCount})`); res.json({ changed: r.rowCount }); }));
+  G('missing-images', 'SELECT id,title FROM products WHERE image_data IS NULL ORDER BY id DESC LIMIT 100');
+  G('duplicate-titles', 'SELECT lower(title) title, COUNT(*)::int copies, array_to_string(array_agg(id),\',\') ids FROM products GROUP BY lower(title) HAVING COUNT(*)>1 ORDER BY copies DESC LIMIT 100');
+  app.get('/api/plus/products.csv', ...A, wrap(async (req, res) => { const r = await q('SELECT id,title,price,category,stock,cost,is_sold_out FROM products ORDER BY id'); const esc = (v) => { v = String(v == null ? '' : v); return /^[=+\-@]/.test(v) ? "'" + v : v; }; const row = (a) => a.map((v) => '"' + esc(v).replace(/"/g, '""') + '"').join(','); res.set({ 'Content-Type': 'text/csv', 'Content-Disposition': 'attachment; filename=products.csv' }); res.send([row(['id', 'title', 'price', 'category', 'stock', 'cost', 'sold_out'])].concat(r.rows.map((x) => row([x.id, x.title, x.price, x.category, x.stock, x.cost, x.is_sold_out]))).join('\n')); }));
+  // Orders
+  G('stale-pending', "SELECT o.id,u.username,o.total::float,o.created_at FROM orders o JOIN users u ON u.id=o.user_id WHERE o.status='pending' AND o.created_at < now()-interval '24 hours' ORDER BY o.id LIMIT 100");
+  G('status-counts', 'SELECT status, COUNT(*)::int orders, COALESCE(SUM(total),0)::float total FROM orders GROUP BY status ORDER BY orders DESC');
+  app.get('/api/plus/orders/:id/detail', ...A, wrap(async (req, res) => { const [o, i] = await Promise.all([q('SELECT o.id,o.total::float,o.status,o.created_at,u.username FROM orders o JOIN users u ON u.id=o.user_id WHERE o.id=$1', [req.params.id]), q('SELECT title,quantity,unit_price::float FROM order_items WHERE order_id=$1 ORDER BY id', [req.params.id])]); if (!o.rows[0]) throw bad('Order not found.', 404); res.json({ order: o.rows[0], items: i.rows }); }));
+  app.post('/api/plus/orders/complete', ...A, wrap(async (req, res) => { const r = await q("UPDATE orders SET status='completed' WHERE status<>'cancelled' AND id=ANY($1)", [ids(req.body.ids)]); await log(req, 'bulk-complete', `${r.rowCount} orders`); res.json({ changed: r.rowCount }); }));
+  // People
+  G('repeat-customers', "SELECT COUNT(*) FILTER (WHERE n=1)::int one_time, COUNT(*) FILTER (WHERE n>1)::int repeat, COUNT(*)::int buyers FROM (SELECT user_id, COUNT(*) n FROM orders WHERE status<>'cancelled' GROUP BY user_id) t");
+  G('never-ordered', "SELECT u.id,u.username,u.created_at FROM users u WHERE u.role='customer' AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.user_id=u.id) ORDER BY u.created_at DESC LIMIT 100");
+  // Insights
+  G('favorited', 'SELECT p.title, COUNT(*)::int hearts FROM favorites f JOIN products p ON p.id=f.product_id GROUP BY p.id ORDER BY hearts DESC LIMIT 15');
+  G('peak-hours', "SELECT lpad(EXTRACT(hour FROM created_at AT TIME ZONE 'Asia/Manila')::int::text,2,'0')||':00' label, COUNT(*)::int orders FROM orders WHERE status<>'cancelled' GROUP BY 1 ORDER BY 1");
+  G('weekdays', "SELECT to_char(created_at AT TIME ZONE 'Asia/Manila','Dy') label, EXTRACT(isodow FROM created_at AT TIME ZONE 'Asia/Manila')::int d, COUNT(*)::int orders FROM orders WHERE status<>'cancelled' GROUP BY 1,2 ORDER BY 2");
+  G('monthly', "SELECT to_char(m,'YY-MM') label, COALESCE(SUM(o.total),0)::float revenue FROM generate_series(date_trunc('month',now())-interval '11 months',date_trunc('month',now()),'1 month') m LEFT JOIN orders o ON date_trunc('month',o.created_at)=m AND o.status<>'cancelled' GROUP BY m ORDER BY m");
+  G('signups', "SELECT to_char(d,'MM-DD') label, COUNT(u.id)::int signups FROM generate_series(current_date-13,current_date,'1 day') d LEFT JOIN users u ON u.created_at::date=d AND u.role='customer' GROUP BY d ORDER BY d");
+  G('owner-revenue', "SELECT COALESCE(u.username,'(no owner)') owner, COALESCE(SUM(i.quantity*i.unit_price),0)::float revenue, COALESCE(SUM(i.quantity),0)::int sold FROM order_items i JOIN orders o ON o.id=i.order_id AND o.status<>'cancelled' JOIN products p ON p.id=i.product_id LEFT JOIN users u ON u.id=p.owner_id GROUP BY 1 ORDER BY revenue DESC LIMIT 20");
+  G('profit', "SELECT COALESCE(SUM(i.quantity*i.unit_price),0)::float revenue, COALESCE(SUM(i.quantity*COALESCE(p.cost,0)),0)::float cost, COALESCE(SUM(i.quantity*(i.unit_price-COALESCE(p.cost,0))),0)::float profit FROM order_items i JOIN orders o ON o.id=i.order_id AND o.status<>'cancelled' LEFT JOIN products p ON p.id=i.product_id");
+  G('aov', "SELECT ROUND(AVG(total),2)::float avg_order, ROUND((SELECT AVG(c) FROM (SELECT SUM(quantity) c FROM order_items GROUP BY order_id) x),2)::float items_per_order, MAX(total)::float biggest FROM orders WHERE status<>'cancelled'");
+  // System
+  G('recent-activity', 'SELECT at,username,action,detail FROM audit_log ORDER BY id DESC LIMIT 40');
+  G('activity-users', "SELECT username, COUNT(*)::int actions, MAX(at) last FROM audit_log WHERE at > now()-interval '7 days' GROUP BY username ORDER BY actions DESC LIMIT 20");
+
+  // ===== 50 more tools (v3): catalog, inventory, orders, people, insights, system =====
+  const MNL = "(now() AT TIME ZONE 'Asia/Manila')::date"; // today in Philippine time
+  const OD = "(o.created_at AT TIME ZONE 'Asia/Manila')::date";
+  // Catalog
+  G('free-products', 'SELECT id,title,price::float FROM products WHERE price=0 ORDER BY id DESC LIMIT 100');
+  G('active-discounts', 'SELECT id,title,discount_percent pct,discount_until FROM products WHERE discount_percent>0 AND (discount_until IS NULL OR discount_until>now()) ORDER BY discount_percent DESC,id LIMIT 100');
+  G('discounts-ending', "SELECT id,title,discount_percent pct,discount_until FROM products WHERE discount_percent>0 AND discount_until BETWEEN now() AND now()+interval '7 days' ORDER BY discount_until LIMIT 100");
+  G('low-margin', 'SELECT id,title,price::float,cost::float,ROUND((price-cost)/NULLIF(price,0)*100,1)::float margin FROM products WHERE cost IS NOT NULL AND price>0 ORDER BY (price-cost)/price,id LIMIT 30');
+  G('no-cost', 'SELECT id,title,price::float FROM products WHERE cost IS NULL ORDER BY id DESC LIMIT 100');
+  G('bulk-deals', 'SELECT id,title,bulk_min,bulk_percent FROM products WHERE bulk_min IS NOT NULL AND bulk_percent>0 ORDER BY id DESC LIMIT 100');
+  G('newest-products', 'SELECT id,title,price::float,created_at FROM products ORDER BY id DESC LIMIT 20');
+  G('products-per-owner', "SELECT COALESCE(u.username,'(no owner)') owner, COUNT(*)::int products FROM products p LEFT JOIN users u ON u.id=p.owner_id GROUP BY 1 ORDER BY products DESC LIMIT 20");
+  app.post('/api/plus/products/unpin-all', ...A, wrap(async (req, res) => { const r = await q('UPDATE products SET pinned=false WHERE pinned'); await log(req, 'unpin-all', r.rowCount + ' products'); res.json({ changed: r.rowCount }); }));
+  G('hidden-products', 'SELECT p.id,p.title,u.username owner FROM products p JOIN users u ON u.id=p.owner_id WHERE u.products_hidden ORDER BY p.id DESC LIMIT 100');
+  // Inventory
+  G('out-of-stock', 'SELECT id,title,is_sold_out FROM products WHERE stock=0 ORDER BY id DESC LIMIT 100');
+  G('stock-value', 'SELECT COALESCE(SUM(stock*cost),0)::float at_cost, COALESCE(SUM(stock*price),0)::float at_price, COALESCE(SUM(stock),0)::int units, COUNT(*)::int tracked FROM products WHERE stock IS NOT NULL');
+  G('overstocked', 'SELECT id,title,stock FROM products WHERE stock>=50 ORDER BY stock DESC LIMIT 100');
+  G('stock-runway', "SELECT p.id,p.title,p.stock,s.sold::int sold30,ROUND(p.stock/(s.sold/30.0),1)::float days_left FROM products p JOIN (SELECT i.product_id, SUM(i.quantity) sold FROM order_items i JOIN orders o ON o.id=i.order_id AND o.status<>'cancelled' AND o.created_at>now()-interval '30 days' GROUP BY i.product_id) s ON s.product_id=p.id WHERE p.stock>0 AND s.sold>0 ORDER BY p.stock/(s.sold/30.0) LIMIT 30");
+  app.post('/api/plus/products/sync-soldout', ...A, wrap(async (req, res) => {
+    const a = await q('UPDATE products SET is_sold_out=true WHERE stock=0 AND NOT is_sold_out');
+    const b = await q('UPDATE products SET is_sold_out=false WHERE stock>0 AND is_sold_out');
+    await log(req, 'sync-soldout', `${a.rowCount} marked sold out, ${b.rowCount} put back in stock`); res.json({ changed: a.rowCount + b.rowCount });
+  }));
+  G('untracked-stock', 'SELECT id,title,price::float FROM products WHERE stock IS NULL ORDER BY id DESC LIMIT 100');
+  // Orders
+  G('orders-today', `SELECT o.id,u.username,o.total::float,o.status,o.created_at FROM orders o JOIN users u ON u.id=o.user_id WHERE ${OD}=${MNL} ORDER BY o.id DESC LIMIT 100`);
+  G('unpaid-orders', "SELECT o.id,u.username,o.total::float,o.status,o.created_at FROM orders o JOIN users u ON u.id=o.user_id WHERE o.paid_at IS NULL AND o.status<>'cancelled' ORDER BY o.id DESC LIMIT 100");
+  G('cancelled-recent', "SELECT o.id,u.username,o.total::float,COALESCE(o.cancel_reason,'') reason,o.created_at FROM orders o JOIN users u ON u.id=o.user_id WHERE o.status='cancelled' ORDER BY o.id DESC LIMIT 50");
+  G('cancel-reasons', "SELECT COALESCE(NULLIF(trim(cancel_reason),''),'(none given)') reason, COUNT(*)::int orders FROM orders WHERE status='cancelled' GROUP BY 1 ORDER BY orders DESC LIMIT 15");
+  G('biggest-orders', "SELECT o.id,u.username,o.total::float,o.status,o.created_at FROM orders o JOIN users u ON u.id=o.user_id WHERE o.status<>'cancelled' ORDER BY o.total DESC LIMIT 10");
+  G('orders-with-notes', "SELECT o.id,u.username,o.note,o.status FROM orders o JOIN users u ON u.id=o.user_id WHERE o.note<>'' ORDER BY o.id DESC LIMIT 50");
+  G('pending-age', "SELECT label, COUNT(*)::int orders FROM (SELECT CASE WHEN h<1 THEN '1) under 1 hour' WHEN h<6 THEN '2) 1 to 6 hours' WHEN h<24 THEN '3) 6 to 24 hours' ELSE '4) over 24 hours' END label FROM (SELECT EXTRACT(EPOCH FROM now()-created_at)/3600 h FROM orders WHERE status='pending') a) b GROUP BY label ORDER BY label");
+  G('today-vs-yesterday', `SELECT COALESCE(SUM(total) FILTER (WHERE d=t),0)::float today, COALESCE(SUM(total) FILTER (WHERE d=t-1),0)::float yesterday, COALESCE(SUM(total) FILTER (WHERE d=t-7),0)::float last_week, COUNT(*) FILTER (WHERE d=t)::int orders_today, COUNT(*) FILTER (WHERE d=t-1)::int orders_yesterday FROM (SELECT total,(created_at AT TIME ZONE 'Asia/Manila')::date d,${MNL} t FROM orders WHERE status<>'cancelled' AND created_at>now()-interval '9 days') x`);
+  G('items-today', `SELECT i.title, SUM(i.quantity)::int qty FROM order_items i JOIN orders o ON o.id=i.order_id WHERE o.status<>'cancelled' AND ${OD}=${MNL} GROUP BY i.title ORDER BY qty DESC LIMIT 15`);
+  G('promo-performance', 'SELECT code,percent,used_count,max_uses,is_active FROM promo_codes ORDER BY used_count DESC,id DESC LIMIT 50');
+  // People
+  G('new-customers', "SELECT id,username,created_at FROM users WHERE role='customer' AND created_at>now()-interval '7 days' ORDER BY id DESC LIMIT 100");
+  G('sellers-overview', "SELECT u.id,u.username,(SELECT COUNT(*) FROM products p WHERE p.owner_id=u.id)::int products,COALESCE((SELECT SUM(i.quantity*i.unit_price) FROM order_items i JOIN orders o ON o.id=i.order_id AND o.status<>'cancelled' WHERE i.owner_id=u.id),0)::float revenue,u.products_hidden hidden FROM users u WHERE u.role='seller' ORDER BY revenue DESC LIMIT 50");
+  G('top-spenders-30', "SELECT u.username,COUNT(o.id)::int orders,SUM(o.total)::float spent FROM orders o JOIN users u ON u.id=o.user_id WHERE o.status<>'cancelled' AND o.created_at>now()-interval '30 days' GROUP BY u.id,u.username ORDER BY spent DESC LIMIT 10");
+  G('must-change', 'SELECT id,username,role,temp_expires FROM users WHERE must_change ORDER BY id DESC LIMIT 100');
+  G('recent-resets', 'SELECT u.username,r.created_at,b.username reset_by FROM password_resets r JOIN users u ON u.id=r.user_id LEFT JOIN users b ON b.id=r.by_id ORDER BY r.id DESC LIMIT 30');
+  G('blocked-customers', 'SELECT u.username,b.shop_wide,b.reason,b.created_at,s.username blocker FROM customer_blocks b JOIN users u ON u.id=b.user_id LEFT JOIN users s ON s.id=b.blocked_by ORDER BY b.id DESC LIMIT 100');
+  G('shared-signup-ip', "SELECT signup_ip ip,COUNT(*)::int accounts,string_agg(username,', ' ORDER BY id) users FROM users WHERE role='customer' AND signup_ip IS NOT NULL AND signup_ip<>'' GROUP BY signup_ip HAVING COUNT(*)>=5 ORDER BY accounts DESC LIMIT 30");
+  G('requests-waiting', "SELECT r.id,u.username,LEFT(r.description,60) request,r.created_at FROM custom_requests r JOIN users u ON u.id=r.user_id WHERE r.status='pending' ORDER BY r.id LIMIT 100");
+  // Insights
+  G('revenue-week', `SELECT to_char(d,'Dy MM-DD') label, COALESCE(SUM(o.total),0)::float revenue FROM generate_series(${MNL}-6,${MNL},'1 day') d LEFT JOIN orders o ON ${OD}=d::date AND o.status<>'cancelled' GROUP BY d ORDER BY d`);
+  G('sales-by-hour-today', `SELECT lpad(h::text,2,'0')||':00' label, COUNT(o.id)::int orders FROM generate_series(0,23) h LEFT JOIN orders o ON EXTRACT(hour FROM o.created_at AT TIME ZONE 'Asia/Manila')=h AND ${OD}=${MNL} AND o.status<>'cancelled' GROUP BY h ORDER BY h`);
+  G('best-sellers-7', "SELECT i.title,SUM(i.quantity)::int sold FROM order_items i JOIN orders o ON o.id=i.order_id AND o.status<>'cancelled' WHERE o.created_at>now()-interval '7 days' GROUP BY i.title ORDER BY sold DESC LIMIT 10");
+  G('slow-movers', "SELECT p.id,p.title,COALESCE(s.sold,0)::int sold30 FROM products p LEFT JOIN (SELECT i.product_id, SUM(i.quantity) sold FROM order_items i JOIN orders o ON o.id=i.order_id AND o.status<>'cancelled' AND o.created_at>now()-interval '30 days' GROUP BY i.product_id) s ON s.product_id=p.id WHERE COALESCE(s.sold,0)<=2 AND NOT p.is_sold_out ORDER BY sold30,p.id LIMIT 50");
+  G('fav-never-sold', 'SELECT p.id,p.title,COUNT(f.user_id)::int hearts FROM favorites f JOIN products p ON p.id=f.product_id WHERE NOT EXISTS (SELECT 1 FROM order_items i WHERE i.product_id=p.id) GROUP BY p.id,p.title ORDER BY hearts DESC LIMIT 30');
+  G('category-30', "SELECT p.category label,COALESCE(SUM(i.quantity*i.unit_price),0)::float revenue FROM order_items i JOIN orders o ON o.id=i.order_id AND o.status<>'cancelled' AND o.created_at>now()-interval '30 days' JOIN products p ON p.id=i.product_id GROUP BY p.category ORDER BY revenue DESC LIMIT 15");
+  G('month-compare', "SELECT COALESCE(SUM(total) FILTER (WHERE m=0),0)::float this_month, COALESCE(SUM(total) FILTER (WHERE m=1),0)::float last_month, COUNT(*) FILTER (WHERE m=0)::int orders_this, COUNT(*) FILTER (WHERE m=1)::int orders_last FROM (SELECT total,((date_part('year',now())*12+date_part('month',now()))-(date_part('year',created_at)*12+date_part('month',created_at)))::int m FROM orders WHERE status<>'cancelled' AND created_at>=date_trunc('month',now())-interval '1 month') x");
+  G('discount-given', "SELECT COALESCE(SUM(discount),0)::float given,COUNT(*) FILTER (WHERE discount>0)::int orders_with_discount,COUNT(*)::int orders FROM orders WHERE status<>'cancelled' AND created_at>now()-interval '30 days'");
+  // System
+  G('backup-list', 'SELECT id,size,created_at FROM backups ORDER BY id DESC LIMIT 20');
+  G('top-actions', "SELECT action label,COUNT(*)::int n FROM audit_log WHERE at>now()-interval '7 days' GROUP BY action ORDER BY n DESC LIMIT 12");
+  G('audit-search', 'SELECT at,username,action,detail FROM audit_log WHERE action ILIKE $1 OR detail ILIKE $1 OR username ILIKE $1 ORDER BY id DESC LIMIT 50', (r) => ['%' + String(r.query.q || '').replace(/[%_\\]/g, '').slice(0, 60) + '%']);
+};
+
+// Mounted first in server.js so it times every API request.
+module.exports.early = function early(app) {
+  app.use((req, res, next) => {
+    if (!shared.sys.slowlog) return next();
+    const t = process.hrtime.bigint();
+    res.on('finish', () => {
+      const ms = Number(process.hrtime.bigint() - t) / 1e6;
+      if (ms >= shared.sys.slowms && req.originalUrl.startsWith('/api')) {
+        shared.slow.unshift({ at: new Date().toISOString(), ms: Math.round(ms), method: req.method, path: String(req.originalUrl).slice(0, 100), status: res.statusCode });
+        if (shared.slow.length > 30) shared.slow.pop();
+        console.warn(`[slow] ${req.method} ${req.originalUrl} ${Math.round(ms)}ms`);
+      }
     });
-    function apply() {
-      var v = find.value.trim().toLowerCase(), shown = 0;
-      d.querySelectorAll('.hy-group').forEach(function (g) {
-        var any = 0; g.querySelectorAll('.hy-item').forEach(function (c) { var ok = !v || c.dataset.n.indexOf(v) > -1; c.style.display = ok ? '' : 'none'; if (ok) any++; });
-        g.style.display = any && (cur === 'all' || v || g.dataset.g === cur) ? '' : 'none'; if (g.style.display === '') shown += any;
-      });
-      $('.hy-none', d).hidden = shown > 0;
-    }
-    find.oninput = apply;
-    chips.onclick = function (e) { var b = e.target.closest('button'); if (!b) return; cur = b.dataset.g; chips.querySelectorAll('button').forEach(function (x) { x.classList.toggle('on', x === b); }); find.value = ''; apply(); };
-  }
-
-  function mountBtn() {
-    var u = me(), b = $('#ap-fab');
-    if (!u || u.role !== 'admin') { if (b) b.remove(); return; }
-    if (b) return;
-    b = document.createElement('button'); b.id = 'ap-fab'; b.type = 'button'; b.innerHTML = ico('bolt') + '<span>Admin+</span>'; b.onclick = open; document.body.appendChild(b);
-  }
-  mountBtn(); setInterval(mountBtn, 2000);
-
-  // ----- Security switches (shown inside Admin > System > Security) -----
-  var SW = [
-    ['throttle', 'bolt', 'Throttle mode', 'Keeps the shop running near max if an attack gets through: caches public data, limits anonymous visitors, sheds overload, serves logged-in users first.', false],
-    ['throttleauto', 'bolt', 'Auto-throttle', 'Turns Throttle mode on by itself when the server is overloaded, and off 60 seconds after it calms down.', false],
-    ['lockdown', 'alert', 'Lockdown', 'Shuts the shop for everyone except you. Customers and sellers see a maintenance message.', true],
-    ['firewall', 'shield', 'Firewall mode', 'Strict filter: blocks attack patterns and requests with no browser ID, and caps each visitor at 120 requests a minute.', false],
-    ['readonly', 'lock', 'Read-only mode', 'Everyone can browse but nobody except you can order or change anything.', true],
-    ['nosignup', 'userplus', 'Pause sign-ups', 'Stops new accounts from being created.', false],
-    ['nobots', 'bot', 'Block bots', 'Refuses scripts and scanners such as curl, python and sqlmap.', false],
-    ['ctypecheck', 'shield', 'Content-type check', 'Rejects submissions that are not normal JSON, form or picture data.', false],
-    ['jsondepth', 'shield', 'Deep-data guard', 'Rejects submitted data nested more than 10 levels (crash attacks).', false],
-    ['uaguard', 'bot', 'Browser-ID check', 'Blocks oversized or code-filled browser identifiers.', false],
-    ['hdrspoof', 'lock', 'Header spoof guard', 'Strips forged X-Original-URL, X-Forwarded-Host and method-override headers.', false],
-    ['apinostore', 'lock', 'No-cache API', 'Stops browsers and proxies storing any API answer.', false],
-    ['tarpit', 'bot', 'Tarpit', 'Slows every answer by 1.5 s for visitors who keep getting blocked.', false],
-    ['maxparams', 'alert', 'Parameter cap', 'Rejects addresses with more than 40 query parameters.', false],
-    ['rangeguard', 'alert', 'Range-request guard', 'Blocks abusive multi-range download requests.', false],
-    ['tokenurl', 'lock', 'Secrets-in-URL block', 'Refuses addresses carrying token, password or jwt.', false],
-    ['logindelay', 'lock', 'Login slow-down', 'Adds 0.7 s to every login attempt to make guessing slow.', false],
-    ['geoblock', 'shield', 'Country block', 'Blocks countries listed in BLOCK_COUNTRIES (e.g. RU,CN). Needs a host that sends the country, such as Cloudflare.', false],
-    ['corsstrict', 'lock', 'Strict CORS', 'Refuses any request that comes from another website.', false],
-    ['referercheck', 'lock', 'Referer check', 'Changes must come from your own pages.', false],
-    ['dotfiles', 'lock', 'Hide secret files', 'Blocks .env, .git, backups, .sql, source folders and key files.', false],
-    ['methodlock', 'lock', 'Method lock', 'Only normal web methods are allowed (no TRACE, CONNECT and similar).', false],
-    ['hpp', 'shield', 'Parameter pollution guard', 'Rejects repeated or stuffed query parameters.', false],
-    ['longurl', 'alert', 'Long URL block', 'Rejects addresses over 2000 characters.', false],
-    ['protopollution', 'shield', 'Prototype pollution guard', 'Blocks __proto__ and constructor tricks in submitted data.', false],
-    ['nullbyte', 'shield', 'Null-byte block', 'Blocks %00 file-path tricks.', false],
-    ['burst', 'alert', 'Burst guard', 'Max 25 requests per second per visitor.', false],
-    ['conip', 'alert', 'Connection cap', 'Max 25 simultaneous requests per visitor.', false],
-    ['hostcheck', 'lock', 'Host check', 'Only answers for your own domain. Needs the ALLOWED_HOSTS setting (comma list), otherwise does nothing.', false],
-    ['slowloris', 'alert', 'Slow-attack guard', 'Drops connections that send data too slowly (Slowloris).', false],
-    ['attacktest', 'bolt', 'Attack-all-sides test', 'Keeps firing test attacks at every shield on your own server only, forever, but stops itself the instant it has used 200 MB extra RAM, and resumes once that clears.', true],
-    ['ddos', 'alert', 'DDoS shield', 'Tight flood limit: 60 requests per 10 seconds per visitor, then they are slowed down.', false],
-    ['datashield', 'shield', 'Data protection shield', 'Strips passwords, tokens and secrets from every answer and stops browsers caching private data.', false],
-    ['sqlguard', 'shield', 'SQL injection guard', 'Blocks database-attack text in addresses and forms.', false],
-    ['xssguard', 'shield', 'Script injection guard (XSS)', 'Blocks script and iframe code hidden in addresses and forms.', false],
-    ['origin', 'lock', 'Cross-site request block (CSRF)', 'Refuses changes sent from other websites.', false],
-    ['honeypot', 'bot', 'Honeypot traps', 'Hacker bait pages like /.env and /wp-admin: anyone who touches them is banned for 1 hour.', false],
-    ['autoban', 'lock', 'Auto-ban repeat attackers', 'Bans an address for 1 hour after 8 blocked attempts.', false],
-    ['scrape', 'bot', 'Anti-scraping', 'Limits browsing to 90 data requests a minute per visitor.', false],
-    ['slowlogin', 'lock', 'Login and sign-up throttle', 'Max 12 login or sign-up attempts per 5 minutes per visitor.', false],
-    ['bigbody', 'alert', 'Block oversized requests', 'Rejects anything over 2 MB.', false],
-    ['noupload', 'lock', 'Block uploads', 'Turns off picture and file uploads.', true],
-    ['nohotlink', 'shield', 'Hotlink protection', 'Other websites cannot embed your pictures.', false],
-    ['forcehttps', 'lock', 'Force HTTPS', 'Redirects insecure visits to the secure address.', false],
-    ['secheaders', 'shield', 'Strict security headers', 'HSTS, no framing, no sniffing, locked camera, mic and location.', false]
-  ];
-  var LBL = { attacktest: 'Attack test', ctypecheck: 'Content type', jsondepth: 'Deep data', uaguard: 'Browser ID', hdrspoof: 'Header spoof', apinostore: 'No-cache', tarpit: 'Tarpit', maxparams: 'Param cap', rangeguard: 'Range abuse', tokenurl: 'Secret in URL', logindelay: 'Login delay', geoblock: 'Country', corsstrict: 'CORS', referercheck: 'Referer', dotfiles: 'Secret files', methodlock: 'Method lock', hpp: 'Param pollution', longurl: 'Long URL', protopollution: 'Proto pollution', nullbyte: 'Null byte', burst: 'Burst', conip: 'Connections', hostcheck: 'Host', slowloris: 'Slow attack', spill: 'RAM exports', memory: 'RAM alarms', throttle: 'Throttled', throttleauto: 'Auto-throttle', ddos: 'DDoS shield', datashield: 'Data fields hidden', sqlguard: 'SQL injection', xssguard: 'Script injection', origin: 'Cross-site', honeypot: 'Honeypot', autoban: 'Auto-banned', scrape: 'Scraping', bigbody: 'Oversized', noupload: 'Uploads', slowlogin: 'Login throttle', forcehttps: 'HTTPS', nohotlink: 'Hotlink', secheaders: 'Headers', lockdown: 'Lockdown', firewall: 'Firewall', readonly: 'Read-only', nosignup: 'Sign-ups paused', nobots: 'Bots', ip: 'Blocked IP', session: 'Old logins ended' };
-  function shield(box) {
-    var u = me(); if (!box || !u || u.role !== 'admin') return;
-    var old = $('#shieldbox', box); if (old) old.remove();
-    var sec = document.createElement('section'); sec.id = 'shieldbox'; sec.className = 'panel glass sh';
-    sec.innerHTML = '<p class="muted">Loading security switches...</p>'; box.insertBefore(sec, box.firstChild);
-    function paint(d) {
-      var on = SW.filter(function (x) { return d.state[x[0]]; }).length;
-      sec.innerHTML = '<div class="sh-head"><div><h2>Security controls</h2><p class="muted">Flip a switch and it takes effect instantly. You stay logged in and keep full access.</p>' + (d.live ? '<p class="muted"><b>Throttle:</b> ' + (d.live.throttle ? (d.live.auto ? 'ACTIVE (auto)' : 'ACTIVE') : 'standby') + ' &middot; lag ' + d.live.lag + 'ms &middot; ' + d.live.open + ' open &middot; ' + d.live.cached + ' cached &middot; ' + d.live.shed + ' shed</p>' : '') + '</div><span class="sh-pill' + (on ? ' hot' : '') + '">' + (on ? on + ' active' : 'All normal') + '</span></div>' +
-        SW.map(function (x) { return '<label class="sh-row' + (d.state[x[0]] ? ' on' : '') + '"><em class="sh-ic">' + ico(x[1]) + '</em><span class="sh-txt"><b>' + x[2] + '</b><small>' + x[3] + '</small></span><span class="sh-sw' + (x[4] ? ' danger' : '') + '"><input type="checkbox" role="switch" data-k="' + x[0] + '"' + (d.state[x[0]] ? ' checked' : '') + '><i></i></span></label>'; }).join('') +
-        '<div class="sh-ips"><b>Blocked IP addresses</b><small>One per line. Blocked visitors get "Access blocked".</small><textarea id="sh-ips" rows="3" placeholder="e.g. 203.0.113.7">' + esc(d.state.ips.join('\n')) + '</textarea><button type="button" id="sh-save">Save IP list</button></div>' +
-        '<div class="sh-btns"><button type="button" id="sh-out" class="sh-warn">Log everyone else out</button><button type="button" id="sh-clr">Clear blocked log</button></div>' +
-        '<div class="sh-btns"><button type="button" id="sh-all">Turn ON all safe defences</button><button type="button" id="sh-panic" class="sh-warn">PANIC: everything on</button><button type="button" id="sh-off">Turn all OFF</button></div>' +
-        (d.live && d.live.attack && (d.live.attack.on || d.live.attack.cycles) ? '<div class="sh-ips"><b>Attack-all-sides test &mdash; ' + (d.live.attack.capped ? 'paused (RAM cap reached)' : (d.live.attack.on ? 'running' : 'stopped')) + '</b><small>Cycle ' + d.live.attack.cycles + (d.live.attack.lastAt ? ', last at ' + new Date(d.live.attack.lastAt).toLocaleTimeString() : '') + ' &middot; using ' + d.live.attack.usedMb + ' / ' + d.live.attack.cap + ' MB extra RAM &middot; caught ' + d.live.attack.caught + ' / ' + d.live.attack.total + '</small>' + (d.live.attack.results.length ? '<div class="ap-stats" style="margin-top:8px">' + d.live.attack.results.map(function (x) { return '<div style="text-align:left"><b style="color:' + (x.blocked ? 'var(--good,#2ecc71)' : 'var(--bad,#ff5f7a)') + '">' + (x.blocked ? 'Blocked' : 'Got through') + '</b> ' + esc(x.name) + (x.note ? ' (' + esc(x.note) + ')' : ' &middot; HTTP ' + x.status) + '</div>'; }).join('') + '</div>' : '') + '</div>' : '') +
-        '<h3>Blocked so far</h3><div class="ap-stats">' + Object.keys(d.stats).filter(function (k) { return d.stats[k]; }).map(function (k) { return '<div><b>' + d.stats[k] + '</b>' + (LBL[k] || k) + '</div>'; }).join('') + '</div>' +
-        (d.blocked.length ? table(d.blocked.slice(0, 15), [C('When', function (x) { return String(x.at).replace('T', ' ').slice(5, 19); }), C('Type', function (x) { return LBL[x.type] || x.type; }), C('IP', function (x) { return x.ip; }), C('Path', function (x) { return x.path; })]) : '<p class="muted">Nothing blocked since the last restart.</p>');
-      sec.querySelectorAll('input[data-k]').forEach(function (i) {
-        i.onchange = function () {
-          var k = i.dataset.k, v = i.checked, w = SW.filter(function (x) { return x[0] === k; })[0];
-          if (w[4] && v && !confirm('Turn on ' + w[2] + '? Customers will be affected right away.')) { i.checked = false; return; }
-          api('/api/shield/toggle', 'PUT', { key: k, on: v }).then(paint).catch(function (e) { toast(e.message); i.checked = !v; });
-        };
-      });
-      $('#sh-save', sec).onclick = function () { api('/api/shield/ips', 'PUT', { text: $('#sh-ips', sec).value }).then(function (r) { paint(r); toast('IP list saved'); }).catch(function (e) { toast(e.message); }); };
-      $('#sh-out', sec).onclick = function () { if (confirm('Log out every customer and seller? You stay logged in.')) api('/api/shield/logout-all', 'POST').then(function (r) { paint(r); toast('Everyone else was logged out'); }).catch(function (e) { toast(e.message); }); };
-      $('#sh-all', sec).onclick = function () { var ks = SW.filter(function (x) { return !x[4] && x[0] !== 'nosignup' && x[0] !== 'nobots' && x[0] !== 'throttle' && x[0] !== 'hostcheck' && x[0] !== 'geoblock' && x[0] !== 'referercheck' && x[0] !== 'corsstrict' && x[0] !== 'attacktest'; }).map(function (x) { return x[0]; }); ks.reduce(function (p, k) { return p.then(function () { return api('/api/shield/toggle', 'PUT', { key: k, on: true }); }); }, Promise.resolve()).then(function () { toast('All safe defences are ON'); shield(box); }).catch(function (e) { toast(e.message); }); };
-      function bulk(keys, on, msg) { keys.reduce(function (p, k) { return p.then(function () { return api('/api/shield/toggle', 'PUT', { key: k, on: on }); }); }, Promise.resolve()).then(function () { toast(msg); shield(box); }).catch(function (e) { toast(e.message); }); }
-      var P1 = function (x) { return x[0] !== 'lockdown' && x[0] !== 'readonly' && x[0] !== 'nosignup' && x[0] !== 'hostcheck' && x[0] !== 'geoblock' && x[0] !== 'attacktest'; };
-      if ($('#sh-panic', sec)) $('#sh-panic', sec).onclick = function () { if (confirm('Panic mode turns on every defence except lockdown, read-only and sign-up pause. Continue?')) bulk(SW.filter(P1).map(function (x) { return x[0]; }), true, 'Panic mode: all defences ON'); };
-      if ($('#sh-off', sec)) $('#sh-off', sec).onclick = function () { if (confirm('Turn every switch OFF?')) bulk(SW.map(function (x) { return x[0]; }).filter(function (k) { return d.state[k]; }), false, 'All switches OFF'); };
-      $('#sh-clr', sec).onclick = function () { api('/api/shield/clear-log', 'POST').then(paint); };
-    }
-    api('/api/shield').then(paint).catch(function (e) { sec.innerHTML = '<p class="muted">' + esc(e.message) + '</p>'; });
-  }
-
-  // ----- Performance mode bar (shows at the top of every Admin page) -----
-  var PM = [['low', 'Low power', 'Saves RAM and CPU: long caching, tight limits'], ['balanced', 'Balanced', 'Normal everyday setting'], ['max', 'Max', 'Highest capacity, caching on']];
-  function perfBar() {
-    var u = me(), app = $('#app'); if (!u || u.role !== 'admin' || !app || !$('#attn', app)) { var o = $('#perfbar'); if (o && !(app && $('#attn', app))) o.remove(); return; }
-    if ($('#perfbar')) return;
-    var b = document.createElement('section'); b.id = 'perfbar'; b.className = 'panel glass sh'; b.innerHTML = '<p class="muted">Loading performance mode...</p>';
-    app.insertBefore(b, $('#attn', app));
-    function paint(d) {
-      var l = d.live || {}, r = l.ram || {};
-      b.innerHTML = '<div class="sh-head"><div><h2>Performance mode</h2><p class="muted">RAM ' + (r.mb || 0) + ' / ' + (r.limit || 0) + ' MB (' + (r.pct || 0) + '%). If RAM runs short, logs, bans and caches are exported to the database and freed' + (r.spills ? ' (' + r.spills + ' export' + (r.spills > 1 ? 's' : '') + ' so far)' : '') + '.</p></div></div>' +
-        '<div class="sh-btns">' + PM.map(function (m) { return '<button type="button" data-m="' + m[0] + '" title="' + m[2] + '"' + (d.state.perf === m[0] ? ' style="background:var(--acc);color:#fff"' : '') + '>' + m[1] + '</button>'; }).join('') + '<button type="button" id="pf-spill">Export RAM to database now</button></div>';
-      b.querySelectorAll('[data-m]').forEach(function (x) { x.onclick = function () { api('/api/shield/perf', 'PUT', { mode: x.dataset.m }).then(function (r2) { paint(r2); toast(x.textContent + ' mode on'); }).catch(function (e) { toast(e.message); }); }; });
-      $('#pf-spill', b).onclick = function () { api('/api/shield/spill-now', 'POST').then(function (r2) { paint(r2); toast('Exported to database'); }).catch(function (e) { toast(e.message); }); };
-    }
-    api('/api/shield').then(paint).catch(function (e) { b.innerHTML = '<p class="muted">' + esc(e.message) + '</p>'; });
-  }
-  setInterval(perfBar, 1500);
-  window.AdminPlus = { shield: shield };
-})();
+    next();
+  });
+};
