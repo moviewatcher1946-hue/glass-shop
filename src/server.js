@@ -529,7 +529,6 @@ app.get('/api/products/:id', wrap(async (req, res) => {
 const THUMB_WIDTHS = [160, 240, 480, 640, 800, 1000, 1400], THUMB_BUDGET = 48 * 1024 * 1024;
 const thumbs = new Map(); let thumbBytes = 0;
 const thumbPending = new Map();
-require('./memstore').onRelease(() => { thumbs.clear(); thumbBytes = 0; }); // freed whenever the RAM-to-database export runs; pictures are re-made from the database on demand
 async function thumbFor(id, ver, w, data, fmt = 'webp') {
   if (!ver) return sharp(data).rotate().resize({ width: w, withoutEnlargement: true }).webp({ quality: 88, smartSubsample: true }).toBuffer(); // no version = no way to know when it goes stale
   const key = `${id}:${ver}:${w}${fmt === 'avif' ? ':avif' : ''}`, hit = thumbs.get(key);
@@ -1264,23 +1263,24 @@ app.patch('/api/custom-requests/:id/respond', auth, wrap(async (req, res) => {
 /* ---------- Backup / restore (admin only) ---------- */
 const BACKUP_TABLES = ['users', 'customer_blocks', 'products', 'combos', 'combo_items', 'combo_approvals', 'promo_codes', 'settings', 'orders', 'order_items', 'custom_requests', 'order_approvals', 'order_stock', 'settlements', 'password_resets']; // parents first
 
-// Streams the backup in packets: every table is read from the database a few hundred rows at a time (photos 20 at a time),
-// written out and forgotten, so RAM stays flat no matter how big the shop grows.
-const PACKET = { products: 20 }, PACKET_DEFAULT = 300, ORDER_BY = { order_approvals: 'order_id', combo_approvals: 'combo_id', order_stock: 'order_id' };
-const streamBackup = async (push, aborted = () => false) => {
+// Streams the backup piece by piece (photos are read 20 at a time) so memory stays flat no matter how big the shop grows.
+const streamBackup = async (push) => {
   await push(`{"app":"glass-shop","version":1,"exported_at":${JSON.stringify(new Date().toISOString())},"tables":{`);
-  const fix = (row) => { for (const k in row) { const v = row[k]; if (Buffer.isBuffer(v)) row[k] = { $b64: v.toString('base64') }; else if (typeof v === 'bigint') row[k] = v.toString(); } return row; };
+  const fix = (row) => { for (const k in row) if (Buffer.isBuffer(row[k])) row[k] = { $b64: row[k].toString('base64') }; return row; };
   let firstT = true;
   for (const t of BACKUP_TABLES) {
     await push((firstT ? '' : ',') + JSON.stringify(t) + ':['); firstT = false;
-    let first = true; const size = PACKET[t] || PACKET_DEFAULT, ord = ORDER_BY[t] || 'id';
-    for (let offset = 0; ; offset += size) {
-      if (aborted()) throw new Error('Download cancelled.');
-      const { rows } = await pool.query(`SELECT * FROM ${t} ORDER BY ${ord}, ctid LIMIT $1 OFFSET $2`, [size, offset]);
-      if (!rows.length) break;
-      let chunk = ''; for (const row of rows) { chunk += (first ? '' : ',') + JSON.stringify(fix(row)); first = false; }
-      await push(chunk);
-      if (rows.length < size) break;
+    let first = true;
+    const emit = async (rows) => { for (const row of rows) { await push((first ? '' : ',') + JSON.stringify(fix(row))); first = false; } };
+    if (t === 'products') {
+      for (let last = 0; ;) {
+        const { rows } = await pool.query('SELECT * FROM products WHERE id>$1 ORDER BY id LIMIT 20', [last]);
+        if (!rows.length) break;
+        last = rows[rows.length - 1].id; await emit(rows);
+      }
+    } else {
+      const { rows } = await pool.query(`SELECT * FROM ${t} ORDER BY ${{ order_approvals: 'order_id', combo_approvals: 'combo_id', order_stock: 'order_id' }[t] || 'id'}`);
+      await emit(rows);
     }
     await push(']');
   }
@@ -1297,19 +1297,12 @@ const buildBackupGz = async () => { // gzipped as it is produced: only the small
 const putSetting = (k, v) => pool.query('INSERT INTO settings (key, value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value', [k, String(v)]);
 const getSetting = async (k) => ((await pool.query('SELECT value FROM settings WHERE key=$1', [k])).rows[0] || {}).value || '';
 
-app.get('/api/admin/export', auth, admin, async (req, res) => {
-  let gone = false; res.on('close', () => { if (!res.writableEnded) gone = true; });
-  try {
-    await putSetting('last_backup', new Date().toISOString()); // first, so the file itself carries it and a restore keeps the reminder accurate
-    res.status(200).set({ 'Content-Type': 'application/json; charset=utf-8', 'Content-Disposition': `attachment; filename="shop-backup-${new Date().toISOString().slice(0, 10)}.json"`, 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
-    await streamBackup((str) => (gone ? null : res.write(str) ? null : new Promise((r) => { res.once('drain', r); res.once('close', r); })), () => gone);
-    if (!gone) res.end();
-  } catch (e) {
-    console.error('Backup export failed:', e.message);
-    if (!res.headersSent) return res.status(500).json({ error: 'Backup failed: ' + e.message });
-    res.destroy(); // headers are already out: cut the connection so the browser reports a failed download instead of saving a half file
-  }
-});
+app.get('/api/admin/export', auth, admin, wrap(async (req, res) => {
+  await putSetting('last_backup', new Date().toISOString()); // first, so the file itself carries it and a restore keeps the reminder accurate
+  res.set('Content-Type', 'application/json');
+  await streamBackup((str) => (res.write(str) ? null : new Promise((r) => res.once('drain', r))));
+  res.end();
+}));
 
 // For the Admin reminder: the last copy that would survive the database being deleted (a download you did, or one sent to Telegram/ntfy).
 app.get('/api/admin/backup-status', auth, admin, wrap(async (req, res) => {
