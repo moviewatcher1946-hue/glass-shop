@@ -8,8 +8,7 @@ module.exports = function mount(app, { pool, auth }) {
   const NEW = ['throttle','throttleauto','ddos','datashield','sqlguard','xssguard','origin','honeypot','autoban','scrape','bigbody','noupload','slowlogin','forcehttps','nohotlink','secheaders'];
   const state = { lockdown: false, firewall: false, readonly: false, nosignup: false, nobots: false, throttle: false, throttleauto: true, ddos: false, datashield: false, sqlguard: false, xssguard: false, origin: false, honeypot: false, autoban: false, scrape: false, bigbody: false, noupload: false, slowlogin: false, forcehttps: false, nohotlink: false, secheaders: false, ips: [], killBefore: 0, killExcept: 0 };
   const stats = { throttle: 0, ddos: 0, datashield: 0, sqlguard: 0, xssguard: 0, origin: 0, honeypot: 0, autoban: 0, scrape: 0, bigbody: 0, noupload: 0, slowlogin: 0, forcehttps: 0, nohotlink: 0, secheaders: 0, lockdown: 0, firewall: 0, readonly: 0, nosignup: 0, nobots: 0, ip: 0, session: 0 };
-  const memstore = require('./memstore'); memstore.init(pool).catch(() => {});
-  const blocked = []; // only the newest few live in RAM; the rest is in the database (mem_log, bucket 'shield-log') and is fetched in packets
+  const blocked = [];
   const wrap = (fn) => (req, res, next) => fn(req, res, next).catch(next);
   const save = () => pool.query("INSERT INTO plus_settings (key,value) VALUES ('shield',$1) ON CONFLICT (key) DO UPDATE SET value=$1", [JSON.stringify(state)]);
   pool.query("CREATE TABLE IF NOT EXISTS plus_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')")
@@ -21,7 +20,7 @@ module.exports = function mount(app, { pool, auth }) {
       return save().then(() => pool.query('DELETE FROM shield_spill').catch(() => {})).then(() => console.warn('[shield] EMERGENCY RESET done: all switches off, bans cleared. Remove SHIELD_RESET now.')); } })
     .catch((e) => console.error('shield load:', e.message));
 
-  const note = (req, type) => { stats[type]++; const e = { at: new Date().toISOString(), ip: req.ip, type, path: String(req.originalUrl).slice(0, 120) }; blocked.unshift(e); memstore.append('shield-log', e); if (blocked.length > Math.min(20, (P[state.perf] || P.balanced).log)) blocked.pop(); };
+  const note = (req, type) => { stats[type]++; blocked.unshift({ at: new Date().toISOString(), ip: req.ip, type, path: String(req.originalUrl).slice(0, 120) }); if (blocked.length > (P[state.perf] || P.balanced).log) blocked.pop(); };
   const SAFE = new Set(['/api/rev', '/api/plus/public', '/api/auth/login', '/api/auth/me']);
   const asAdmin = (req, cb) => {
     const fake = { status() { return this; }, json() { cb(false); }, set() { return this; }, end() { cb(false); } };
@@ -37,9 +36,10 @@ module.exports = function mount(app, { pool, auth }) {
     if (state.throttleauto && (TH.lag > 120 || TH.inflight > 80 || TH.recent.length > 150)) { TH.auto = true; TH.until = n + 60000; } else if (TH.auto && n > TH.until) TH.auto = false;
     if (TH.cache.size > prof().cache) TH.cache.clear(); for (const [k, v] of TH.anon) if (n - v.t > 30000) TH.anon.delete(k); }, 500).unref();
   const thOn = () => state.throttle || TH.auto || state.perf === 'max' || (state.perf === 'low' && true);
+  const thInfo = () => ({ on: !!thOn(), why: state.throttle ? 'manual' : TH.auto ? 'auto' : state.perf === 'max' ? 'max mode' : state.perf === 'low' ? 'low mode' : '', shed: TH.shed });
   app.use((req, res, next) => {
     if (trust.is(req.ip)) return next();
-    const path = req.path; if (path === '/healthz' || path === '/readyz') return next();
+    const path = req.path; if (path === '/healthz' || path === '/readyz' || path === '/api/shield/throttle') return next();
     TH.recent.push(Date.now()); TH.inflight++; let done = false; const fin = () => { if (!done) { done = true; TH.inflight--; } }; res.on('finish', fin); res.on('close', fin);
     if (!thOn()) return next();
     const loggedIn = /^Bearer\s+\S{20,}/.test(req.headers.authorization || ''), isApi = path.startsWith('/api'), get = req.method === 'GET' || req.method === 'HEAD';
@@ -104,26 +104,24 @@ module.exports = function mount(app, { pool, auth }) {
   };
   const prof = () => P[state.perf] || P.balanced;
   const MEM = { ratio: 0, rssMb: 0, limitMb: Number(process.env.RAM_LIMIT_MB) || 512, spills: 0, last: null, pressure: 0 };
-  pool.query('CREATE TABLE IF NOT EXISTS shield_spill (id SERIAL PRIMARY KEY, at TIMESTAMPTZ DEFAULT now(), ram_mb INT, reason TEXT, data TEXT)').catch(() => {});
-  // Export everything bulky from RAM into the database, then free it. Ban lists stay (tiny) and are saved too, reloaded on restart.
-  // Logs go to the database in packets and are read back on demand. Errors are reported (they used to be swallowed, so the button "worked" while nothing was saved).
+  pool.query('CREATE TABLE IF NOT EXISTS shield_spill (id SERIAL PRIMARY KEY, at TIMESTAMPTZ DEFAULT now(), ram_mb INT, reason TEXT, data TEXT)')
+    .then(() => pool.query('SELECT COALESCE(MAX(id),0) AS n FROM shield_spill')).then((r) => { MEM.spills = Math.max(MEM.spills, Number(r.rows[0].n) || 0); }).catch(() => {});
+  // Export everything bulky from RAM into the database, then free it. Ban lists stay (tiny) but are saved too and reloaded on restart.
   let spilling = false;
-  const ensureSpill = () => pool.query('CREATE TABLE IF NOT EXISTS shield_spill (id SERIAL PRIMARY KEY, at TIMESTAMPTZ DEFAULT now(), ram_mb INT, reason TEXT, data TEXT)');
-  ensureSpill().catch((e) => console.error('shield_spill table:', e.message));
   const spill = async (reason) => {
-    if (spilling) return { ok: false, busy: true }; spilling = true;
+    if (spilling) return; spilling = true;
     try {
-      await ensureSpill(); await memstore.init(pool);
-      const data = JSON.stringify({ blocked: blocked.slice(0, 20), stats, autobans: [...autobans], strikes: [...strikes].slice(0, 500), th: { served: TH.served, shed: TH.shed, cached: TH.cached } });
-      await memstore.flush();
+      const before = process.memoryUsage().rss;
+      const data = JSON.stringify({ blocked: blocked.slice(0, 50), stats, autobans: [...autobans], strikes: [...strikes].slice(0, 500), th: { served: TH.served, shed: TH.shed, cached: TH.cached } });
       await pool.query('INSERT INTO shield_spill (ram_mb, reason, data) VALUES ($1,$2,$3)', [MEM.rssMb, reason, data]);
       await pool.query('DELETE FROM shield_spill WHERE id NOT IN (SELECT id FROM shield_spill ORDER BY id DESC LIMIT 20)');
-      await memstore.trim('shield-log', 2000).catch(() => {});
       TH.cache.clear(); TH.anon.clear(); rate.clear(); scrapeHits.clear(); loginHits.clear(); strikes.clear(); burstHits.clear(); blocked.length = 0; TH.recent = [];
-      memstore.release(); // picture cache, hot LRU and anything else registered
-      MEM.spills++; stats.spill++; MEM.last = new Date().toISOString(); MEM.pressure = Date.now() + 30000; MEM.error = null;
-      return { ok: true };
-    } catch (e) { MEM.error = e.message; console.error('shield spill:', e.message); return { ok: false, error: e.message }; } finally { spilling = false; }
+      MEM.spills++; stats.spill++; MEM.last = new Date().toISOString(); MEM.pressure = Date.now() + 30000;
+      if (!global.gc) { try { require('v8').setFlagsFromString('--expose_gc'); global.gc = require('vm').runInNewContext('gc'); } catch (e) { /* no gc available */ } }
+      if (global.gc) global.gc();
+      MEM.freed = Math.max(0, Math.round((before - process.memoryUsage().rss) / 1048576));
+      return MEM.freed;
+    } catch (e) { console.error('shield spill:', e.message); } finally { spilling = false; }
   };
   pool.query("SELECT data FROM shield_spill ORDER BY id DESC LIMIT 1").then((r) => { if (r.rows[0] && !RESET) { const d = JSON.parse(r.rows[0].data); (d.autobans || []).forEach(([ip, t]) => { if (t > Date.now()) autobans.set(ip, t); }); } }).catch(() => {});
   setInterval(() => {
@@ -214,7 +212,7 @@ module.exports = function mount(app, { pool, auth }) {
 
   const J = express.json({ limit: '10kb' });
   const log = (req, a, d) => pool.query('INSERT INTO audit_log (user_id, username, role, action, detail) VALUES ($1,$2,$3,$4,$5)', [req.user.id, req.user.username, req.user.role, a, String(d || '').slice(0, 500)]).catch(() => {});
-  const view = () => ({ state: { ...Object.fromEntries(NEW.map((k) => [k, !!state[k]])), lockdown: state.lockdown, firewall: state.firewall, readonly: state.readonly, nosignup: state.nosignup, nobots: state.nobots, perf: state.perf, ips: state.ips }, stats, blocked, live: { attack: { on: AT.on, capped: AT.capped, usedMb: AT.usedMb, cap: CAP_MB, caught: AT.caught, total: AT.total, cycles: AT.cycles, lastAt: AT.lastAt, results: AT.results }, perf: state.perf, ram: { mb: MEM.rssMb, limit: MEM.limitMb, pct: Math.round(MEM.ratio * 100), spills: MEM.spills, last: MEM.last, error: MEM.error || null, store: memstore.stats() }, throttle: thOn(), auto: TH.auto, lag: Math.round(TH.lag), open: TH.inflight, served: TH.served, shed: TH.shed, cached: TH.cached } });
+  const view = () => ({ state: { ...Object.fromEntries(NEW.map((k) => [k, !!state[k]])), lockdown: state.lockdown, firewall: state.firewall, readonly: state.readonly, nosignup: state.nosignup, nobots: state.nobots, perf: state.perf, ips: state.ips }, stats, blocked, live: { attack: { on: AT.on, capped: AT.capped, usedMb: AT.usedMb, cap: CAP_MB, caught: AT.caught, total: AT.total, cycles: AT.cycles, lastAt: AT.lastAt, results: AT.results }, perf: state.perf, throttle: thInfo(), ram: { freed: MEM.freed || 0, mb: MEM.rssMb, limit: MEM.limitMb, pct: Math.round(MEM.ratio * 100), spills: MEM.spills, last: MEM.last }, throttle: thOn(), auto: TH.auto, lag: Math.round(TH.lag), open: TH.inflight, served: TH.served, shed: TH.shed, cached: TH.cached } });
   const A = [auth, (req, res, next) => (req.user.role === 'admin' ? next() : res.status(403).json({ error: 'Admins only.' }))];
 
   app.get('/api/shield', ...A, wrap(async (req, res) => res.json(view())));
@@ -311,9 +309,8 @@ module.exports = function mount(app, { pool, auth }) {
     const m = String((req.body || {}).mode || ''); if (!P[m]) return res.status(400).json({ error: 'Unknown mode.' });
     state.perf = m; await save(); await log(req, 'shield-perf', m); res.json(view());
   }));
-  app.post('/api/shield/spill-now', ...A, wrap(async (req, res) => { const r = await spill('manual export'); if (!r.ok && !r.busy) return res.status(500).json({ error: 'Export failed: ' + (r.error || 'unknown error') }); await log(req, 'shield-spill', r.busy ? 'already running' : 'manual'); res.json(view()); }));
-  // Blocked-request log, fetched from the database in packets (newest first). Pass ?before=<id> for the next packet.
-  app.get('/api/shield/log', ...A, wrap(async (req, res) => res.json(await memstore.page('shield-log', { before: parseInt(req.query.before) || null, limit: parseInt(req.query.limit) || 50 }))));
+  app.post('/api/shield/spill-now', ...A, wrap(async (req, res) => { const freed = await spill('manual export'); await log(req, 'shield-spill', 'manual'); res.json({ ...view(), freed: freed || 0 }); }));
+  app.get('/api/shield/throttle', (req, res) => { res.set('Cache-Control', 'no-store'); res.json(thInfo()); });
   app.get('/api/shield/spill', ...A, wrap(async (req, res) => { const r = await pool.query('SELECT id, at, ram_mb, reason FROM shield_spill ORDER BY id DESC LIMIT 20'); res.json(r.rows); }));
   app.put('/api/shield/ips', ...A, J, wrap(async (req, res) => {
     const list = [...new Set(String((req.body || {}).text || '').split(/[\s,]+/).filter(Boolean))].slice(0, 200);
@@ -324,5 +321,5 @@ module.exports = function mount(app, { pool, auth }) {
   app.post('/api/shield/logout-all', ...A, wrap(async (req, res) => {
     state.killBefore = Math.floor(Date.now() / 1000); state.killExcept = req.user.id; await save(); await log(req, 'shield-logout-all', 'everyone but ' + req.user.username); res.json(view());
   }));
-  app.post('/api/shield/clear-log', ...A, wrap(async (req, res) => { blocked.length = 0; await memstore.flush().catch(() => {}); await pool.query("DELETE FROM mem_log WHERE bucket='shield-log'").catch(() => {}); Object.keys(stats).forEach((k) => { stats[k] = 0; }); res.json(view()); }));
+  app.post('/api/shield/clear-log', ...A, wrap(async (req, res) => { blocked.length = 0; Object.keys(stats).forEach((k) => { stats[k] = 0; }); res.json(view()); }));
 };
