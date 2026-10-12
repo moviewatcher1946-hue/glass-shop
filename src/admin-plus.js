@@ -3,7 +3,7 @@ const os = require('os');
 
 const SYS = { hours: false, open: 8, close: 22, slowlog: false, slowms: 1000, trim: false, trimdays: 30, optimize: false, purge: false, purgedays: 90, awake: false };
 const SYSR = { hours: 'b', open: [0, 23], close: [1, 24], slowlog: 'b', slowms: [100, 30000], trim: 'b', trimdays: [1, 3650], optimize: 'b', purge: 'b', purgedays: [1, 3650], awake: 'b' };
-const PERF = { lite: false, nomotion: false, noglow: false, lazy: false, nohover: false, slowrefresh: false };
+const PERF = { lite: false, nomotion: false, noglow: false, lazy: false, nohover: false, slowrefresh: false, slowerrefresh: false, pausehidden: false, noshadow: false, nofilter: false, sysfont: false };
 const shared = { sys: { ...SYS }, slow: [] };
 
 module.exports = function mount(app, { pool, auth, admin, wrap }) {
