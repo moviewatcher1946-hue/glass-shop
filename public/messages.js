@@ -183,6 +183,8 @@
   }
   function render() {
     clearInterval(timer); closeMenu(); skin(); if (box && !box._ic) { box._ic = new MutationObserver(function () { iconize(box); }); box._ic.observe(box, { childList: true, subtree: true }); }
+    // Customers only ever see one built-in chat: the shop support thread (answered by the shop team). No list, no people search.
+    if (!staff && S.view !== 'thread') { openConv({ type: 'support', id: me().id, name: 'Shop support', role: 'shop' }); return; }
     ({ list: viewList, thread: viewThread, settings: viewSettings, people: viewPeople, starred: viewStarred, search: viewSearch })[S.view || 'list']();
   }
   function bodyBox() { var b = el('div'); b.id = 'mg-body'; box.appendChild(b); return b; }
@@ -251,7 +253,7 @@
   function mapSupport(m) { return { id: m.id, mine: staff ? m.from_staff : !m.from_staff, kind: 'text', body: m.body, created_at: m.created_at, reactions: {}, support: true, sender: m.sender }; }
   function viewThread() {
     var dm = S.type === 'dm', sup = !dm;
-    frame(S.name, '', { back: true, av: avatar(S.name, true), tag: tag(S.role), btns: dm ? [['⋯', 'Chat options', function (e) { chatMenu(e); }]] : [] });
+    frame(S.name, '', { back: !!staff, av: avatar(S.name, true), tag: tag(S.role), btns: dm ? [['⋯', 'Chat options', function (e) { chatMenu(e); }]] : [] });
     var pb = el('div', 'mg-pin'); pb.id = 'mg-pinbar'; pb.style.display = 'none'; box.appendChild(pb);
     var fb = el('input', 'find'); fb.id = 'mg-find'; fb.placeholder = 'Find in this chat'; fb.style.display = S.find ? '' : 'none'; fb.value = S.find; fb.oninput = function () { S.find = fb.value; S.sig = ''; paintMsgs(); }; box.appendChild(fb);
     var b = bodyBox(); b.appendChild(el('div', 'mg-note', 'Loading...')); b.onscroll = function () { jumpBtn(); if (b.scrollTop < 40 && S.more && !S.loadingOlder) loadOlder(); };
