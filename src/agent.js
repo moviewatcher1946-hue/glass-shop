@@ -14,8 +14,11 @@ module.exports = function mount(app, { pool, auth, admin, wrap, notify }) {
   const bad = (m, c = 400) => Object.assign(new Error(m), { status: c });
   const KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
   // "-latest" aliases follow Google's current Flash models. If Google renames them, set AI_CUSTOMER_MODEL / AI_ADMIN_MODEL in Render.
-const MODEL_CUSTOMER = process.env.AI_CUSTOMER_MODEL || 'google/gemma-4-26b-a4b:free';
-const MODEL_ADMIN = process.env.AI_ADMIN_MODEL || 'google/gemma-4-26b-a4b';
+// Customer prefers Flash Lite -> then transitions down to other high-quota free models
+  const MODEL_CUSTOMER = [process.env.AI_CUSTOMER_MODEL || 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.7-flash', 'gemini-3.6-flash'];
+
+// Admin prefers Gemma 26B -> then falls back to powerful Gemini options
+  const MODEL_ADMIN = [process.env.AI_ADMIN_MODEL || 'gemma-4-26b-a4b', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash-lite'];
   const AUTO = process.env.AI_CUSTOMER_REPLIES !== 'off';
   const GATE = process.env.AI_STRICT_GATE !== 'off';
   const CUR = process.env.AI_CURRENCY || '\u20B1';
