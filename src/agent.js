@@ -34,7 +34,7 @@ module.exports = function mount(app, { pool, auth, admin, wrap, notify }) {
   const PROVIDERS = [
     { id: 'gemini', name: 'Google Gemini', kind: 'gemini', keys: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'],
       models: { customer: [process.env.AI_CUSTOMER_MODEL || 'gemini-3.5-flash-lite', ...GEMINI_CHAIN], admin: [process.env.AI_ADMIN_MODEL || 'gemini-3.5-flash-lite', ...GEMINI_CHAIN] } },
-    { id: 'groq', name: 'Groq', url: 'https://api.groq.com/openai/v1', keys: ['GROQ_API_KEY'], models: ['gpt-oss-120b'] },
+    { id: 'groq', name: 'Groq', url: 'https://api.groq.com/openai/v1', keys: ['GROQ_API_KEY'], models: ['openai/gpt-4o'] },
     { id: 'cerebras', name: 'Cerebras', url: 'https://api.cerebras.ai/v1', keys: ['CEREBRAS_API_KEY'], models: ['gpt-oss-120b', 'llama3.1-8b'] },
     { id: 'mistral', name: 'Mistral', url: 'https://api.mistral.ai/v1', keys: ['MISTRAL_API_KEY'], models: ['mistral-small-latest', 'open-mistral-nemo'] },
     { id: 'openrouter', name: 'OpenRouter', url: 'https://openrouter.ai/api/v1', keys: ['OPENROUTER_API_KEY'], models: ['meta-llama/llama-3.3-70b-instruct:free', 'openai/gpt-oss-120b:free'], headers: { 'X-Title': 'Glass Shop' } },
