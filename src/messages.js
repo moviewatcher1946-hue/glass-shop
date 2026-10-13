@@ -77,6 +77,7 @@ module.exports = function mount(app, { pool, auth, admin, wrap }) {
   async function gate(me, to) {
     if (!to) return 'Unknown person.';
     if (to.id === me.id) return 'You cannot message yourself.';
+    if (me.role === 'customer') return 'Messages from customers go to Shop support.';
     if (me.role === 'customer' && (await q('SELECT 1 FROM customer_blocks WHERE user_id=$1 AND shop_wide LIMIT 1', [me.id])).rowCount) return 'You cannot send messages right now.';
     if ((await q('SELECT 1 FROM dm_blocks WHERE user_id=$1 AND blocked_id=$2', [me.id, to.id])).rowCount) return 'You blocked this person. Unblock them to send a message.';
     if ((await q('SELECT 1 FROM dm_blocks WHERE user_id=$1 AND blocked_id=$2', [to.id, me.id])).rowCount) return 'This person is not accepting messages from you.';
@@ -170,13 +171,13 @@ module.exports = function mount(app, { pool, auth, admin, wrap }) {
       const r = (await q('SELECT LEFT(body,80) last,created_at,from_staff,(SELECT COUNT(*)::int FROM chat_messages x WHERE x.user_id=$1 AND x.from_staff AND NOT x.read_by_customer) unread FROM chat_messages WHERE user_id=$1 ORDER BY id DESC LIMIT 1', [me.id])).rows[0];
       support = [{ type: 'support', id: me.id, username: 'Shop support', role: 'shop', name: 'Shop support', mine: r ? !r.from_staff : false, preview: r ? r.last : 'Ask us about an order or a product', at: r ? r.created_at : null, unread: r ? r.unread : 0 }];
     }
-    res.json({ dms, support });
+    res.json({ dms: me.role === 'customer' ? [] : dms, support });
   }));
 
   // ----- find people
   app.get('/api/msg/users', ...M, wrap(async (req, res) => {
     const me = req.user, s = clean(req.query.q, 50).replace(/[%_\\]/g, '\\$&');
-    if (!s) return res.json([]);
+    if (!s || me.role === 'customer') return res.json([]);
     const exact = !isStaff(me); // customers find shop staff by name, and other customers only by their exact username
     const rows = (await q(`SELECT u.id,u.username,u.role,COALESCE(pf.show_last_seen,true) visible FROM users u LEFT JOIN dm_prefs pf ON pf.user_id=u.id
       WHERE u.id<>$1 AND (lower(u.username) LIKE lower($2) OR ($3 AND u.role<>'customer' AND lower(u.username) LIKE lower($2)) OR lower(u.username)=lower($4))
