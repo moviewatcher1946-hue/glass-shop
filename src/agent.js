@@ -56,33 +56,55 @@ module.exports = function mount(app, { pool, auth, admin, wrap, notify }) {
   let hourStart = 0, hourCount = 0;
   const capOk = () => { const now = Date.now(); if (now - hourStart > 3600e3) { hourStart = now; hourCount = 0; } return ++hourCount <= 400; };
 
-  // ----- Gemini API (plain fetch, no extra package)
+// ----- Gemini API (plain fetch, no extra package)
   async function gemini({ model, system, contents, tools, max, schema: rs, quick }) {
     const generationConfig = { maxOutputTokens: max, temperature: 0.3 };
     if (rs) { generationConfig.responseMimeType = 'application/json'; generationConfig.responseSchema = rs; }
-    const send = async (cfg) => {
-      const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent', {
-        method: 'POST',
-        headers: { 'x-goog-api-key': KEY, 'content-type': 'application/json' },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: system }] }, contents, generationConfig: cfg,
-          ...(tools && tools.length ? { tools: [{ functionDeclarations: tools }] } : {})
-        }),
-        signal: AbortSignal.timeout(40000)
-      });
-      return { r, d: await r.json().catch(() => ({})) };
-    };
-    // quick = no "thinking": faster and cheaper, and thinking tokens can no longer eat the answer. If the model does not accept that setting, retry without it.
-    let { r, d } = await send(quick ? { ...generationConfig, thinkingConfig: { thinkingBudget: 0 } } : generationConfig);
-    if (!r.ok && quick && r.status === 400) ({ r, d } = await send(generationConfig));
-    if (!r.ok) throw new Error('Gemini API ' + r.status + ': ' + ((d.error && d.error.message) || 'request failed'));
-    return d;
+    
+    // Convert model array into a clean sequential chain loop
+    const modelChain = Array.isArray(model) ? model : [model];
+    let lastError = null;
+
+    for (const modelString of modelChain) {
+      try {
+        const send = async (cfg) => {
+          const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(modelString) + ':generateContent', {
+            method: 'POST',
+            headers: { 'x-goog-api-key': KEY, 'content-type': 'application/json' },
+            body: JSON.stringify({
+              systemInstruction: { parts: [{ text: system }] }, contents, generationConfig: cfg,
+              ...(tools && tools.length ? { tools: [{ functionDeclarations: tools }] } : {})
+            }),
+            signal: AbortSignal.timeout(40000)
+          });
+          return { r, d: await r.json().catch(() => ({})) };
+        };
+
+        let { r, d } = await send(quick ? { ...generationConfig, thinkingConfig: { thinkingBudget: 0 } } : generationConfig);
+        if (!r.ok && quick && r.status === 400) ({ r, d } = await send(generationConfig));
+        if (!r.ok) throw new Error('Gemini API ' + r.status + ': ' + ((d.error && d.error.message) || 'request failed'));
+        
+        // Return both the response data AND the exact string model that worked
+        return { data: d, activeModel: modelString };
+      } catch (error) {
+        console.warn(`[agent fallback] ${modelString} failed: ${error.message}. trying next...`);
+        lastError = error;
+      }
+    }
+    throw lastError || new Error('All fallback models failed.');
   }
+
   const textOf = (content) => ((content && content.parts) || []).filter((p) => typeof p.text === 'string' && !p.thought).map((p) => p.text).join('\n').trim();
+  
   // Lets the model call our tools (up to 6 rounds) and returns its final text.
   async function run({ model, system, contents, tools, exec, max = 1500, quick }) {
     const msgs = contents.slice();
+    let currentModel = model;
+
     for (let i = 0; i < 6; i++) {
+      // Unpack data and stick to the single model string that succeeded
+      const { data: d, activeModel } = await gemini({ model: currentModel, system, contents: msgs, tools, max, quick });
+      currentModel = activeModel;
       const d = await gemini({ model, system, contents: msgs, tools, max, quick });
       const cand = (d.candidates || [])[0];
       if (!cand || !cand.content) return '';
