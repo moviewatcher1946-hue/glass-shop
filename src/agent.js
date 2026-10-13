@@ -16,9 +16,10 @@ module.exports = function mount(app, { pool, auth, admin, wrap, notify }) {
 
   // Model chains: the first entry is tried first, the others are fallbacks.
   // If Google renames a model, set AI_CUSTOMER_MODEL / AI_ADMIN_MODEL in Render, or edit the names here.
-  const MODEL_CUSTOMER = [process.env.AI_CUSTOMER_MODEL || 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.7-flash', 'gemini-3.6-flash'];
-  // Admin needs tool calling, so a Gemini model goes first. Gemma is kept as a late fallback.
-  const MODEL_ADMIN = [process.env.AI_ADMIN_MODEL || 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash-lite', 'gemma-4-26b-a4b'];
+  // Free-tier quotas: the Flash Lite models allow 15 requests/min and 500/day; the full Flash models only 5/min and 20/day.
+  // So the lite models go first, the full Flash is a short-term backup, and Gemma (high daily quota) is the last safety net.
+  const MODEL_CUSTOMER = [process.env.AI_CUSTOMER_MODEL || 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.8-flash', 'gemma-4-26b-a4b'];
+  const MODEL_ADMIN = [process.env.AI_ADMIN_MODEL || 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.8-flash', 'gemma-4-26b-a4b'];
 
   const AUTO = process.env.AI_CUSTOMER_REPLIES !== 'off';
   const GATE = process.env.AI_STRICT_GATE !== 'off';
@@ -62,11 +63,14 @@ module.exports = function mount(app, { pool, auth, admin, wrap, notify }) {
   // Tries each model in the chain. Only falls through on errors that another model could fix
   // (404 unknown model, 429 quota, 5xx, timeouts, network). Other 4xx errors are real bugs in the request and are thrown right away.
   // Returns { data, activeModel }.
+  const cool = new Map(); // model -> timestamp until which we skip it (set after a 429 quota error)
   async function gemini({ model, system, contents, tools, max, schema: rs, quick }) {
     const generationConfig = { maxOutputTokens: max, temperature: 0.3 };
     if (rs) { generationConfig.responseMimeType = 'application/json'; generationConfig.responseSchema = rs; }
 
-    const chain = Array.isArray(model) ? model : [model];
+    const all = Array.isArray(model) ? model : [model];
+    const live = all.filter((m) => (cool.get(m) || 0) < Date.now());
+    const chain = live.length ? live : all; // if every model is cooling down, try them all anyway
     let lastError = null;
 
     for (const modelString of chain) {
@@ -95,6 +99,7 @@ module.exports = function mount(app, { pool, auth, admin, wrap, notify }) {
       } catch (error) {
         lastError = error;
         const s = error.status;
+        if (s === 429) cool.set(modelString, Date.now() + 60e3); // skip this model for a minute
         const retryable = !s || s === 404 || s === 429 || s >= 500; // no status = timeout or network error
         console.warn('[agent] ' + modelString + ' failed: ' + error.message + (retryable ? ' (trying next model)' : ''));
         if (!retryable) throw error;
