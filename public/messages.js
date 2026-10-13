@@ -5,8 +5,9 @@
   var LS = function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } };
   var LSset = function (k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private mode */ } };
   var me = function () { try { return JSON.parse(LS('user') || 'null'); } catch (e) { return null; } };
-  var P = { sound: true, enter: true, theme: 'auto', accent: '#0a84ff', font: 14, compact: false, desk: false, big: false, mic: true, speak: true, wake: false, lang: 'en-US', live: true };
+  var P = { sound: true, enter: true, theme: 'auto', accent: '#0a84ff', font: 14, compact: false, desk: false, big: false, live: true };
   try { Object.assign(P, JSON.parse(LS('mg_prefs') || '{}')); } catch (e) { /* ignore */ }
+  delete P.mic; delete P.speak; delete P.wake; delete P.lang; // voice settings from older versions
   var savePrefs = function () { LSset('mg_prefs', JSON.stringify(P)); };
   var EMOJI = ['😀', '😄', '😁', '😂', '🤣', '😊', '😍', '😘', '😎', '🤔', '😅', '😉', '🙂', '😢', '😭', '😡', '👍', '👎', '👏', '🙏', '💪', '🙌', '👋', '🤝', '❤️', '💔', '🔥', '✨', '🎉', '🎁', '🥤', '🍿', '🍫', '🍪', '🍕', '🍔', '☕', '🧋', '🍩', '🍦', '✅', '❌', '⭐', '💯', '📦', '🚚', '💸', '🕐'];
   var REACT = ['👍', '❤️', '😂', '😮', '😢', '🙏', '🔥', '🎉'];
@@ -72,7 +73,7 @@
     '.mg-row .x{flex:1;min-width:0}.mg-row .x b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mg-row .x em{display:block;font-style:normal;opacity:.65;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:.92em}',
     '.mg-row .r{text-align:right;font-size:.78em;opacity:.8;flex:none;display:flex;flex-direction:column;align-items:flex-end;gap:4px}.mg-n{padding:0 7px;border-radius:99px;background:var(--a);color:#fff;font-weight:700;font-size:1.05em}',
     '.mg-day{align-self:center;margin:8px 0 2px;padding:2px 10px;border-radius:99px;background:rgba(128,128,128,.2);font-size:.78em;opacity:.85}',
-    '.mg-new{align-self:stretch;text-align:center;font-size:.78em;color:var(--a);border-top:1px solid var(--a);margin:8px 0 2px;line-height:0}.mg-new span{background:inherit;padding:0 8px}',
+    '.mg-new{align-self:stretch;display:flex;align-items:center;gap:8px;font-size:.78em;line-height:1.2;color:var(--a);margin:8px 0 2px}.mg-new::before,.mg-new::after{content:"";flex:1;height:1px;background:var(--a)}.mg-new span{padding:0}',
     '.mg-m{max-width:84%;padding:7px 10px;border-radius:14px;white-space:pre-wrap;word-break:break-word;cursor:pointer;position:relative}',
     '.mg-m.me{align-self:flex-end;background:var(--a);color:#fff;border-bottom-right-radius:5px}.mg-m.o{align-self:flex-start;background:rgba(128,128,128,.18);border-bottom-left-radius:5px}',
     '.mg-m.g{margin-top:-3px}.mg-m a{color:inherit;text-decoration:underline}.mg-m.del{opacity:.6;font-style:italic}.mg-m.fail{outline:2px solid #e5484d}.mg-m.hl{animation:mghl 1.4s}@keyframes mghl{30%{box-shadow:0 0 0 4px var(--a)}}',
@@ -125,7 +126,10 @@
     `#mg-box footer{border-top:1px solid var(--edge);padding:10px 12px 14px}#mg-box footer .cm{gap:4px;align-items:center}#mg-box footer .cm .ib{width:32px;height:32px}#mg-box footer .cm .ib svg{width:19px;height:19px}`,
     `#mg-box textarea{flex:1;min-width:0;width:auto;margin:0;padding:11px 16px;border:1px solid var(--edge);border-radius:999px;background:var(--field);color:var(--txt);font-size:15px}`,
     `#mg-box .cm .snd{width:40px;min-width:40px;height:40px;padding:0;border-radius:50%;display:grid;place-items:center;background:#0a84ff;color:#fff;box-shadow:0 4px 14px rgba(10,132,255,.35),inset 0 1px 0 rgba(255,255,255,.4)}#mg-box .cm .snd svg{width:18px;height:18px}#mg-box .cm .snd:not(:has(svg)){width:auto;padding:0 16px;border-radius:999px}#mg-box .snd:hover{background:#0a84ff;filter:brightness(1.08);box-shadow:0 4px 14px rgba(10,132,255,.35),inset 0 1px 0 rgba(255,255,255,.4)}`,
-    `#mg-box .mg-menu,#mg-box.dk .mg-menu,#mg-box .mg-card,#mg-box.dk .mg-card{background:var(--solid,rgba(250,250,252,.98));color:var(--txt);border:1px solid var(--edge)}`
+    `#mg-box .mg-menu,#mg-box.dk .mg-menu,#mg-box .mg-card,#mg-box.dk .mg-card{background:var(--solid,rgba(250,250,252,.98));color:var(--txt);border:1px solid var(--edge)}`,
+    `#mg-box{height:min(600px,calc(100vh - 100px - var(--bn,0px) - var(--sa,0px)))}#mg-box.big{height:calc(100vh - 100px - var(--bn,0px) - var(--sa,0px))}`,
+    `@supports(height:100dvh){#mg-box{height:min(600px,calc(100dvh - 100px - var(--bn,0px) - var(--sa,0px)))}#mg-box.big{height:calc(100dvh - 100px - var(--bn,0px) - var(--sa,0px))}}`,
+    `@media(max-width:520px){#mg-box,#mg-box.big{top:env(safe-area-inset-top,0px);left:0;right:0;width:auto;height:auto;border-radius:24px 24px 0 0}}`
   ].join('');
   document.head.appendChild(css);
 
@@ -203,7 +207,7 @@
     var b = document.getElementById('mg-body'); if (!b || S.view !== 'list') return; if (!S.dms) { b.textContent = ''; b.appendChild(el('div', 'mg-note', 'Loading...')); return; }
     var q = (S.filter || '').toLowerCase(), rows = [];
     (S.support || []).forEach(function (r) { r.pinned = !staff; rows.push(r); }); (S.dms || []).forEach(function (r) { rows.push(r); });
-    if (me() && me().role === 'admin') rows.push({ type: 'assistant', id: 0, name: 'AI assistant', username: 'assistant', role: 'ai', preview: 'Ask, give orders, or talk to it with the mic', at: '9999', pinned: true, unread: 0 });
+    if (me() && me().role === 'admin') rows.push({ type: 'assistant', id: 0, name: 'AI assistant', username: 'assistant', role: 'ai', preview: 'Ask questions or give orders', at: '9999', pinned: true, unread: 0 });
     rows = rows.filter(function (r) {
       if (q && (r.name + ' ' + r.username).toLowerCase().indexOf(q) < 0) return false;
       if (S.tab === 'archived') return r.archived; if (r.archived) return false;
@@ -223,86 +227,22 @@
     });
   }
 
-  // ----- AI assistant (admin only). Active: it can propose actions (you press Confirm), announce new work by itself, and listen through the microphone.
-  // Voice uses the browser's built-in speech recognition (Chrome, Edge, Safari). Everything here is skipped unless the signed-in user is the admin.
-  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  // ----- AI assistant (admin only). Active: it can propose actions (you press Confirm) and announce new work by itself. Text only.
+  // Everything here is skipped unless the signed-in user is the admin.
   var isAdmin = function () { var u = me(); return !!(u && u.role === 'admin' && LS('token')); };
-  var A = { msgs: [], busy: false, queue: [] }, V = { rec: null, want: false, denied: false, speaking: false, brief: null, delay: 500, booted: false };
+  var A = { msgs: [], busy: false }, V = { brief: null };
   try { A.msgs = JSON.parse(sessionStorage.getItem('mg_ai') || '[]'); } catch (e) { A.msgs = []; }
   function aiSave() { try { sessionStorage.setItem('mg_ai', JSON.stringify(A.msgs.slice(-30).map(function (m) { return { role: m.role, content: m.content }; }))); } catch (e) { /* storage blocked */ } }
-  var LANGS = [['en-US', 'English'], ['en-PH', 'English (PH)'], ['fil-PH', 'Filipino']];
   var vcss = el('style');
-  vcss.textContent = '#mg-mic{position:fixed;left:70px;bottom:16px;z-index:9000;width:44px;height:44px;border-radius:12px;border:1px solid rgba(255,255,255,.35);background:rgba(30,30,34,.72);color:#fff;display:grid;place-items:center;cursor:pointer;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}#mg-mic svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}#mg-mic.on{background:#e5484d;animation:mgp 1.6s infinite}@keyframes mgp{50%{box-shadow:0 0 0 8px rgba(229,72,77,.25)}}#mg-vb{position:fixed;right:150px;bottom:calc(var(--bn,0px) + var(--sa,0px) + 70px);z-index:9000;max-width:min(320px,calc(100vw - 32px));padding:10px 14px;border-radius:14px;background:rgba(30,30,34,.92);color:#fff;font:14px/1.35 system-ui,sans-serif;white-space:pre-wrap}#mg-body .mg-act{margin:4px 0 8px;padding:10px 12px;border-radius:14px;border:1px solid var(--edge);background:var(--field);font-size:14px;color:var(--txt)}#mg-body .mg-act .row{display:flex;gap:8px;margin-top:8px}#mg-body .mg-act button{padding:7px 14px;border-radius:999px;border:1px solid var(--edge);background:var(--glass2);cursor:pointer}#mg-body .mg-act button.p{background:#0a84ff;color:#fff;border-color:transparent}';
+  vcss.textContent = '#mg-vb{position:fixed;right:150px;bottom:calc(var(--bn,0px) + var(--sa,0px) + 70px);z-index:9000;max-width:min(320px,calc(100vw - 32px));padding:10px 14px;border-radius:14px;background:rgba(30,30,34,.92);color:#fff;font:14px/1.35 system-ui,sans-serif;white-space:pre-wrap}#mg-body .mg-act{margin:4px 0 8px;padding:10px 12px;border-radius:14px;border:1px solid var(--edge);background:var(--field);font-size:14px;color:var(--txt)}#mg-body .mg-act .row{display:flex;gap:8px;margin-top:8px}#mg-body .mg-act button{padding:7px 14px;border-radius:999px;border:1px solid var(--edge);background:var(--glass2);cursor:pointer}#mg-body .mg-act button.p{background:#0a84ff;color:#fff;border-color:transparent}';
   document.head.appendChild(vcss);
 
-  function notice(t) { starSay(t, !box); if (box) say(t.slice(0, 120)); }
-  function speak(t) {
-    if (!window.speechSynthesis || !isAdmin()) return; // customers never get voice, only text
-    try {
-      speechSynthesis.cancel(); starFlag('talk', true, 9000); var u = new SpeechSynthesisUtterance(String(t).slice(0, 600)); u.lang = P.lang || 'en-US'; V.speaking = true;
-      if (V.rec) { try { V.rec.abort(); } catch (e) { /* ignore */ } } // do not listen to ourselves
-      var done = function () { V.speaking = false; if (V.want && !V.denied && !V.rec) setTimeout(micStart, 300); };
-      u.onend = done; u.onerror = done; speechSynthesis.speak(u);
-    } catch (e) { V.speaking = false; }
-  }
-  function micUi() {
-    starFlag('listen', !!V.rec); var m = document.getElementById('mg-mic'); if (m) { m.classList.toggle('on', !!V.rec); m.title = V.want ? (V.rec ? 'Microphone is listening (click to turn off)' : 'Microphone on, restarting...') : 'Microphone is off (click to turn on)'; }
-    refreshStrip();
-  }
-  function getMic() { // asks the browser for the microphone directly and reports the real reason if it fails
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { V.denied = true; V.want = false; micUi(); notice('This browser cannot reach the microphone. Use Chrome, Edge or Safari on the https address.'); return Promise.resolve(false); }
-    return navigator.mediaDevices.getUserMedia({ audio: true }).then(function (st) { st.getTracks().forEach(function (t) { t.stop(); }); return true; }).catch(function (e) {
-      var n = (e && e.name) || 'denied'; V.denied = true; V.want = false; micUi();
-      notice(n === 'NotFoundError' ? 'No microphone was found on this device.' : n === 'NotReadableError' ? 'The microphone is busy or blocked by the system. Close other apps that use it and check the system privacy settings.' : n === 'SecurityError' ? 'The microphone needs a secure (https) page.' : 'The browser blocked the microphone (' + n + '). Click the padlock in the address bar, set Microphone to Allow, reload, then click the mic button.');
-      return false;
-    });
-  }
-  function micStart() {
-    if (!SR || !isAdmin() || V.rec || V.speaking || !V.want || V.denied) return;
-    if (!V.pre) { if (V.preBusy) return; V.preBusy = true; getMic().then(function (ok) { V.preBusy = false; if (ok) { V.pre = true; micStart(); } }); return; } // check the microphone itself first, so the exact problem can be shown
-    var r = new SR(); r.continuous = true; r.interimResults = false; r.lang = P.lang || 'en-US'; r.maxAlternatives = 1;
-    r.onresult = function (e) { V.delay = 500; for (var i = e.resultIndex; i < e.results.length; i++) { if (e.results[i].isFinal) { var t = String(e.results[i][0].transcript || '').trim(); if (t && !V.speaking) heard(t); } } };
-    r.onerror = function (e) {
-      if (e.error === 'not-allowed') { V.denied = true; V.want = false; micUi(); notice('The browser blocked the microphone for this site. Click the padlock in the address bar, set Microphone to Allow, reload, then click the mic button.'); }
-      else if (e.error === 'service-not-allowed') { V.denied = true; V.want = false; micUi(); notice('This browser or app does not offer speech recognition. Open the shop in Chrome, Edge or Safari (not inside another app), or type instead.'); }
-      else if (e.error === 'network') V.delay = 5000;
-    };
-    r.onend = function () { if (V.rec === r) V.rec = null; micUi(); if (V.want && !V.denied && isAdmin() && !V.speaking) setTimeout(micStart, V.delay); };
-    try { r.start(); V.rec = r; micUi(); } catch (e) { V.rec = null; }
-  }
-  function setMic(on) {
-    if (on && !isAdmin()) return;
-    P.mic = !!on; savePrefs(); V.want = !!on; V.denied = false;
-    if (on) micStart(); else { if (V.rec) { try { V.rec.abort(); } catch (e) { /* ignore */ } } V.rec = null; if (window.speechSynthesis) speechSynthesis.cancel(); }
-    micUi();
-  }
-  function micStrip() {
-    var s = el('div', 'tabs'); s.id = 'mg-ai-mic';
-    if (!SR) { s.appendChild(el('div', 'mg-note', 'Voice needs Chrome, Edge or Safari. Typing works everywhere.')); return s; }
-    var mk = function (on, label, f) { var b = el('button', on ? 'on' : '', label); b.onclick = f; s.appendChild(b); };
-    mk(V.want, V.want ? (V.rec ? 'Mic: listening' : 'Mic: on') : 'Mic: off', function () { setMic(V.denied ? true : !V.want); });
-    mk(P.speak, P.speak ? 'Voice replies: on' : 'Voice replies: off', function () { P.speak = !P.speak; savePrefs(); if (!P.speak && window.speechSynthesis) speechSynthesis.cancel(); refreshStrip(); });
-    mk(P.wake, P.wake ? 'Wake word: on' : 'Wake word: off', function () { P.wake = !P.wake; savePrefs(); refreshStrip(); notice(P.wake ? 'Start with "shop" or "assistant", for example: shop, what is pending?' : 'Everything you say is sent to the assistant.'); });
-    mk(false, (LANGS.filter(function (l) { return l[0] === P.lang; })[0] || LANGS[0])[1], function () { var i = 0; LANGS.forEach(function (l, k) { if (l[0] === P.lang) i = k; }); P.lang = LANGS[(i + 1) % LANGS.length][0]; savePrefs(); if (V.rec) { try { V.rec.abort(); } catch (e) { /* ignore */ } } refreshStrip(); });
-    return s;
-  }
-  function refreshStrip() { var o = document.getElementById('mg-ai-mic'); if (o && box && S.view === 'assistant') o.replaceWith(micStrip()); }
+  function notice(t) { if (!t) return; starSay(t, !box); if (box) say(String(t).slice(0, 120)); }
 
-  function latestPending() { for (var i = A.msgs.length - 1; i >= 0; i--) { var a = A.msgs[i].actions || []; for (var j = a.length - 1; j >= 0; j--) if (a[j].state === 'wait') return a[j]; } return null; }
-  function heard(t) {
-    var low = t.toLowerCase().replace(/[.,!?]/g, '').trim(), pend = latestPending();
-    if (pend) { // voice confirmation: only the plain word "confirm" runs an action
-      if (/^confirm\b/.test(low)) { doAction(pend, true); return; }
-      if (/^(cancel|never mind|nevermind)\b/.test(low)) { doAction(pend, false); return; }
-    }
-    if (P.wake) { var m = /^(?:hey |ok |okay )?(?:shop|assistant|snackify)[ ,]*(.*)$/.exec(low); if (!m || m[1].length < 2) return; t = m[1]; }
-    if (t.length < 2) return;
-    aiAsk(t, true);
-  }
   function doAction(a, ok) {
     if (!a || a.state !== 'wait' || a.busy) return; a.busy = true; paintAi();
     api('/api/admin/agent/confirm', 'POST', { id: a.id, ok: !!ok }).then(function (r) { a.state = ok ? 'done' : 'cancel'; a.result = r.message; }).catch(function (e) { a.state = 'error'; a.result = e.message; })
-      .then(function () { a.busy = false; paintAi(); notice(a.result || ''); if (V.want && P.speak) speak(a.result || ''); });
+      .then(function () { a.busy = false; paintAi(); notice(a.result || ''); });
   }
   // ----- Teach screen (admin only): notes the AI answers from. Saved on the server, used by the customer helper and the admin assistant.
   function viewTeach() {
@@ -315,7 +255,7 @@
     wrapEl.appendChild(ti); wrapEl.appendChild(tx); wrapEl.appendChild(row); box.appendChild(wrapEl);
     var b = bodyBox(); b.appendChild(el('div', 'mg-note', 'Loading...'));
     function chunks(t) { // notes are limited to 1500 characters: split long text at paragraph breaks
-      var out = [], cur = ''; t.split(/\n\s*\n/).forEach(function (p) { p = p.trim(); if (!p) return; while (p.length > 1500) { if (cur) { out.push(cur); cur = ''; } out.push(p.slice(0, 1500)); p = p.slice(1500); } if ((cur + '\n\n' + p).length > 1500) { out.push(cur); cur = p; } else cur = cur ? cur + '\n\n' + p : p; }); if (cur) out.push(cur); return out;
+      var out = [], cur = ''; t.split(/\n\s*\n/).forEach(function (p) { p = p.trim(); if (!p) return; while (p.length > 1500) { if (cur) { out.push(cur); cur = ''; } out.push(p.slice(0, 1500)); p = p.slice(1500); } if (cur && (cur + '\n\n' + p).length > 1500) { out.push(cur); cur = p; } else cur = cur ? cur + '\n\n' + p : p; }); if (cur) out.push(cur); return out;
     }
     function load() {
       api('/api/admin/agent/knowledge').then(function (rows) {
@@ -340,7 +280,7 @@
   }
   function viewAssistant() {
     frame('AI assistant', '', { back: true, av: avatar('AI', true), btns: [['Teach', 'Teach the AI about your shop', function () { go('teach'); }], ['Clear', 'Clear this conversation', function () { A.msgs = []; aiSave(); paintAi(); }]] });
-    box.appendChild(micStrip()); bodyBox();
+    bodyBox();
     var f = el('footer'), row = el('div', 'cm'), ta = el('textarea'), sb = el('button', 'snd'); f.id = 'mg-foot';
     ta.id = 'mg-ta'; ta.rows = 1; ta.placeholder = 'Ask, or tell me what to do...'; sb.type = 'button'; sb.innerHTML = IC.send; sb.title = 'Send (Enter)'; sb.setAttribute('aria-label', 'Send');
     var go1 = function () { var t = ta.value.trim(); if (t) { ta.value = ''; aiAsk(t); } };
@@ -350,7 +290,7 @@
   function paintAi() {
     var b = document.getElementById('mg-body'); if (!b || !box || S.view !== 'assistant') return; b.textContent = '';
     if (!A.msgs.length) {
-      b.appendChild(el('div', 'mg-note', 'Ask me about sales, stock, orders or support chats, or tell me to act: "mark order 12 packed", "set Choco Chip sold out", "reply to maria that her order is on the way". I always show a card first and nothing changes until you press Confirm (or say "confirm").'));
+      b.appendChild(el('div', 'mg-note', 'Ask me about sales, stock, orders or support chats, or tell me to act: "mark order 12 packed", "set Choco Chip sold out", "reply to maria that her order is on the way". I always show a card first and nothing changes until you press Confirm.'));
       var ch = el('div', 'tabs');
       [['Sales this week', 'How were sales in the last 7 days?'], ['Low stock', 'Which products are low or sold out?'], ['Pending orders', 'Show the pending orders'], ['Support inbox', 'What is waiting in support?']].forEach(function (c) { var x = el('button', '', c[0]); x.onclick = function () { aiAsk(c[1]); }; ch.appendChild(x); });
       b.appendChild(ch);
@@ -369,19 +309,19 @@
     if (A.busy) { var t = el('div', 'mg-m o', 'Thinking...'); t.style.opacity = '.6'; b.appendChild(t); }
     b.scrollTop = b.scrollHeight;
   }
-  function aiAsk(text, spoken) {
-    if (A.busy) { if (spoken && A.queue.length < 3) A.queue.push(text); return; }
+  function aiAsk(text) {
+    if (A.busy) return;
     var hist = A.msgs.slice(-10).map(function (m) { return { role: m.role, content: m.content }; });
-    A.msgs.push({ role: 'user', content: text }); A.busy = true; starFlag('think', true, 45000); aiSave(); paintAi(); if (spoken) notice('Heard: ' + text);
+    A.msgs.push({ role: 'user', content: text }); A.busy = true; starFlag('think', true, 45000); aiSave(); paintAi();
     api('/api/admin/agent', 'POST', { message: text, history: hist }).then(function (r) {
       var acts = (r.actions || []).map(function (a) { return { id: a.id, summary: a.summary, state: 'wait' }; });
       A.msgs.push({ role: 'assistant', content: r.reply, actions: acts });
-      notice(r.reply); if (V.want && P.speak) speak(r.reply + (acts.length ? ' Say confirm to do it, or cancel.' : ''));
+      notice(r.reply);
     }).catch(function (e) { A.msgs.push({ role: 'assistant', content: e.message }); })
-      .then(function () { A.busy = false; starFlag('think', false); aiSave(); paintAi(); var n = A.queue.shift(); if (n) aiAsk(n, true); });
+      .then(function () { A.busy = false; starFlag('think', false); aiSave(); paintAi(); });
   }
   // The "active" part: every 40 seconds the admin's browser asks for plain counts (no AI call) and announces what is new.
-  function announce(t) { A.msgs.push({ role: 'assistant', content: t }); aiSave(); paintAi(); ping(); notice(t); if (V.want && P.speak) speak(t); }
+  function announce(t) { A.msgs.push({ role: 'assistant', content: t }); aiSave(); paintAi(); ping(); notice(t); }
   function briefPoll() {
     if (!isAdmin() || P.live === false) return;
     api('/api/admin/agent/brief').then(function (b) {
@@ -392,8 +332,7 @@
     }).catch(function () { /* AI off or offline */ });
   }
   setInterval(briefPoll, 40000);
-  // Microphone button next to the Messages button, admin only. It also starts listening after the first click anywhere if the browser needed a gesture.
-  // ----- The star: Gemini-style glowing 3D star on the right side of the whole site while signed in. It grows when it talks, listens or thinks,
+  // ----- The star: Gemini-style glowing 3D star on the right side of the whole site while signed in. It grows when it talks or thinks,
   // and "speaks" by text in a bubble next to it. Click it to open the assistant (admin) or Shop support (customers).
   var star = null;
   var scss = el('style');
@@ -402,7 +341,7 @@
     '#mg-star svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible}#mg-star .halo{position:absolute;inset:-45%;border-radius:50%;background:radial-gradient(circle,rgba(155,114,203,.6),rgba(66,133,244,.28) 45%,transparent 70%);filter:blur(14px);animation:mgGlow 3.2s ease-in-out infinite}' +
     '#mg-star .back{transform:translateZ(-22px) scale(.97);opacity:.5;filter:blur(1.2px)}#mg-star .front{filter:drop-shadow(0 0 10px rgba(155,114,203,.95)) drop-shadow(0 0 26px rgba(66,133,244,.75)) drop-shadow(0 0 44px rgba(217,101,112,.35))}' +
     '#mg-star .tw{position:absolute;width:22px;height:22px;animation:mgTw 2.4s ease-in-out infinite}#mg-star .tw.a{right:-18px;top:-6px}#mg-star .tw.b{left:-16px;bottom:4px;animation-delay:1.1s}' +
-    '#mg-star.listen .grow{animation:mgListen 1.1s ease-in-out infinite}#mg-star.think .grow{animation:mgListen .8s ease-in-out infinite}#mg-star.think .core{animation-duration:1.4s}#mg-star.talk .grow{animation:mgBig 1.3s ease-in-out infinite}#mg-star.talk .halo,#mg-star.think .halo{animation-duration:1.2s}' +
+    '#mg-star.think .grow{animation:mgListen .8s ease-in-out infinite}#mg-star.think .core{animation-duration:1.4s}#mg-star.talk .grow{animation:mgBig 1.3s ease-in-out infinite}#mg-star.talk .halo,#mg-star.think .halo{animation-duration:1.2s}' +
     '@keyframes mgFloat{50%{transform:translateY(-9px)}}@keyframes mgGrow{0%,100%{transform:scale(.9)}50%{transform:scale(1.12)}}@keyframes mgListen{0%,100%{transform:scale(1.05)}50%{transform:scale(1.32)}}@keyframes mgBig{0%,100%{transform:scale(1.4)}50%{transform:scale(1.65)}}' +
     '@keyframes mgSpin{0%,100%{transform:rotateY(-30deg) rotateX(8deg)}50%{transform:rotateY(30deg) rotateX(-8deg)}}@keyframes mgGlow{0%,100%{opacity:.95;transform:scale(1)}50%{opacity:.55;transform:scale(1.15)}}@keyframes mgTw{0%,100%{opacity:0;transform:scale(.3)}50%{opacity:1;transform:scale(1)}}' +
     'body:has(#mg-star) #ap-fab{right:16px!important;bottom:calc(var(--bn,0px) + var(--sa,0px) + 192px)!important}@media (prefers-reduced-motion:reduce){#mg-star,#mg-star *{animation:none!important}}';
@@ -431,22 +370,10 @@
     }
     if (!on && star) { star.remove(); star = null; var v = document.getElementById('mg-vb'); if (v) v.remove(); }
   }
+  var adminOn = false;
   function adminBoot(on) {
-    var m = document.getElementById('mg-mic');
-    if (on && !m) {
-      m = el('button'); m.id = 'mg-mic'; m.type = 'button'; m.innerHTML = SV('<path d="M12 3a3 3 0 00-3 3v6a3 3 0 006 0V6a3 3 0 00-3-3z"/><path d="M19 11a7 7 0 01-14 0M12 18v3"/>'); m.setAttribute('aria-label', 'Microphone');
-      m.onclick = function () { setMic(V.denied ? true : !V.want); }; document.body.appendChild(m);
-      V.want = P.mic !== false; V.brief = null; micUi();
-      // Only start by itself when the browser already allows the microphone; otherwise wait for a click (a prompt at page load is often dismissed, which looks like "blocked").
-      if (V.want && navigator.permissions && navigator.permissions.query) {
-        navigator.permissions.query({ name: 'microphone' }).then(function (p) {
-          if (p.state === 'granted') micStart(); else if (p.state === 'denied') { V.denied = true; micUi(); notice('The microphone is blocked for this site. Click the padlock in the address bar, set Microphone to Allow, reload, then click the mic button.'); }
-          p.onchange = function () { if (p.state === 'granted' && isAdmin()) { V.denied = false; V.want = P.mic !== false; micStart(); } };
-        }).catch(function () { /* the first click will start it */ });
-      }
-      if (!V.booted) { V.booted = true; document.addEventListener('click', function () { if (V.want && !V.rec && !V.denied && isAdmin()) micStart(); }, true); }
-    }
-    if (!on && m) { m.remove(); V.want = false; if (V.rec) { try { V.rec.abort(); } catch (e) { /* ignore */ } } V.rec = null; if (window.speechSynthesis) speechSynthesis.cancel(); var v = document.getElementById('mg-vb'); if (v) v.remove(); A.msgs = []; aiSave(); }
+    if (on && !adminOn) { adminOn = true; V.brief = null; }
+    if (!on && adminOn) { adminOn = false; var v = document.getElementById('mg-vb'); if (v) v.remove(); A.msgs = []; aiSave(); }
   }
   function rowMenu(r, e) {
     menu([{ t: r.pinned ? 'Unpin chat' : 'Pin chat', f: function () { chatSet(r.id, { pinned: !r.pinned }); } }, { t: r.muted ? 'Unmute' : 'Mute notifications', f: function () { chatSet(r.id, { muted: !r.muted }); } },
@@ -493,7 +420,7 @@
       if (t === 'dm') { S.latest = r.messages; S.info = r.peer; S.pinned = r.pinned; S.sched = r.scheduled; if (initial) { S.firstUnread = r.first_unread; S.more = r.more; } if (r.peer.nickname) S.name = r.peer.nickname; else S.name = r.peer.username; S.role = r.peer.role; }
       else S.latest = r.messages.map(mapSupport);
       if (done) done(); S.loaded = true; paintHead(); paintPinned(); paintMsgs(initial); paintComposer();
-    }).catch(function (e) { if (initial) { var b = document.getElementById('mg-body'); if (b) { b.textContent = ''; b.appendChild(el('div', 'mg-note', e.message)); } } });
+    }).catch(function (e) { if (done) { done(); paintMsgs(); } if (initial) { var b = document.getElementById('mg-body'); if (b) { b.textContent = ''; b.appendChild(el('div', 'mg-note', e.message)); } } });
   }
   function loadOlder() {
     var list = allMsgs(); if (!list.length) return; S.loadingOlder = true; var b = document.getElementById('mg-body'), h0 = b.scrollHeight;
@@ -553,7 +480,7 @@
   function paintMsgs(stick) {
     var b = document.getElementById('mg-body'); if (!b || !S.loaded) return;
     var list = allMsgs().concat(S.pending), f = (S.find || '').toLowerCase(); if (f) list = list.filter(function (m) { return m.body && m.body.toLowerCase().indexOf(f) >= 0; });
-    var sig = JSON.stringify(list.map(function (m) { return [m.id, m.body.length, m.status, m.edited, m.deleted, m.starred, m.my_reaction, m.reactions, m.err]; })) + S.more + S.firstUnread; if (sig === S.sig && !stick) return; S.sig = sig;
+    var sig = JSON.stringify(list.map(function (m) { return [m.id, (m.body || '').length, m.status, m.edited, m.deleted, m.starred, m.my_reaction, m.reactions, m.err]; })) + S.more + S.firstUnread; if (sig === S.sig && !stick) return; S.sig = sig;
     var near = b.scrollHeight - b.scrollTop - b.clientHeight < 80, top = b.scrollTop; b.textContent = '';
     if (S.more) b.appendChild(el('div', 'mg-note', 'Scroll up for older messages'));
     if (!list.length) b.appendChild(el('div', 'mg-note', f ? 'No matches in this chat.' : S.type === 'support' ? (staff ? 'No messages yet.' : 'Hi! Ask us anything about your order or a product. Please do not share passwords.') : 'No messages yet. Say hello!'));
@@ -745,7 +672,7 @@
     if (!btn) return;
     if (e.ctrlKey && e.shiftKey && (e.key === 'M' || e.key === 'm')) { e.preventDefault(); toggle(); return; }
     if (!box) return;
-    if (e.key === 'Escape') { if (document.querySelector('.mg-lb')) return; if (box.querySelector('.mg-pop')) return closePop(); if (box.querySelector('.mg-menu')) return closeMenu(); if (S.view !== 'list') { go('list'); } else closeBox(); }
+    if (e.key === 'Escape') { if (document.querySelector('.mg-lb')) return; if (box.querySelector('.mg-pop')) return closePop(); if (box.querySelector('.mg-menu')) return closeMenu(); if (staff && S.view !== 'list') { go('list'); } else closeBox(); }
     else if (e.ctrlKey && (e.key === 'k' || e.key === 'K')) { e.preventDefault(); S.pick = null; go('people'); }
   });
   function deepLink() {
