@@ -34,11 +34,11 @@ module.exports = function mount(app, { pool, auth, admin, wrap, notify }) {
   const PROVIDERS = [
     { id: 'gemini', name: 'Google Gemini', kind: 'gemini', keys: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'],
       models: { customer: [process.env.AI_CUSTOMER_MODEL || 'gemini-3.5-flash-lite', ...GEMINI_CHAIN], admin: [process.env.AI_ADMIN_MODEL || 'gemini-3.5-flash-lite', ...GEMINI_CHAIN] } },
-    { id: 'groq', name: 'Groq', url: 'https://api.groq.com/openai/v1', keys: ['GROQ_API_KEY'], models: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'] },
+    { id: 'groq', name: 'Groq', url: 'https://api.groq.com/openai/v1', keys: ['GROQ_API_KEY'], models: ['gpt-oss-120b'] },
     { id: 'cerebras', name: 'Cerebras', url: 'https://api.cerebras.ai/v1', keys: ['CEREBRAS_API_KEY'], models: ['gpt-oss-120b', 'llama3.1-8b'] },
     { id: 'mistral', name: 'Mistral', url: 'https://api.mistral.ai/v1', keys: ['MISTRAL_API_KEY'], models: ['mistral-small-latest', 'open-mistral-nemo'] },
     { id: 'openrouter', name: 'OpenRouter', url: 'https://openrouter.ai/api/v1', keys: ['OPENROUTER_API_KEY'], models: ['meta-llama/llama-3.3-70b-instruct:free', 'openai/gpt-oss-120b:free'], headers: { 'X-Title': 'Glass Shop' } },
-    { id: 'nvidia', name: 'NVIDIA NIM', url: 'https://integrate.api.nvidia.com/v1', keys: ['NVIDIA_API_KEY', 'NVIDIA_NIM_API_KEY'], models: ['meta/llama-3.3-70b-instruct', 'meta/llama-3.1-8b-instruct'] },
+    { id: 'nvidia', name: 'NVIDIA NIM', url: 'https://integrate.api.nvidia.com/v1', keys: ['NVIDIA_API_KEY', 'NVIDIA_NIM_API_KEY'], models: ['gpt-oss-120b, meta/llama-3.3-70b-instruct', 'meta/llama-3.1-8b-instruct'] },
     { id: 'github', name: 'GitHub Models', url: 'https://models.github.ai/inference', keys: ['GITHUB_MODELS_TOKEN'], models: ['openai/gpt-4.1-mini', 'openai/gpt-4o-mini'] },
     { id: 'xai', name: 'xAI Grok', url: 'https://api.x.ai/v1', keys: ['XAI_API_KEY', 'GROK_API_KEY'], models: ['grok-4-fast', 'grok-3-mini'] },
     { id: 'custom', name: 'Custom (OpenAI-compatible)', keys: ['AI_CUSTOM_API_KEY'], optionalKey: true, models: csv(process.env.AI_CUSTOM_MODEL) }
