@@ -5,7 +5,7 @@
   var LS = function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } };
   var LSset = function (k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private mode */ } };
   var me = function () { try { return JSON.parse(LS('user') || 'null'); } catch (e) { return null; } };
-  var P = { sound: true, enter: true, theme: 'auto', accent: '#0a84ff', font: 14, compact: false, desk: false, big: false };
+  var P = { sound: true, enter: true, theme: 'auto', accent: '#0a84ff', font: 14, compact: false, desk: false, big: false, mic: true, speak: true, wake: false, lang: 'en-US', live: true };
   try { Object.assign(P, JSON.parse(LS('mg_prefs') || '{}')); } catch (e) { /* ignore */ }
   var savePrefs = function () { LSset('mg_prefs', JSON.stringify(P)); };
   var EMOJI = ['😀', '😄', '😁', '😂', '🤣', '😊', '😍', '😘', '😎', '🤔', '😅', '😉', '🙂', '😢', '😭', '😡', '👍', '👎', '👏', '🙏', '💪', '🙌', '👋', '🤝', '❤️', '💔', '🔥', '✨', '🎉', '🎁', '🥤', '🍿', '🍫', '🍪', '🍕', '🍔', '☕', '🧋', '🍩', '🍦', '✅', '❌', '⭐', '💯', '📦', '🚚', '💸', '🕐'];
@@ -203,7 +203,7 @@
     var b = document.getElementById('mg-body'); if (!b || S.view !== 'list') return; if (!S.dms) { b.textContent = ''; b.appendChild(el('div', 'mg-note', 'Loading...')); return; }
     var q = (S.filter || '').toLowerCase(), rows = [];
     (S.support || []).forEach(function (r) { r.pinned = !staff; rows.push(r); }); (S.dms || []).forEach(function (r) { rows.push(r); });
-    if (me() && me().role === 'admin') rows.push({ type: 'assistant', id: 0, name: 'AI assistant', username: 'assistant', role: 'ai', preview: 'Ask about sales, stock, orders and support', at: '9999', pinned: true, unread: 0 });
+    if (me() && me().role === 'admin') rows.push({ type: 'assistant', id: 0, name: 'AI assistant', username: 'assistant', role: 'ai', preview: 'Ask, give orders, or talk to it with the mic', at: '9999', pinned: true, unread: 0 });
     rows = rows.filter(function (r) {
       if (q && (r.name + ' ' + r.username).toLowerCase().indexOf(q) < 0) return false;
       if (S.tab === 'archived') return r.archived; if (r.archived) return false;
@@ -223,36 +223,145 @@
     });
   }
 
-  // ----- AI assistant (admin only): ask about sales, stock, orders and support in plain words. Read-only; history lives only in this browser tab.
-  function aiLoad() { try { return JSON.parse(sessionStorage.getItem('mg_ai') || '[]'); } catch (e) { return []; } }
-  function aiSave() { try { sessionStorage.setItem('mg_ai', JSON.stringify(S.ai.slice(-30))); } catch (e) { /* storage blocked */ } }
+  // ----- AI assistant (admin only). Active: it can propose actions (you press Confirm), announce new work by itself, and listen through the microphone.
+  // Voice uses the browser's built-in speech recognition (Chrome, Edge, Safari). Everything here is skipped unless the signed-in user is the admin.
+  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  var isAdmin = function () { var u = me(); return !!(u && u.role === 'admin' && LS('token')); };
+  var A = { msgs: [], busy: false, queue: [] }, V = { rec: null, want: false, denied: false, speaking: false, brief: null, delay: 500, booted: false };
+  try { A.msgs = JSON.parse(sessionStorage.getItem('mg_ai') || '[]'); } catch (e) { A.msgs = []; }
+  function aiSave() { try { sessionStorage.setItem('mg_ai', JSON.stringify(A.msgs.slice(-30).map(function (m) { return { role: m.role, content: m.content }; }))); } catch (e) { /* storage blocked */ } }
+  var LANGS = [['en-US', 'English'], ['en-PH', 'English (PH)'], ['fil-PH', 'Filipino']];
+  var vcss = el('style');
+  vcss.textContent = '#mg-mic{position:fixed;left:70px;bottom:16px;z-index:9000;width:44px;height:44px;border-radius:12px;border:1px solid rgba(255,255,255,.35);background:rgba(30,30,34,.72);color:#fff;display:grid;place-items:center;cursor:pointer;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}#mg-mic svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}#mg-mic.on{background:#e5484d;animation:mgp 1.6s infinite}@keyframes mgp{50%{box-shadow:0 0 0 8px rgba(229,72,77,.25)}}#mg-vb{position:fixed;left:16px;bottom:68px;z-index:9000;max-width:min(320px,calc(100vw - 32px));padding:10px 14px;border-radius:14px;background:rgba(30,30,34,.92);color:#fff;font:14px/1.35 system-ui,sans-serif;white-space:pre-wrap}#mg-body .mg-act{margin:4px 0 8px;padding:10px 12px;border-radius:14px;border:1px solid var(--edge);background:var(--field);font-size:14px;color:var(--txt)}#mg-body .mg-act .row{display:flex;gap:8px;margin-top:8px}#mg-body .mg-act button{padding:7px 14px;border-radius:999px;border:1px solid var(--edge);background:var(--glass2);cursor:pointer}#mg-body .mg-act button.p{background:#0a84ff;color:#fff;border-color:transparent}';
+  document.head.appendChild(vcss);
+
+  function notice(t) { // small bubble when the Messages panel is closed, toast when it is open
+    if (box) { say(t.slice(0, 120)); return; }
+    var o = document.getElementById('mg-vb') || el('div'); o.id = 'mg-vb'; o.textContent = t.slice(0, 300); document.body.appendChild(o);
+    clearTimeout(V.vbT); V.vbT = setTimeout(function () { o.remove(); }, 9000);
+  }
+  function speak(t) {
+    if (!window.speechSynthesis) return;
+    try {
+      speechSynthesis.cancel(); var u = new SpeechSynthesisUtterance(String(t).slice(0, 600)); u.lang = P.lang || 'en-US'; V.speaking = true;
+      if (V.rec) { try { V.rec.abort(); } catch (e) { /* ignore */ } } // do not listen to ourselves
+      var done = function () { V.speaking = false; if (V.want && !V.denied && !V.rec) setTimeout(micStart, 300); };
+      u.onend = done; u.onerror = done; speechSynthesis.speak(u);
+    } catch (e) { V.speaking = false; }
+  }
+  function micUi() {
+    var m = document.getElementById('mg-mic'); if (m) { m.classList.toggle('on', !!V.rec); m.title = V.want ? (V.rec ? 'Microphone is listening (click to turn off)' : 'Microphone on, restarting...') : 'Microphone is off (click to turn on)'; }
+    refreshStrip();
+  }
+  function micStart() {
+    if (!SR || !isAdmin() || V.rec || V.speaking || !V.want || V.denied) return;
+    var r = new SR(); r.continuous = true; r.interimResults = false; r.lang = P.lang || 'en-US'; r.maxAlternatives = 1;
+    r.onresult = function (e) { V.delay = 500; for (var i = e.resultIndex; i < e.results.length; i++) { if (e.results[i].isFinal) { var t = String(e.results[i][0].transcript || '').trim(); if (t && !V.speaking) heard(t); } } };
+    r.onerror = function (e) {
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') { V.denied = true; V.want = false; notice('Microphone blocked. Allow it in the browser address bar, then click the mic button.'); }
+      else if (e.error === 'network') V.delay = 5000;
+    };
+    r.onend = function () { if (V.rec === r) V.rec = null; micUi(); if (V.want && !V.denied && isAdmin() && !V.speaking) setTimeout(micStart, V.delay); };
+    try { r.start(); V.rec = r; micUi(); } catch (e) { V.rec = null; }
+  }
+  function setMic(on) {
+    if (on && !isAdmin()) return;
+    P.mic = !!on; savePrefs(); V.want = !!on; V.denied = false;
+    if (on) micStart(); else { if (V.rec) { try { V.rec.abort(); } catch (e) { /* ignore */ } } V.rec = null; if (window.speechSynthesis) speechSynthesis.cancel(); }
+    micUi();
+  }
+  function micStrip() {
+    var s = el('div', 'tabs'); s.id = 'mg-ai-mic';
+    if (!SR) { s.appendChild(el('div', 'mg-note', 'Voice needs Chrome, Edge or Safari. Typing works everywhere.')); return s; }
+    var mk = function (on, label, f) { var b = el('button', on ? 'on' : '', label); b.onclick = f; s.appendChild(b); };
+    mk(V.want, V.want ? (V.rec ? 'Mic: listening' : 'Mic: on') : 'Mic: off', function () { setMic(!V.want); });
+    mk(P.speak, P.speak ? 'Voice replies: on' : 'Voice replies: off', function () { P.speak = !P.speak; savePrefs(); if (!P.speak && window.speechSynthesis) speechSynthesis.cancel(); refreshStrip(); });
+    mk(P.wake, P.wake ? 'Wake word: on' : 'Wake word: off', function () { P.wake = !P.wake; savePrefs(); refreshStrip(); notice(P.wake ? 'Start with "shop" or "assistant", for example: shop, what is pending?' : 'Everything you say is sent to the assistant.'); });
+    mk(false, (LANGS.filter(function (l) { return l[0] === P.lang; })[0] || LANGS[0])[1], function () { var i = 0; LANGS.forEach(function (l, k) { if (l[0] === P.lang) i = k; }); P.lang = LANGS[(i + 1) % LANGS.length][0]; savePrefs(); if (V.rec) { try { V.rec.abort(); } catch (e) { /* ignore */ } } refreshStrip(); });
+    return s;
+  }
+  function refreshStrip() { var o = document.getElementById('mg-ai-mic'); if (o && box && S.view === 'assistant') o.replaceWith(micStrip()); }
+
+  function latestPending() { for (var i = A.msgs.length - 1; i >= 0; i--) { var a = A.msgs[i].actions || []; for (var j = a.length - 1; j >= 0; j--) if (a[j].state === 'wait') return a[j]; } return null; }
+  function heard(t) {
+    var low = t.toLowerCase().replace(/[.,!?]/g, '').trim(), pend = latestPending();
+    if (pend) { // voice confirmation: only the plain word "confirm" runs an action
+      if (/^confirm\b/.test(low)) { doAction(pend, true); return; }
+      if (/^(cancel|never mind|nevermind)\b/.test(low)) { doAction(pend, false); return; }
+    }
+    if (P.wake) { var m = /^(?:hey |ok |okay )?(?:shop|assistant|snackify)[ ,]*(.*)$/.exec(low); if (!m || m[1].length < 2) return; t = m[1]; }
+    if (t.length < 2) return;
+    aiAsk(t, true);
+  }
+  function doAction(a, ok) {
+    if (!a || a.state !== 'wait' || a.busy) return; a.busy = true; paintAi();
+    api('/api/admin/agent/confirm', 'POST', { id: a.id, ok: !!ok }).then(function (r) { a.state = ok ? 'done' : 'cancel'; a.result = r.message; }).catch(function (e) { a.state = 'error'; a.result = e.message; })
+      .then(function () { a.busy = false; paintAi(); notice(a.result || ''); if (V.want && P.speak) speak(a.result || ''); });
+  }
   function viewAssistant() {
-    S.ai = S.ai || aiLoad();
-    frame('AI assistant', '', { back: true, av: avatar('AI', true), btns: [['Clear', 'Clear this conversation', function () { S.ai = []; aiSave(); paintAi(); }]] });
-    bodyBox();
+    frame('AI assistant', '', { back: true, av: avatar('AI', true), btns: [['Clear', 'Clear this conversation', function () { A.msgs = []; aiSave(); paintAi(); }]] });
+    box.appendChild(micStrip()); bodyBox();
     var f = el('footer'), row = el('div', 'cm'), ta = el('textarea'), sb = el('button', 'snd'); f.id = 'mg-foot';
-    ta.id = 'mg-ta'; ta.rows = 1; ta.placeholder = 'Ask about sales, stock, orders...'; sb.type = 'button'; sb.innerHTML = IC.send; sb.title = 'Send (Enter)'; sb.setAttribute('aria-label', 'Send');
+    ta.id = 'mg-ta'; ta.rows = 1; ta.placeholder = 'Ask, or tell me what to do...'; sb.type = 'button'; sb.innerHTML = IC.send; sb.title = 'Send (Enter)'; sb.setAttribute('aria-label', 'Send');
     var go1 = function () { var t = ta.value.trim(); if (t) { ta.value = ''; aiAsk(t); } };
     sb.onclick = go1; ta.onkeydown = function (e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); go1(); } };
     row.appendChild(ta); row.appendChild(sb); f.appendChild(row); box.appendChild(f); paintAi(); ta.focus();
   }
   function paintAi() {
-    var b = document.getElementById('mg-body'); if (!b || S.view !== 'assistant') return; b.textContent = '';
-    if (!S.ai.length) {
-      b.appendChild(el('div', 'mg-note', 'Ask me about sales, stock, orders or support chats. I can only read the shop. I cannot change anything.'));
+    var b = document.getElementById('mg-body'); if (!b || !box || S.view !== 'assistant') return; b.textContent = '';
+    if (!A.msgs.length) {
+      b.appendChild(el('div', 'mg-note', 'Ask me about sales, stock, orders or support chats, or tell me to act: "mark order 12 packed", "set Choco Chip sold out", "reply to maria that her order is on the way". I always show a card first and nothing changes until you press Confirm (or say "confirm").'));
       var ch = el('div', 'tabs');
       [['Sales this week', 'How were sales in the last 7 days?'], ['Low stock', 'Which products are low or sold out?'], ['Pending orders', 'Show the pending orders'], ['Support inbox', 'What is waiting in support?']].forEach(function (c) { var x = el('button', '', c[0]); x.onclick = function () { aiAsk(c[1]); }; ch.appendChild(x); });
       b.appendChild(ch);
     }
-    S.ai.forEach(function (m) { var d = el('div', 'mg-m ' + (m.role === 'user' ? 'me' : 'o'), m.content); d.style.whiteSpace = 'pre-wrap'; b.appendChild(d); });
-    if (S.aiBusy) { var t = el('div', 'mg-m o', 'Thinking...'); t.style.opacity = '.6'; b.appendChild(t); }
+    A.msgs.forEach(function (m) {
+      var d = el('div', 'mg-m ' + (m.role === 'user' ? 'me' : 'o'), m.content); d.style.whiteSpace = 'pre-wrap'; b.appendChild(d);
+      (m.actions || []).forEach(function (a) {
+        var c = el('div', 'mg-act'); c.appendChild(el('div', '', a.summary));
+        if (a.state === 'wait') {
+          var r = el('div', 'row'), ok = el('button', 'p', a.busy ? 'Working...' : 'Confirm'), no = el('button', '', 'Cancel');
+          ok.onclick = function () { doAction(a, true); }; no.onclick = function () { doAction(a, false); }; r.appendChild(ok); r.appendChild(no); c.appendChild(r);
+        } else { var s = el('div', '', (a.state === 'done' ? 'Done. ' : a.state === 'cancel' ? 'Cancelled. ' : 'Not done. ') + (a.result || '')); s.style.opacity = '.7'; s.style.marginTop = '6px'; c.appendChild(s); }
+        b.appendChild(c);
+      });
+    });
+    if (A.busy) { var t = el('div', 'mg-m o', 'Thinking...'); t.style.opacity = '.6'; b.appendChild(t); }
     b.scrollTop = b.scrollHeight;
   }
-  function aiAsk(text) {
-    if (S.aiBusy) return; var hist = S.ai.slice(-10);
-    S.ai.push({ role: 'user', content: text }); S.aiBusy = true; aiSave(); paintAi();
-    api('/api/admin/agent', 'POST', { message: text, history: hist }).then(function (r) { S.ai.push({ role: 'assistant', content: r.reply }); }).catch(function (e) { S.ai.push({ role: 'assistant', content: e.message }); })
-      .then(function () { S.aiBusy = false; aiSave(); paintAi(); });
+  function aiAsk(text, spoken) {
+    if (A.busy) { if (spoken && A.queue.length < 3) A.queue.push(text); return; }
+    var hist = A.msgs.slice(-10).map(function (m) { return { role: m.role, content: m.content }; });
+    A.msgs.push({ role: 'user', content: text }); A.busy = true; aiSave(); paintAi(); if (spoken) notice('Heard: ' + text);
+    api('/api/admin/agent', 'POST', { message: text, history: hist }).then(function (r) {
+      var acts = (r.actions || []).map(function (a) { return { id: a.id, summary: a.summary, state: 'wait' }; });
+      A.msgs.push({ role: 'assistant', content: r.reply, actions: acts });
+      notice(r.reply); if (V.want && P.speak) speak(r.reply + (acts.length ? ' Say confirm to do it, or cancel.' : ''));
+    }).catch(function (e) { A.msgs.push({ role: 'assistant', content: e.message }); })
+      .then(function () { A.busy = false; aiSave(); paintAi(); var n = A.queue.shift(); if (n) aiAsk(n, true); });
+  }
+  // The "active" part: every 40 seconds the admin's browser asks for plain counts (no AI call) and announces what is new.
+  function announce(t) { A.msgs.push({ role: 'assistant', content: t }); aiSave(); paintAi(); ping(); notice(t); if (V.want && P.speak) speak(t); }
+  function briefPoll() {
+    if (!isAdmin() || P.live === false) return;
+    api('/api/admin/agent/brief').then(function (b) {
+      var p = V.brief; V.brief = b; if (!p) return; var m = [];
+      if (b.newest_pending_order > p.newest_pending_order) m.push('New order number ' + b.newest_pending_order + '. ' + b.pending_orders + ' pending.');
+      if (b.handoffs > p.handoffs) m.push('A customer needs a person in support.'); else if (b.unread_chats > p.unread_chats) m.push('New support message.');
+      if (m.length) announce(m.join(' '));
+    }).catch(function () { /* AI off or offline */ });
+  }
+  setInterval(briefPoll, 40000);
+  // Microphone button next to the Messages button, admin only. It also starts listening after the first click anywhere if the browser needed a gesture.
+  function adminBoot(on) {
+    var m = document.getElementById('mg-mic');
+    if (on && !m) {
+      m = el('button'); m.id = 'mg-mic'; m.type = 'button'; m.innerHTML = SV('<path d="M12 3a3 3 0 00-3 3v6a3 3 0 006 0V6a3 3 0 00-3-3z"/><path d="M19 11a7 7 0 01-14 0M12 18v3"/>'); m.setAttribute('aria-label', 'Microphone');
+      m.onclick = function () { setMic(!V.want); }; document.body.appendChild(m);
+      V.want = P.mic !== false; V.brief = null; if (V.want) micStart(); micUi();
+      if (!V.booted) { V.booted = true; document.addEventListener('click', function () { if (V.want && !V.rec && !V.denied && isAdmin()) micStart(); }, true); }
+    }
+    if (!on && m) { m.remove(); V.want = false; if (V.rec) { try { V.rec.abort(); } catch (e) { /* ignore */ } } V.rec = null; if (window.speechSynthesis) speechSynthesis.cancel(); var v = document.getElementById('mg-vb'); if (v) v.remove(); A.msgs = []; aiSave(); }
   }
   function rowMenu(r, e) {
     menu([{ t: r.pinned ? 'Unpin chat' : 'Pin chat', f: function () { chatSet(r.id, { pinned: !r.pinned }); } }, { t: r.muted ? 'Unmute' : 'Mute notifications', f: function () { chatSet(r.id, { muted: !r.muted }); } },
@@ -551,6 +660,7 @@
     var u = me(), on = !!(u && LS('token'));
     if (on && !btn) { staff = u.role !== 'customer'; btn = el('button'); btn.id = 'mg-btn'; btn.type = 'button'; btn.title = 'Messages (Ctrl+Shift+M)'; btn.onclick = toggle; document.body.appendChild(btn); setBadge(0); pollSummary(); if (!linked) { linked = true; deepLink(); } }
     if (!on && btn) { closeBox(); btn.remove(); btn = null; lastUnread = 0; setBadge(0); }
+    adminBoot(on && isAdmin());
   }, 2000);
   setInterval(pollSummary, 25000);
 })();
