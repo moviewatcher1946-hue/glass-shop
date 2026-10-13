@@ -15,7 +15,7 @@ module.exports = function mount(app, { pool, auth, admin, wrap, notify }) {
   const KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
   // "-latest" aliases follow Google's current Flash models. If Google renames them, set AI_CUSTOMER_MODEL / AI_ADMIN_MODEL in Render.
   const MODEL_CUSTOMER = process.env.AI_CUSTOMER_MODEL || 'gemini-flash-lite-latest';
-  const MODEL_ADMIN = process.env.AI_ADMIN_MODEL || 'gemini-flash-latest';
+  const MODEL_ADMIN = process.env.AI_ADMIN_MODEL || 'gemini-flash-lite-latest';
   const AUTO = process.env.AI_CUSTOMER_REPLIES !== 'off';
   const GATE = process.env.AI_STRICT_GATE !== 'off';
   const CUR = process.env.AI_CURRENCY || '\u20B1';
