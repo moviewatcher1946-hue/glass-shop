@@ -11,7 +11,8 @@ const VERIFY = { algorithms: ['HS256'] };
 const SIGN = { algorithm: 'HS256' };
 
 // pc = the person logged in with a temporary password: a short session that can only set a new password.
-const sign = (u, pc = false) => jwt.sign({ id: u.id, username: u.username, role: u.role, ...(pc ? { pc: true } : {}) }, SECRET, { ...SIGN, expiresIn: pc ? '1h' : '7d' });
+// iat can be pinned to the database clock: if the database clock runs ahead of this server's, a fresh token would look older than the password change and be refused.
+const sign = (u, pc = false, iat) => jwt.sign({ id: u.id, username: u.username, role: u.role, ...(pc ? { pc: true } : {}), ...(iat ? { iat } : {}) }, SECRET, { ...SIGN, expiresIn: pc ? '1h' : '7d' });
 
 // The token only proves WHO someone is. Their role and name are always read from the database (cached for a few
 // seconds), so a seller who is removed or renamed stops working right away instead of staying powerful until the
