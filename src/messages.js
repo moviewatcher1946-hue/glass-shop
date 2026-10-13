@@ -139,12 +139,12 @@ module.exports = function mount(app, { pool, auth, admin, wrap }) {
     const me = req.user;
     await q('UPDATE dm_messages SET delivered_at=now() WHERE recipient_id=$1 AND delivered_at IS NULL', [me.id]);
     const dm = (await q(`SELECT COUNT(*)::int n FROM dm_messages m LEFT JOIN dm_state s ON s.user_id=$1 AND s.peer_id=m.sender_id
-      WHERE m.recipient_id=$1 AND m.read_at IS NULL AND m.id>COALESCE(s.cleared_before,0) AND NOT COALESCE(s.muted,false)`, [me.id])).rows[0].n;
+      WHERE m.recipient_id=$1 AND m.read_at IS NULL AND m.deleted_at IS NULL AND m.id>COALESCE(s.cleared_before,0) AND NOT COALESCE(s.muted,false)`, [me.id])).rows[0].n;
     const support = isStaff(me)
       ? (await q('SELECT COUNT(DISTINCT user_id)::int n FROM chat_messages WHERE NOT from_staff AND NOT read_by_staff')).rows[0].n
       : (await q('SELECT COUNT(*)::int n FROM chat_messages WHERE user_id=$1 AND from_staff AND NOT read_by_customer', [me.id])).rows[0].n;
     const latest = (await q(`SELECT u.username,m.kind,LEFT(m.body,60) body FROM dm_messages m JOIN users u ON u.id=m.sender_id LEFT JOIN dm_state s ON s.user_id=$1 AND s.peer_id=m.sender_id
-      WHERE m.recipient_id=$1 AND m.read_at IS NULL AND NOT COALESCE(s.muted,false) AND m.kind<>'auto' ORDER BY m.id DESC LIMIT 1`, [me.id])).rows[0];
+      WHERE m.recipient_id=$1 AND m.read_at IS NULL AND m.deleted_at IS NULL AND NOT COALESCE(s.muted,false) AND m.kind<>'auto' ORDER BY m.id DESC LIMIT 1`, [me.id])).rows[0];
     res.json({ unread: dm + support, dm, support, latest: latest ? { from: latest.username, text: latest.kind === 'image' ? 'Photo' : latest.body } : null });
   }));
 
@@ -154,7 +154,7 @@ module.exports = function mount(app, { pool, auth, admin, wrap }) {
     const rows = (await q(`SELECT u.id,u.username,u.role,l.sender_id=$1 mine,l.kind,LEFT(l.body,80) body,l.deleted_at IS NOT NULL deleted,l.created_at,
         COALESCE(s.pinned,false) pinned,COALESCE(s.muted,false) muted,COALESCE(s.archived,false) archived,COALESCE(s.nickname,'') nickname,
         COALESCE(pf.show_last_seen,true) visible,
-        (SELECT COUNT(*)::int FROM dm_messages x WHERE x.sender_id=u.id AND x.recipient_id=$1 AND x.read_at IS NULL AND x.id>COALESCE(s.cleared_before,0)) unread
+        (SELECT COUNT(*)::int FROM dm_messages x WHERE x.sender_id=u.id AND x.recipient_id=$1 AND x.read_at IS NULL AND x.deleted_at IS NULL AND x.id>COALESCE(s.cleared_before,0)) unread
       FROM (SELECT DISTINCT ON (${key}) m.*, ${key} peer FROM dm_messages m LEFT JOIN dm_state c ON c.user_id=$1 AND c.peer_id=(${key})
             WHERE (m.sender_id=$1 OR m.recipient_id=$1) AND m.id>COALESCE(c.cleared_before,0) ORDER BY ${key}, m.id DESC) l
       JOIN users u ON u.id=l.peer LEFT JOIN dm_state s ON s.user_id=$1 AND s.peer_id=u.id LEFT JOIN dm_prefs pf ON pf.user_id=u.id
@@ -234,7 +234,7 @@ module.exports = function mount(app, { pool, auth, admin, wrap }) {
   // ----- edit, delete, react, star, pin, report
   app.put('/api/msg/message/:id', ...M, wrap(async (req, res) => {
     const m = await mine(shortId(req.params.id), req.user.id, true), body = clean(req.body && req.body.body);
-    if (m.deleted_at || m.kind !== 'text') throw bad('That message cannot be edited.');
+    if (m.deleted_at || m.broadcast || m.kind !== 'text') throw bad('That message cannot be edited.');
     if (!body) throw bad('A message cannot be empty.');
     if (Date.now() - new Date(m.created_at) > EDIT_MIN * 60e3) throw bad('Messages can be edited for ' + EDIT_MIN + ' minutes.');
     await q('UPDATE dm_messages SET body=$1, edited_at=now() WHERE id=$2', [body, m.id]);
