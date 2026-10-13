@@ -186,7 +186,9 @@ module.exports = function mount(app, { pool, auth, admin, wrap, notify }) {
     // One attempt on one model with its own time limit.
     const attempt = async (e, timeoutMs) => {
       const args = { system, contents, tools, max, rs, quick };
-      return { data: await (e.p.id === 'gemini' ? geminiCall : openaiCall)(e, args, timeoutMs), activeModel: e };
+      const data = await (e.p.id === 'gemini' ? geminiCall : openaiCall)(e, args, timeoutMs);
+      console.log('[agent] answered by ' + e.key);
+      return { data, activeModel: e };
     };
 
     // Pass 1: fast. Every model gets FAST_MS. Models that only timed out are remembered as "slow".
@@ -542,7 +544,28 @@ module.exports = function mount(app, { pool, auth, admin, wrap, notify }) {
   const recent = new Map();
   const limit = (uid, n) => { const now = Date.now(), hits = (recent.get(uid) || []).filter((t) => now - t < 60e3); if (hits.length >= n) throw bad('Slow down a little, then try again.', 429); hits.push(now); recent.set(uid, hits); };
 
-  app.get('/api/admin/agent/status', auth, admin, (req, res) => res.json({ enabled: ENABLED, customer_replies: ENABLED && AUTO, strict_filter: GATE, provider: ACTIVE[0] ? ACTIVE[0].id : null, providers: ACTIVE.map((p) => ({ id: p.id, label: p.label })), customer_model: MODEL_CUSTOMER.map((e) => e.key), admin_model: MODEL_ADMIN.map((e) => e.key) }));
+  app.get('/api/admin/agent/status', auth, admin, (req, res) => res.json({ enabled: ENABLED, customer_replies: ENABLED && AUTO, strict_filter: GATE, provider: ACTIVE[0] ? ACTIVE[0].id : null, providers: ACTIVE.map((p) => ({ id: p.id, label: p.label, models: MODEL_ADMIN.filter((e) => e.p.id === p.id).map((e) => e.m) })), missing: PROVIDERS.filter((p) => !ACTIVE.includes(p) && p.id !== 'custom').map((p) => ({ id: p.id, label: p.label, env: p.keys[0] })), customer_model: MODEL_CUSTOMER.map((e) => e.key), admin_model: MODEL_ADMIN.map((e) => e.key) }));
+
+  // Admin test: sends one tiny request to ONE provider and model (no fallback to the others) and reports what happened.
+  // It also checks tool calling, because the assistant needs it. Only providers that have a key and only their configured models can be tested.
+  app.post('/api/admin/agent/test', auth, admin, wrap(async (req, res) => {
+    limit('t' + req.user.id, 15);
+    const b = req.body || {}, p = ACTIVE.find((x) => x.id === String(b.provider || ''));
+    if (!p) throw bad('That provider has no key set.', 404);
+    const models = MODEL_ADMIN.filter((e) => e.p.id === p.id).map((e) => e.m), m = clean(b.model, 120) || models[0];
+    if (!models.includes(m)) throw bad('Unknown model for this provider.');
+    const t0 = Date.now(); let called = false;
+    try {
+      const reply = await run({
+        model: [{ p, m, key: p.id + '/' + m }], max: 200,
+        system: 'You are a connection test. Call the get_number tool once, then say the number it returned in one short sentence.',
+        contents: [{ role: 'user', parts: [{ text: 'Call get_number and tell me the number.' }] }],
+        tools: [tool('get_number', 'Returns the test number.')],
+        exec: async () => { called = true; return 42; }
+      });
+      res.json({ ok: !!(reply || called), provider: p.id, model: m, ms: Date.now() - t0, tools: called, reply: String(reply || '').slice(0, 200), error: reply || called ? undefined : 'The model returned an empty answer.' });
+    } catch (e) { res.json({ ok: false, provider: p.id, model: m, ms: Date.now() - t0, tools: false, error: String(e.message || e).slice(0, 300) }); }
+  }));
 
   // ----- Teach screen (admin only): the notes the AI answers from
   app.get('/api/admin/agent/knowledge', auth, admin, wrap(async (req, res) => {
