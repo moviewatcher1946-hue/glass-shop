@@ -185,7 +185,7 @@
     clearInterval(timer); closeMenu(); skin(); if (box && !box._ic) { box._ic = new MutationObserver(function () { iconize(box); }); box._ic.observe(box, { childList: true, subtree: true }); }
     // Customers only ever see one built-in chat: the shop support thread (answered by the shop team). No list, no people search.
     if (!staff && S.view !== 'thread') { openConv({ type: 'support', id: me().id, name: 'Shop support', role: 'shop' }); return; }
-    ({ list: viewList, thread: viewThread, settings: viewSettings, people: viewPeople, starred: viewStarred, search: viewSearch })[S.view || 'list']();
+    ({ list: viewList, assistant: viewAssistant, thread: viewThread, settings: viewSettings, people: viewPeople, starred: viewStarred, search: viewSearch })[S.view || 'list']();
   }
   function bodyBox() { var b = el('div'); b.id = 'mg-body'; box.appendChild(b); return b; }
   function btns(extra) { return [['✎', 'New message', function () { S.pick = null; go('people'); }], ['🔍', 'Search all messages', function () { go('search'); }], ['★', 'Starred messages', function () { go('starred'); }], ['⚙', 'Settings', function () { go('settings'); }], [P.big ? '⤡' : '⤢', 'Bigger / smaller', function () { P.big = !P.big; savePrefs(); skin(); render(); }]].concat(extra || []); }
@@ -203,6 +203,7 @@
     var b = document.getElementById('mg-body'); if (!b || S.view !== 'list') return; if (!S.dms) { b.textContent = ''; b.appendChild(el('div', 'mg-note', 'Loading...')); return; }
     var q = (S.filter || '').toLowerCase(), rows = [];
     (S.support || []).forEach(function (r) { r.pinned = !staff; rows.push(r); }); (S.dms || []).forEach(function (r) { rows.push(r); });
+    if (me() && me().role === 'admin') rows.push({ type: 'assistant', id: 0, name: 'AI assistant', username: 'assistant', role: 'ai', preview: 'Ask about sales, stock, orders and support', at: '9999', pinned: true, unread: 0 });
     rows = rows.filter(function (r) {
       if (q && (r.name + ' ' + r.username).toLowerCase().indexOf(q) < 0) return false;
       if (S.tab === 'archived') return r.archived; if (r.archived) return false;
@@ -212,7 +213,7 @@
     if (!rows.length) { var n = el('div', 'mg-note', S.tab === 'all' && !q ? 'No messages yet. Tap ✎ to start one.' : 'Nothing here.'); b.appendChild(n); return; }
     rows.forEach(function (r) {
       var row = el('div', 'mg-row'), x = el('div', 'x'), nm = el('b', '', r.name); row.tabIndex = 0; var tg = tag(r.role); if (tg) nm.appendChild(tg); x.appendChild(nm);
-      x.appendChild(el('em', '', (r.mine ? 'You: ' : '') + (r.preview || ''))); var rt = el('div', 'r', shortTime(r.at));
+      x.appendChild(el('em', '', (r.mine ? 'You: ' : '') + (r.preview || ''))); var rt = el('div', 'r', r.type === 'assistant' ? '' : shortTime(r.at));
       if (r.unread) rt.appendChild(el('span', 'mg-n', String(r.unread))); else if (r.pinned && r.type === 'dm') rt.appendChild(el('span', '', '📌')); if (r.muted) rt.appendChild(el('span', '', '🔕'));
       var mbtn = null; if (r.type === 'dm') { mbtn = el('button', 'ib', '⋯'); mbtn.title = 'Pin, mute, archive'; mbtn.onclick = function (e) { e.stopPropagation(); rowMenu(r, e); }; }
       row.appendChild(avatar(r.name, false, r.online)); row.appendChild(x); row.appendChild(rt); if (mbtn) row.appendChild(mbtn);
@@ -220,6 +221,38 @@
       row.oncontextmenu = function (e) { if (r.type !== 'dm') return; e.preventDefault(); rowMenu(r, e); };
       row.onkeydown = function (e) { if (e.key === 'Enter') openConv(r); }; b.appendChild(row);
     });
+  }
+
+  // ----- AI assistant (admin only): ask about sales, stock, orders and support in plain words. Read-only; history lives only in this browser tab.
+  function aiLoad() { try { return JSON.parse(sessionStorage.getItem('mg_ai') || '[]'); } catch (e) { return []; } }
+  function aiSave() { try { sessionStorage.setItem('mg_ai', JSON.stringify(S.ai.slice(-30))); } catch (e) { /* storage blocked */ } }
+  function viewAssistant() {
+    S.ai = S.ai || aiLoad();
+    frame('AI assistant', '', { back: true, av: avatar('AI', true), btns: [['Clear', 'Clear this conversation', function () { S.ai = []; aiSave(); paintAi(); }]] });
+    bodyBox();
+    var f = el('footer'), row = el('div', 'cm'), ta = el('textarea'), sb = el('button', 'snd'); f.id = 'mg-foot';
+    ta.id = 'mg-ta'; ta.rows = 1; ta.placeholder = 'Ask about sales, stock, orders...'; sb.type = 'button'; sb.innerHTML = IC.send; sb.title = 'Send (Enter)'; sb.setAttribute('aria-label', 'Send');
+    var go1 = function () { var t = ta.value.trim(); if (t) { ta.value = ''; aiAsk(t); } };
+    sb.onclick = go1; ta.onkeydown = function (e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); go1(); } };
+    row.appendChild(ta); row.appendChild(sb); f.appendChild(row); box.appendChild(f); paintAi(); ta.focus();
+  }
+  function paintAi() {
+    var b = document.getElementById('mg-body'); if (!b || S.view !== 'assistant') return; b.textContent = '';
+    if (!S.ai.length) {
+      b.appendChild(el('div', 'mg-note', 'Ask me about sales, stock, orders or support chats. I can only read the shop. I cannot change anything.'));
+      var ch = el('div', 'tabs');
+      [['Sales this week', 'How were sales in the last 7 days?'], ['Low stock', 'Which products are low or sold out?'], ['Pending orders', 'Show the pending orders'], ['Support inbox', 'What is waiting in support?']].forEach(function (c) { var x = el('button', '', c[0]); x.onclick = function () { aiAsk(c[1]); }; ch.appendChild(x); });
+      b.appendChild(ch);
+    }
+    S.ai.forEach(function (m) { var d = el('div', 'mg-m ' + (m.role === 'user' ? 'me' : 'o'), m.content); d.style.whiteSpace = 'pre-wrap'; b.appendChild(d); });
+    if (S.aiBusy) { var t = el('div', 'mg-m o', 'Thinking...'); t.style.opacity = '.6'; b.appendChild(t); }
+    b.scrollTop = b.scrollHeight;
+  }
+  function aiAsk(text) {
+    if (S.aiBusy) return; var hist = S.ai.slice(-10);
+    S.ai.push({ role: 'user', content: text }); S.aiBusy = true; aiSave(); paintAi();
+    api('/api/admin/agent', 'POST', { message: text, history: hist }).then(function (r) { S.ai.push({ role: 'assistant', content: r.reply }); }).catch(function (e) { S.ai.push({ role: 'assistant', content: e.message }); })
+      .then(function () { S.aiBusy = false; aiSave(); paintAi(); });
   }
   function rowMenu(r, e) {
     menu([{ t: r.pinned ? 'Unpin chat' : 'Pin chat', f: function () { chatSet(r.id, { pinned: !r.pinned }); } }, { t: r.muted ? 'Unmute' : 'Mute notifications', f: function () { chatSet(r.id, { muted: !r.muted }); } },
@@ -247,10 +280,10 @@
   }
 
   // ----- a conversation
-  function openConv(c) { S.type = c.type; S.cid = c.id; S.name = c.name; S.role = c.role; S.view = 'thread'; S.latest = []; S.older = []; S.info = null; S.pinned = null; S.sched = []; S.reply = null; S.edit = null; S.more = false; S.firstUnread = null; S.pending = []; S.find = ''; S.sig = ''; S.loaded = false; render(); }
+  function openConv(c) { if (c.type === 'assistant') { go('assistant'); return; } S.type = c.type; S.cid = c.id; S.name = c.name; S.role = c.role; S.view = 'thread'; S.latest = []; S.older = []; S.info = null; S.pinned = null; S.sched = []; S.reply = null; S.edit = null; S.more = false; S.firstUnread = null; S.pending = []; S.find = ''; S.sig = ''; S.loaded = false; render(); }
   var draftKey = function () { return 'mg_draft_' + (me() ? me().id : 0) + '_' + S.type + S.cid; };
   function allMsgs() { var first = S.latest.length ? S.latest[0].id : Infinity; return S.older.filter(function (m) { return m.id < first; }).concat(S.latest); }
-  function mapSupport(m) { return { id: m.id, mine: staff ? m.from_staff : !m.from_staff, kind: 'text', body: m.body, created_at: m.created_at, reactions: {}, support: true, sender: m.sender }; }
+  function mapSupport(m) { return { id: m.id, mine: staff ? m.from_staff : !m.from_staff, kind: 'text', body: (/^Shop assistant/.test(m.sender || '') ? '[AI] ' : '') + m.body, created_at: m.created_at, reactions: {}, support: true, sender: m.sender }; }
   function viewThread() {
     var dm = S.type === 'dm', sup = !dm;
     frame(S.name, '', { back: !!staff, av: avatar(S.name, true), tag: tag(S.role), btns: dm ? [['⋯', 'Chat options', function (e) { chatMenu(e); }]] : [] });
