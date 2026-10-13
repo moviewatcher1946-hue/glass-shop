@@ -437,8 +437,8 @@ const adminBtns = (o) => {
   const me = parts.length > 1 ? parts.find((x) => x.owner_id === user.id) : null;
   if (me && o.status === 'cancelled') return '';
   const st = me ? me.status : o.status;
-  if (st === 'pending') return btn('packed', me ? 'Approve: packed' : 'Mark packed', 'primary') + btn('cancelled', me ? 'Cancel my part' : 'Cancel', 'danger') + (me ? '' : btn('cancelled', 'Unable to deliver', 'danger', ' data-reason="ask"'));
-  if (st === 'packed') return btn('completed', me ? 'Approve: complete' : 'Complete', 'primary') + btn('cancelled', me ? 'Cancel my part' : 'Cancel', 'danger') + (me ? '' : btn('cancelled', 'Unable to deliver', 'danger', ' data-reason="ask"'));
+  if (st === 'pending') return btn('packed', me ? 'Approve: packed' : 'Mark packed', 'primary');
+  if (st === 'packed') return btn('completed', me ? 'Approve: complete' : 'Complete', 'primary');
   return '';
 };
 const partsLine = (o) => ((o.parts || []).length > 1
@@ -1230,6 +1230,10 @@ function changePwDialog() {
     <button class="primary">Save new password</button><button type="button" data-act="logout">Log out</button></form>`;
   if (!$('#dlg').open) $('#dlg').showModal();
 }
+function rememberLogin(name, pw) {
+  try { localStorage.setItem('shop_last_user', name); } catch (e) { /* storage blocked */ }
+  try { if (window.PasswordCredential && navigator.credentials) navigator.credentials.store(new PasswordCredential({ id: name, password: pw, name })).catch(() => {}); } catch (e) { /* not supported */ }
+}
 function authDialog() {
   $('#dlg').innerHTML = `<style>
     .au-tabs{display:flex;gap:6px;padding:4px;border-radius:14px;background:rgba(128,128,128,.16);margin:6px 0 12px}
@@ -1263,8 +1267,10 @@ function authDialog() {
   tabs.forEach((t) => { t.onclick = () => { setMode(t.dataset.t); user.focus(); }; });
   dlg.querySelector('.au-eye').onclick = (e) => { const show = pass.type === 'password'; pass.type = show ? 'text' : 'password'; e.currentTarget.textContent = show ? 'Hide' : 'Show'; };
   setMode('login');
+  try { const last = localStorage.getItem('shop_last_user'); if (last) user.value = last; } catch (e) { /* storage blocked */ }
+  if (navigator.credentials && window.PasswordCredential) navigator.credentials.get({ password: true, mediation: 'optional' }).then((c) => { if (c && c.type === 'password') { user.value = c.id; pass.value = c.password; } }).catch(() => {});
   $('#dlg').showModal();
-  user.focus();
+  (user.value ? pass : user).focus();
 }
 // Splits a combo's price between the sellers whose products are in it (by value), like the server does.
 function comboParts(c) {
@@ -1747,17 +1753,20 @@ document.addEventListener('submit', async (e) => {
   try {
     if (e.target.dataset.form === 'auth') {
       const mode = e.submitter.dataset.mode;
-      const d = await api(`/api/auth/${mode}`, { method: 'POST', json: { ...Object.fromEntries(new FormData(e.target)), device_id: deviceId() } });
+      const fd0 = Object.fromEntries(new FormData(e.target));
+      const d = await api(`/api/auth/${mode}`, { method: 'POST', json: { ...fd0, device_id: deviceId() } });
       setSession(d.token, d.user);
       if (d.must_change) { changePwDialog(); render(); return; }
+      rememberLogin(d.user.username, fd0.password);
       $('#dlg').close(); render(); toast(`Welcome, ${d.user.username}.`);
     } else if (e.target.dataset.form === 'qty') {
       const key = e.target.dataset.key, max = Number($('#qtyin').max) || 99;
       const q = Math.max(1, Math.min(max, parseInt(new FormData(e.target).get('qty')) || 1));
       cart[key] = Math.min(99, (cart[key] || 0) + q); saveCart(); $('#dlg').close(); flyToCart(key); toast(`Added ${q} to cart.`);
     } else if (e.target.dataset.form === 'changepw') {
-      const d = await api('/api/auth/change-password', { method: 'POST', json: Object.fromEntries(new FormData(e.target)) });
-      setSession(d.token, d.user); forcePw = false; $('#dlg').close(); render(); toast('Password changed.');
+      const fdp = Object.fromEntries(new FormData(e.target));
+      const d = await api('/api/auth/change-password', { method: 'POST', json: fdp });
+      setSession(d.token, d.user); rememberLogin(d.user.username, fdp.new_password); forcePw = false; $('#dlg').close(); render(); toast('Password changed.');
     } else if (e.target.dataset.form === 'guestorder') {
       const fd = Object.fromEntries(new FormData(e.target));
       const items = Object.keys(fd).filter((k) => k.startsWith('q_') && parseInt(fd[k]) > 0).map((k) => ({ product_id: +k.slice(2), quantity: parseInt(fd[k]) }));
