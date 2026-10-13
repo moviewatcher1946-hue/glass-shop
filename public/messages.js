@@ -287,17 +287,33 @@
       b.appendChild(el('div', 'mg-note', st.enabled ? 'Test each AI on its own. The assistant tries them in this order and uses the next one when one fails.' : 'No AI key is set yet. Add one in Render, then redeploy.'));
       var runs = [];
       (st.providers || []).forEach(function (p) {
-        var c = el('div', 'mg-act'), sel = el('select'), r = el('div', 'row'), t = el('button', 'p', 'Test'), out = el('div');
-        c.appendChild(el('b', '', p.label)); sel.style.cssText = 'width:100%;margin-top:6px;padding:6px 8px;border-radius:8px;border:1px solid var(--edge);background:var(--field)';
-        p.models.forEach(function (m) { var o = el('option', '', m); o.value = m; sel.appendChild(o); }); c.appendChild(sel);
-        out.style.cssText = 'margin-top:6px;opacity:.85;white-space:pre-wrap';
+        var c = el('div', 'mg-act'), sel = el('select'), flt = el('input'), r = el('div', 'row'), t = el('button', 'p', 'Test'), ld = el('button', '', 'Load models'), us = el('button', '', 'Use this model'), out = el('div'), list = p.models.slice();
+        var line = 'width:100%;box-sizing:border-box;margin-top:6px;padding:6px 8px;border-radius:8px;border:1px solid var(--edge);background:var(--field);color:var(--txt)';
+        c.appendChild(el('b', '', p.label)); sel.style.cssText = line; flt.style.cssText = line; flt.placeholder = 'Filter models';
+        var fill = function (items) { var cur = sel.value; sel.textContent = ''; items.forEach(function (m) { var o = el('option', '', m); o.value = m; sel.appendChild(o); }); if (items.indexOf(cur) >= 0) sel.value = cur; };
+        fill(list); flt.oninput = function () { var q = flt.value.trim().toLowerCase(); fill(list.filter(function (m) { return !q || m.toLowerCase().indexOf(q) >= 0; })); };
+        c.appendChild(flt); c.appendChild(sel); out.style.cssText = 'margin-top:6px;opacity:.85;white-space:pre-wrap';
+        ld.onclick = function () {
+          ld.disabled = true; out.textContent = 'Asking ' + p.label + ' which models it offers...';
+          api('/api/admin/agent/models/' + p.id).then(function (x) {
+            if (x.error) { out.textContent = 'Could not load the list: ' + x.error; return; }
+            if (!x.models.length) { out.textContent = 'The provider returned no models.'; return; }
+            list = x.models; flt.value = ''; fill(list); out.textContent = x.models.length + ' models found. Pick one, press Test, then Use this model.';
+          }).catch(function (e) { out.textContent = 'Could not load the list: ' + e.message; }).then(function () { ld.disabled = false; });
+        };
+        us.onclick = function () {
+          if (!sel.value) return; us.disabled = true;
+          api('/api/admin/agent/models', 'POST', { provider: p.id, models: [sel.value] }).then(function (x) {
+            out.textContent = x.locked ? 'Saved, but AI_' + p.id.toUpperCase() + '_MODELS is set in Render and takes priority. Remove that variable to use this choice.' : 'Saved. The assistant will try ' + sel.value + ' first for ' + p.label + '.';
+          }).catch(function (e) { out.textContent = 'Could not save: ' + e.message; }).then(function () { us.disabled = false; });
+        };
         var test = function () {
           t.disabled = true; out.textContent = 'Testing...';
           return api('/api/admin/agent/test', 'POST', { provider: p.id, model: sel.value }).then(function (x) {
             out.textContent = x.ok ? 'Working (' + (x.ms / 1000).toFixed(1) + ' s). ' + (x.tools ? 'Tool calling works.' : 'It answered but did not use the tool, so the assistant may not work well with this model.') : 'Failed: ' + x.error;
           }).catch(function (e) { out.textContent = 'Failed: ' + e.message; }).then(function () { t.disabled = false; });
         };
-        t.onclick = test; runs.push(test); r.appendChild(t); c.appendChild(r); c.appendChild(out); b.appendChild(c);
+        t.onclick = test; runs.push(test); r.appendChild(t); r.appendChild(ld); r.appendChild(us); r.style.flexWrap = 'wrap'; c.appendChild(r); c.appendChild(out); b.appendChild(c);
       });
       (st.missing || []).forEach(function (p) { var c = el('div', 'mg-act'); c.style.opacity = '.55'; c.appendChild(el('b', '', p.label)); c.appendChild(el('div', '', 'Not set. Add ' + p.env + ' in Render to use it.')); b.appendChild(c); });
       if (runs.length > 1) {
