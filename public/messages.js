@@ -148,7 +148,7 @@
     if (!LS('token') || (document.hidden && !P.desk)) return;
     api('/api/msg/summary').then(function (s) {
       if (s.unread > lastUnread && s.latest && Date.now() - lastNotified > 4000 && !(box && S.view === 'thread')) {
-        lastNotified = Date.now(); ping();
+        lastNotified = Date.now(); ping(); starSay((s.latest.from || '') + ': ' + (s.latest.text || ''), !box);
         if (P.desk && document.hidden && window.Notification && Notification.permission === 'granted') { try { new Notification('New message from ' + s.latest.from, { body: s.latest.text }); } catch (e) { /* ignore */ } }
       }
       lastUnread = s.unread; setBadge(s.unread);
@@ -185,7 +185,7 @@
     clearInterval(timer); closeMenu(); skin(); if (box && !box._ic) { box._ic = new MutationObserver(function () { iconize(box); }); box._ic.observe(box, { childList: true, subtree: true }); }
     // Customers only ever see one built-in chat: the shop support thread (answered by the shop team). No list, no people search.
     if (!staff && S.view !== 'thread') { openConv({ type: 'support', id: me().id, name: 'Shop support', role: 'shop' }); return; }
-    ({ list: viewList, assistant: viewAssistant, thread: viewThread, settings: viewSettings, people: viewPeople, starred: viewStarred, search: viewSearch })[S.view || 'list']();
+    ({ list: viewList, assistant: viewAssistant, teach: viewTeach, thread: viewThread, settings: viewSettings, people: viewPeople, starred: viewStarred, search: viewSearch })[S.view || 'list']();
   }
   function bodyBox() { var b = el('div'); b.id = 'mg-body'; box.appendChild(b); return b; }
   function btns(extra) { return [['✎', 'New message', function () { S.pick = null; go('people'); }], ['🔍', 'Search all messages', function () { go('search'); }], ['★', 'Starred messages', function () { go('starred'); }], ['⚙', 'Settings', function () { go('settings'); }], [P.big ? '⤡' : '⤢', 'Bigger / smaller', function () { P.big = !P.big; savePrefs(); skin(); render(); }]].concat(extra || []); }
@@ -232,25 +232,21 @@
   function aiSave() { try { sessionStorage.setItem('mg_ai', JSON.stringify(A.msgs.slice(-30).map(function (m) { return { role: m.role, content: m.content }; }))); } catch (e) { /* storage blocked */ } }
   var LANGS = [['en-US', 'English'], ['en-PH', 'English (PH)'], ['fil-PH', 'Filipino']];
   var vcss = el('style');
-  vcss.textContent = '#mg-mic{position:fixed;left:70px;bottom:16px;z-index:9000;width:44px;height:44px;border-radius:12px;border:1px solid rgba(255,255,255,.35);background:rgba(30,30,34,.72);color:#fff;display:grid;place-items:center;cursor:pointer;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}#mg-mic svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}#mg-mic.on{background:#e5484d;animation:mgp 1.6s infinite}@keyframes mgp{50%{box-shadow:0 0 0 8px rgba(229,72,77,.25)}}#mg-vb{position:fixed;left:16px;bottom:68px;z-index:9000;max-width:min(320px,calc(100vw - 32px));padding:10px 14px;border-radius:14px;background:rgba(30,30,34,.92);color:#fff;font:14px/1.35 system-ui,sans-serif;white-space:pre-wrap}#mg-body .mg-act{margin:4px 0 8px;padding:10px 12px;border-radius:14px;border:1px solid var(--edge);background:var(--field);font-size:14px;color:var(--txt)}#mg-body .mg-act .row{display:flex;gap:8px;margin-top:8px}#mg-body .mg-act button{padding:7px 14px;border-radius:999px;border:1px solid var(--edge);background:var(--glass2);cursor:pointer}#mg-body .mg-act button.p{background:#0a84ff;color:#fff;border-color:transparent}';
+  vcss.textContent = '#mg-mic{position:fixed;left:70px;bottom:16px;z-index:9000;width:44px;height:44px;border-radius:12px;border:1px solid rgba(255,255,255,.35);background:rgba(30,30,34,.72);color:#fff;display:grid;place-items:center;cursor:pointer;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}#mg-mic svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}#mg-mic.on{background:#e5484d;animation:mgp 1.6s infinite}@keyframes mgp{50%{box-shadow:0 0 0 8px rgba(229,72,77,.25)}}#mg-vb{position:fixed;right:150px;bottom:calc(var(--bn,0px) + var(--sa,0px) + 70px);z-index:9000;max-width:min(320px,calc(100vw - 32px));padding:10px 14px;border-radius:14px;background:rgba(30,30,34,.92);color:#fff;font:14px/1.35 system-ui,sans-serif;white-space:pre-wrap}#mg-body .mg-act{margin:4px 0 8px;padding:10px 12px;border-radius:14px;border:1px solid var(--edge);background:var(--field);font-size:14px;color:var(--txt)}#mg-body .mg-act .row{display:flex;gap:8px;margin-top:8px}#mg-body .mg-act button{padding:7px 14px;border-radius:999px;border:1px solid var(--edge);background:var(--glass2);cursor:pointer}#mg-body .mg-act button.p{background:#0a84ff;color:#fff;border-color:transparent}';
   document.head.appendChild(vcss);
 
-  function notice(t) { // small bubble when the Messages panel is closed, toast when it is open
-    if (box) { say(t.slice(0, 120)); return; }
-    var o = document.getElementById('mg-vb') || el('div'); o.id = 'mg-vb'; o.textContent = t.slice(0, 300); document.body.appendChild(o);
-    clearTimeout(V.vbT); V.vbT = setTimeout(function () { o.remove(); }, 9000);
-  }
+  function notice(t) { starSay(t, !box); if (box) say(t.slice(0, 120)); }
   function speak(t) {
-    if (!window.speechSynthesis) return;
+    if (!window.speechSynthesis || !isAdmin()) return; // customers never get voice, only text
     try {
-      speechSynthesis.cancel(); var u = new SpeechSynthesisUtterance(String(t).slice(0, 600)); u.lang = P.lang || 'en-US'; V.speaking = true;
+      speechSynthesis.cancel(); starFlag('talk', true, 9000); var u = new SpeechSynthesisUtterance(String(t).slice(0, 600)); u.lang = P.lang || 'en-US'; V.speaking = true;
       if (V.rec) { try { V.rec.abort(); } catch (e) { /* ignore */ } } // do not listen to ourselves
       var done = function () { V.speaking = false; if (V.want && !V.denied && !V.rec) setTimeout(micStart, 300); };
       u.onend = done; u.onerror = done; speechSynthesis.speak(u);
     } catch (e) { V.speaking = false; }
   }
   function micUi() {
-    var m = document.getElementById('mg-mic'); if (m) { m.classList.toggle('on', !!V.rec); m.title = V.want ? (V.rec ? 'Microphone is listening (click to turn off)' : 'Microphone on, restarting...') : 'Microphone is off (click to turn on)'; }
+    starFlag('listen', !!V.rec); var m = document.getElementById('mg-mic'); if (m) { m.classList.toggle('on', !!V.rec); m.title = V.want ? (V.rec ? 'Microphone is listening (click to turn off)' : 'Microphone on, restarting...') : 'Microphone is off (click to turn on)'; }
     refreshStrip();
   }
   function micStart() {
@@ -298,8 +294,42 @@
     api('/api/admin/agent/confirm', 'POST', { id: a.id, ok: !!ok }).then(function (r) { a.state = ok ? 'done' : 'cancel'; a.result = r.message; }).catch(function (e) { a.state = 'error'; a.result = e.message; })
       .then(function () { a.busy = false; paintAi(); notice(a.result || ''); if (V.want && P.speak) speak(a.result || ''); });
   }
+  // ----- Teach screen (admin only): notes the AI answers from. Saved on the server, used by the customer helper and the admin assistant.
+  function viewTeach() {
+    frame('Teach the AI', '', { back: function () { go('assistant'); } });
+    var wrapEl = el('div'); wrapEl.style.cssText = 'padding:0 12px 6px;display:flex;flex-direction:column;gap:6px';
+    wrapEl.appendChild(el('div', 'mg-note', 'Write facts about your shop and website: delivery areas, opening hours, rules, how to order, FAQs. The AI answers from these notes and will not guess beyond them. You can also tell the assistant "remember that ...".'));
+    var ti = el('input', 'find'); ti.placeholder = 'Title (optional)'; ti.maxLength = 80; ti.style.margin = '0';
+    var tx = el('textarea'); tx.rows = 4; tx.placeholder = 'What should it know?'; tx.style.borderRadius = '16px'; tx.style.width = '100%'; tx.style.boxSizing = 'border-box';
+    var row = el('div', 'tabs'), sv = el('button', 'on', 'Save note'); row.appendChild(sv);
+    wrapEl.appendChild(ti); wrapEl.appendChild(tx); wrapEl.appendChild(row); box.appendChild(wrapEl);
+    var b = bodyBox(); b.appendChild(el('div', 'mg-note', 'Loading...'));
+    function chunks(t) { // notes are limited to 1500 characters: split long text at paragraph breaks
+      var out = [], cur = ''; t.split(/\n\s*\n/).forEach(function (p) { p = p.trim(); if (!p) return; while (p.length > 1500) { if (cur) { out.push(cur); cur = ''; } out.push(p.slice(0, 1500)); p = p.slice(1500); } if ((cur + '\n\n' + p).length > 1500) { out.push(cur); cur = p; } else cur = cur ? cur + '\n\n' + p : p; }); if (cur) out.push(cur); return out;
+    }
+    function load() {
+      api('/api/admin/agent/knowledge').then(function (rows) {
+        if (S.view !== 'teach') return; b.textContent = '';
+        if (!rows.length) b.appendChild(el('div', 'mg-note', 'Nothing taught yet.'));
+        rows.forEach(function (k) {
+          var c = el('div', 'mg-act'), h = el('b', '', k.title || 'Note'); c.appendChild(h); var p = el('div', '', k.body.length > 260 ? k.body.slice(0, 260) + '...' : k.body); p.style.cssText = 'white-space:pre-wrap;margin-top:4px;opacity:' + (k.active ? '1' : '.5'); c.appendChild(p);
+          var r = el('div', 'row'), t = el('button', '', k.active ? 'Turn off' : 'Turn on'), d = el('button', '', 'Delete');
+          t.onclick = function () { api('/api/admin/agent/knowledge/' + k.id, 'PUT', { active: !k.active }).then(load).catch(function (e) { say(e.message); }); };
+          d.onclick = function () { if (confirm('Delete this note?')) api('/api/admin/agent/knowledge/' + k.id, 'DELETE').then(load).catch(function (e) { say(e.message); }); };
+          r.appendChild(t); r.appendChild(d); c.appendChild(r); b.appendChild(c);
+        });
+      }).catch(function (e) { b.textContent = ''; b.appendChild(el('div', 'mg-note', e.message)); });
+    }
+    sv.onclick = function () {
+      var t = tx.value.trim(); if (!t) { say('Write something first.'); return; } var parts = chunks(t), title = ti.value.trim(), p = Promise.resolve();
+      sv.disabled = true;
+      parts.forEach(function (x, i) { p = p.then(function () { return api('/api/admin/agent/knowledge', 'POST', { title: i === 0 ? title : title ? title + ' (' + (i + 1) + ')' : '', body: x }); }); });
+      p.then(function () { tx.value = ''; ti.value = ''; say('Saved'); load(); }).catch(function (e) { say(e.message); }).then(function () { sv.disabled = false; });
+    };
+    load(); tx.focus();
+  }
   function viewAssistant() {
-    frame('AI assistant', '', { back: true, av: avatar('AI', true), btns: [['Clear', 'Clear this conversation', function () { A.msgs = []; aiSave(); paintAi(); }]] });
+    frame('AI assistant', '', { back: true, av: avatar('AI', true), btns: [['Teach', 'Teach the AI about your shop', function () { go('teach'); }], ['Clear', 'Clear this conversation', function () { A.msgs = []; aiSave(); paintAi(); }]] });
     box.appendChild(micStrip()); bodyBox();
     var f = el('footer'), row = el('div', 'cm'), ta = el('textarea'), sb = el('button', 'snd'); f.id = 'mg-foot';
     ta.id = 'mg-ta'; ta.rows = 1; ta.placeholder = 'Ask, or tell me what to do...'; sb.type = 'button'; sb.innerHTML = IC.send; sb.title = 'Send (Enter)'; sb.setAttribute('aria-label', 'Send');
@@ -332,13 +362,13 @@
   function aiAsk(text, spoken) {
     if (A.busy) { if (spoken && A.queue.length < 3) A.queue.push(text); return; }
     var hist = A.msgs.slice(-10).map(function (m) { return { role: m.role, content: m.content }; });
-    A.msgs.push({ role: 'user', content: text }); A.busy = true; aiSave(); paintAi(); if (spoken) notice('Heard: ' + text);
+    A.msgs.push({ role: 'user', content: text }); A.busy = true; starFlag('think', true, 45000); aiSave(); paintAi(); if (spoken) notice('Heard: ' + text);
     api('/api/admin/agent', 'POST', { message: text, history: hist }).then(function (r) {
       var acts = (r.actions || []).map(function (a) { return { id: a.id, summary: a.summary, state: 'wait' }; });
       A.msgs.push({ role: 'assistant', content: r.reply, actions: acts });
       notice(r.reply); if (V.want && P.speak) speak(r.reply + (acts.length ? ' Say confirm to do it, or cancel.' : ''));
     }).catch(function (e) { A.msgs.push({ role: 'assistant', content: e.message }); })
-      .then(function () { A.busy = false; aiSave(); paintAi(); var n = A.queue.shift(); if (n) aiAsk(n, true); });
+      .then(function () { A.busy = false; starFlag('think', false); aiSave(); paintAi(); var n = A.queue.shift(); if (n) aiAsk(n, true); });
   }
   // The "active" part: every 40 seconds the admin's browser asks for plain counts (no AI call) and announces what is new.
   function announce(t) { A.msgs.push({ role: 'assistant', content: t }); aiSave(); paintAi(); ping(); notice(t); if (V.want && P.speak) speak(t); }
@@ -353,6 +383,44 @@
   }
   setInterval(briefPoll, 40000);
   // Microphone button next to the Messages button, admin only. It also starts listening after the first click anywhere if the browser needed a gesture.
+  // ----- The star: Gemini-style glowing 3D star on the right side of the whole site while signed in. It grows when it talks, listens or thinks,
+  // and "speaks" by text in a bubble next to it. Click it to open the assistant (admin) or Shop support (customers).
+  var star = null;
+  var scss = el('style');
+  scss.textContent = '#mg-star{position:fixed;right:30px;bottom:calc(var(--bn,0px) + var(--sa,0px) + 44px);z-index:8999;width:104px;height:104px;padding:0;border:0;background:none;cursor:pointer;perspective:320px;animation:mgFloat 5s ease-in-out infinite;-webkit-tap-highlight-color:transparent}' +
+    '#mg-star .grow{position:absolute;inset:0;animation:mgGrow 4.5s ease-in-out infinite}#mg-star .core{position:absolute;inset:0;transform-style:preserve-3d;animation:mgSpin 9s ease-in-out infinite}' +
+    '#mg-star svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible}#mg-star .halo{position:absolute;inset:-45%;border-radius:50%;background:radial-gradient(circle,rgba(155,114,203,.6),rgba(66,133,244,.28) 45%,transparent 70%);filter:blur(14px);animation:mgGlow 3.2s ease-in-out infinite}' +
+    '#mg-star .back{transform:translateZ(-22px) scale(.97);opacity:.5;filter:blur(1.2px)}#mg-star .front{filter:drop-shadow(0 0 10px rgba(155,114,203,.95)) drop-shadow(0 0 26px rgba(66,133,244,.75)) drop-shadow(0 0 44px rgba(217,101,112,.35))}' +
+    '#mg-star .tw{position:absolute;width:22px;height:22px;animation:mgTw 2.4s ease-in-out infinite}#mg-star .tw.a{right:-18px;top:-6px}#mg-star .tw.b{left:-16px;bottom:4px;animation-delay:1.1s}' +
+    '#mg-star.listen .grow{animation:mgListen 1.1s ease-in-out infinite}#mg-star.think .grow{animation:mgListen .8s ease-in-out infinite}#mg-star.think .core{animation-duration:1.4s}#mg-star.talk .grow{animation:mgBig 1.3s ease-in-out infinite}#mg-star.talk .halo,#mg-star.think .halo{animation-duration:1.2s}' +
+    '@keyframes mgFloat{50%{transform:translateY(-9px)}}@keyframes mgGrow{0%,100%{transform:scale(.9)}50%{transform:scale(1.12)}}@keyframes mgListen{0%,100%{transform:scale(1.05)}50%{transform:scale(1.32)}}@keyframes mgBig{0%,100%{transform:scale(1.4)}50%{transform:scale(1.65)}}' +
+    '@keyframes mgSpin{0%,100%{transform:rotateY(-30deg) rotateX(8deg)}50%{transform:rotateY(30deg) rotateX(-8deg)}}@keyframes mgGlow{0%,100%{opacity:.95;transform:scale(1)}50%{opacity:.55;transform:scale(1.15)}}@keyframes mgTw{0%,100%{opacity:0;transform:scale(.3)}50%{opacity:1;transform:scale(1)}}' +
+    'body:has(#mg-star) #ap-fab{right:16px!important;bottom:calc(var(--bn,0px) + var(--sa,0px) + 192px)!important}@media (prefers-reduced-motion:reduce){#mg-star,#mg-star *{animation:none!important}}';
+  document.head.appendChild(scss);
+  function starFlag(c, on, ms) { if (!star) return; star.classList.toggle(c, !!on); clearTimeout(star['t' + c]); if (on && ms) star['t' + c] = setTimeout(function () { if (star) star.classList.remove(c); }, ms); }
+  function starSay(t, bubble) {
+    if (!star) return; starFlag('talk', true, 7000); if (!bubble) return;
+    var o = document.getElementById('mg-vb') || el('div'); o.id = 'mg-vb'; o.textContent = ''; document.body.appendChild(o);
+    var txt = String(t).slice(0, 300), i = 0, step = Math.max(1, Math.ceil(txt.length / 90)); clearInterval(V.twT);
+    V.twT = setInterval(function () { i += step; o.textContent = txt.slice(0, i); if (i >= txt.length) clearInterval(V.twT); }, 30);
+    clearTimeout(V.vbT); V.vbT = setTimeout(function () { o.remove(); }, 9000);
+  }
+  function starBoot(on) {
+    if (on && !star) {
+      var P4 = 'M50 0C54 30 70 46 100 50C70 54 54 70 50 100C46 70 30 54 0 50C30 46 46 30 50 0Z', tw = '<svg viewBox="0 0 100 100"><path fill="#fff" d="' + P4 + '"/></svg>';
+      star = el('button'); star.id = 'mg-star'; star.type = 'button'; star.setAttribute('aria-label', 'AI assistant'); star.title = 'AI assistant';
+      star.innerHTML = '<div class="grow"><div class="halo"></div><div class="core">' +
+        '<svg class="back" viewBox="0 0 100 100"><path fill="#6a4fb3" d="' + P4 + '"/></svg>' +
+        '<svg class="front" viewBox="0 0 100 100"><defs><linearGradient id="mgg1" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#4285f4"/><stop offset=".5" stop-color="#9b72cb"/><stop offset="1" stop-color="#d96570"/></linearGradient>' +
+        '<radialGradient id="mgg2" cx=".38" cy=".3" r=".6"><stop offset="0" stop-color="#fff" stop-opacity=".85"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient></defs>' +
+        '<path fill="url(#mgg1)" d="' + P4 + '"/><path fill="url(#mgg2)" d="' + P4 + '"/></svg></div>' +
+        '<span class="tw a">' + tw + '</span><span class="tw b">' + tw + '</span></div>';
+      star.onclick = function () { var adm = isAdmin(); if (box && (!adm || S.view === 'assistant')) { closeBox(); return; } if (!box) toggle(); if (adm) go('assistant'); };
+      document.body.appendChild(star);
+      if (!isAdmin() && !sessionStorage.getItem('mg_hi')) { try { sessionStorage.setItem('mg_hi', '1'); } catch (e) { /* ignore */ } setTimeout(function () { starSay('Hi! Ask me about our snacks, prices or your order.', true); }, 2500); }
+    }
+    if (!on && star) { star.remove(); star = null; var v = document.getElementById('mg-vb'); if (v) v.remove(); }
+  }
   function adminBoot(on) {
     var m = document.getElementById('mg-mic');
     if (on && !m) {
@@ -437,12 +505,25 @@
     }
     if (last < text.length) node.appendChild(document.createTextNode(text.slice(last)));
   }
+  // Customers see the shop AI's fresh replies typed out as text (no voice).
+  var TYPED = {};
+  function typeWorthy(m) { return !staff && m.support && /^Shop assistant/.test(m.sender || '') && !TYPED[m.id] && Date.now() - new Date(m.created_at) < 30000 && !(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches); }
+  function typeInto(d, m) {
+    TYPED[m.id] = 1; var sp = el('span'), i = 0, step = Math.max(1, Math.ceil(m.body.length / 120)), tk; d.appendChild(sp);
+    var stop = function () { clearInterval(tk); };
+    tk = setInterval(function () {
+      if (!sp.isConnected) { stop(); return; } // the list was redrawn: the full text is shown there
+      i += step; sp.textContent = m.body.slice(0, i); var b = document.getElementById('mg-body'); if (b) b.scrollTop = b.scrollHeight;
+      if (i >= m.body.length) { stop(); var tmp = el('div'); linkify(tmp, m.body); sp.textContent = ''; while (tmp.firstChild) sp.appendChild(tmp.firstChild); }
+    }, 30);
+  }
   function msgEl(m, prev) {
     var d = el('div', 'mg-m ' + (m.mine ? 'me' : 'o') + (m.deleted ? ' del' : '') + (m.status === 'failed' ? ' fail' : '') + (prev && prev.mine === m.mine && !prev.deleted && dayKey(prev.created_at) === dayKey(m.created_at) ? ' g' : '')); d.dataset.mid = m.id;
     if (m.forwarded) d.appendChild(el('div', 'f', '↪ Forwarded')); if (m.broadcast) d.appendChild(el('div', 'f', '📢 Announcement')); if (m.kind === 'auto') d.appendChild(el('div', 'f', '🤖 Automatic reply'));
     if (m.reply) { var q = el('div', 'q', (m.reply.mine ? 'You: ' : '') + m.reply.text); q.onclick = function (e) { e.stopPropagation(); jumpTo(m.reply.id); }; d.appendChild(q); }
     if (m.deleted) d.appendChild(document.createTextNode('This message was deleted'));
     else if (m.kind === 'image') { var im = el('img'); im.src = m.body; im.alt = 'Photo'; im.loading = 'lazy'; im.onclick = function (e) { e.stopPropagation(); lightbox(m.body); }; d.appendChild(im); }
+    else if (typeWorthy(m)) typeInto(d, m);
     else linkify(d, m.body);
     var rx = Object.keys(m.reactions || {}); if (rx.length) { var r = el('div', 'mg-rx'); rx.forEach(function (k) { r.appendChild(el('span', k === m.my_reaction ? 'my' : '', k + ' ' + m.reactions[k])); }); d.appendChild(r); }
     var meta = el('div', 'meta'); if (m.starred) meta.appendChild(el('span', '', '★')); if (m.edited && !m.deleted) meta.appendChild(el('span', '', 'edited')); meta.appendChild(el('span', '', hhmm(m.created_at)));
@@ -660,7 +741,7 @@
     var u = me(), on = !!(u && LS('token'));
     if (on && !btn) { staff = u.role !== 'customer'; btn = el('button'); btn.id = 'mg-btn'; btn.type = 'button'; btn.title = 'Messages (Ctrl+Shift+M)'; btn.onclick = toggle; document.body.appendChild(btn); setBadge(0); pollSummary(); if (!linked) { linked = true; deepLink(); } }
     if (!on && btn) { closeBox(); btn.remove(); btn = null; lastUnread = 0; setBadge(0); }
-    adminBoot(on && isAdmin());
+    adminBoot(on && isAdmin()); starBoot(on);
   }, 2000);
   setInterval(pollSummary, 25000);
 })();
