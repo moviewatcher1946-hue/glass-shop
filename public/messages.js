@@ -189,7 +189,7 @@
     clearInterval(timer); closeMenu(); skin(); if (box && !box._ic) { box._ic = new MutationObserver(function () { iconize(box); }); box._ic.observe(box, { childList: true, subtree: true }); }
     // Customers only ever see one built-in chat: the shop support thread (answered by the shop team). No list, no people search.
     if (!staff && S.view !== 'thread') { openConv({ type: 'support', id: me().id, name: 'Shop support', role: 'shop' }); return; }
-    ({ list: viewList, assistant: viewAssistant, teach: viewTeach, thread: viewThread, settings: viewSettings, people: viewPeople, starred: viewStarred, search: viewSearch })[S.view || 'list']();
+    ({ list: viewList, assistant: viewAssistant, teach: viewTeach, providers: viewProviders, thread: viewThread, settings: viewSettings, people: viewPeople, starred: viewStarred, search: viewSearch })[S.view || 'list']();
   }
   function bodyBox() { var b = el('div'); b.id = 'mg-body'; box.appendChild(b); return b; }
   function btns(extra) { return [['✎', 'New message', function () { S.pick = null; go('people'); }], ['🔍', 'Search all messages', function () { go('search'); }], ['★', 'Starred messages', function () { go('starred'); }], ['⚙', 'Settings', function () { go('settings'); }], [P.big ? '⤡' : '⤢', 'Bigger / smaller', function () { P.big = !P.big; savePrefs(); skin(); render(); }]].concat(extra || []); }
@@ -278,8 +278,36 @@
     };
     load(); tx.focus();
   }
+  // ----- AI providers screen (admin only): test each AI on its own (one request, no fallback to the others).
+  function viewProviders() {
+    frame('AI providers', '', { back: function () { go('assistant'); } });
+    var b = bodyBox(); b.appendChild(el('div', 'mg-note', 'Loading...'));
+    api('/api/admin/agent/status').then(function (st) {
+      if (S.view !== 'providers') return; b.textContent = '';
+      b.appendChild(el('div', 'mg-note', st.enabled ? 'Test each AI on its own. The assistant tries them in this order and uses the next one when one fails.' : 'No AI key is set yet. Add one in Render, then redeploy.'));
+      var runs = [];
+      (st.providers || []).forEach(function (p) {
+        var c = el('div', 'mg-act'), sel = el('select'), r = el('div', 'row'), t = el('button', 'p', 'Test'), out = el('div');
+        c.appendChild(el('b', '', p.label)); sel.style.cssText = 'width:100%;margin-top:6px;padding:6px 8px;border-radius:8px;border:1px solid var(--edge);background:var(--field)';
+        p.models.forEach(function (m) { var o = el('option', '', m); o.value = m; sel.appendChild(o); }); c.appendChild(sel);
+        out.style.cssText = 'margin-top:6px;opacity:.85;white-space:pre-wrap';
+        var test = function () {
+          t.disabled = true; out.textContent = 'Testing...';
+          return api('/api/admin/agent/test', 'POST', { provider: p.id, model: sel.value }).then(function (x) {
+            out.textContent = x.ok ? 'Working (' + (x.ms / 1000).toFixed(1) + ' s). ' + (x.tools ? 'Tool calling works.' : 'It answered but did not use the tool, so the assistant may not work well with this model.') : 'Failed: ' + x.error;
+          }).catch(function (e) { out.textContent = 'Failed: ' + e.message; }).then(function () { t.disabled = false; });
+        };
+        t.onclick = test; runs.push(test); r.appendChild(t); c.appendChild(r); c.appendChild(out); b.appendChild(c);
+      });
+      (st.missing || []).forEach(function (p) { var c = el('div', 'mg-act'); c.style.opacity = '.55'; c.appendChild(el('b', '', p.label)); c.appendChild(el('div', '', 'Not set. Add ' + p.env + ' in Render to use it.')); b.appendChild(c); });
+      if (runs.length > 1) {
+        var row = el('div', 'tabs'), all = el('button', 'on', 'Test all'); row.appendChild(all); b.insertBefore(row, b.children[1]);
+        all.onclick = function () { all.disabled = true; runs.reduce(function (p, f) { return p.then(f); }, Promise.resolve()).then(function () { all.disabled = false; }); };
+      }
+    }).catch(function (e) { b.textContent = ''; b.appendChild(el('div', 'mg-note', e.message)); });
+  }
   function viewAssistant() {
-    frame('AI assistant', '', { back: true, av: avatar('AI', true), btns: [['Teach', 'Teach the AI about your shop', function () { go('teach'); }], ['Clear', 'Clear this conversation', function () { A.msgs = []; aiSave(); paintAi(); }]] });
+    frame('AI assistant', '', { back: true, av: avatar('AI', true), btns: [['Providers', 'Test each AI provider', function () { go('providers'); }], ['Teach', 'Teach the AI about your shop', function () { go('teach'); }], ['Clear', 'Clear this conversation', function () { A.msgs = []; aiSave(); paintAi(); }]] });
     bodyBox();
     var f = el('footer'), row = el('div', 'cm'), ta = el('textarea'), sb = el('button', 'snd'); f.id = 'mg-foot';
     ta.id = 'mg-ta'; ta.rows = 1; ta.placeholder = 'Ask, or tell me what to do...'; sb.type = 'button'; sb.innerHTML = IC.send; sb.title = 'Send (Enter)'; sb.setAttribute('aria-label', 'Send');
