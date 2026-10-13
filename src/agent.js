@@ -1,4 +1,4 @@
-// AI agent (Google Gemini). Two jobs:
+// AI agent (Google Gemini, Groq, Cerebras, Mistral, OpenRouter, NVIDIA NIM, GitHub Models, xAI Grok, or any OpenAI-compatible endpoint). Two jobs:
 //  1. Customer helper: answers in the Shop support chat (products, stock, the customer's own orders) and hands off to a person when it should.
 //     STRICT: it only talks about this shop. A separate filter call checks every customer message first, so off-topic requests never reach the answering model.
 //  2. Admin assistant (ACTIVE): the owner asks about sales, stock, orders and support, and can tell it to DO things (mark an order packed, set stock,
@@ -6,20 +6,59 @@
 //     (or says "confirm" by voice). It also has a /brief endpoint so the admin screen can announce new orders and support requests without asking.
 //  3. Teachable: the admin writes notes about the shop and website (delivery areas, rules, FAQs, how things work) in Messages > AI assistant > Teach, or just tells the assistant
 //     "remember that ...". The customer helper and the admin assistant answer from those notes and never guess beyond them.
-// Needs one environment variable on Render: GEMINI_API_KEY (from Google AI Studio). Without it everything here stays off and the shop works as before.
-// Optional: AI_CUSTOMER_REPLIES=off, AI_CUSTOMER_MODEL, AI_ADMIN_MODEL, AI_CURRENCY, AI_SHOP_INFO, AI_STRICT_GATE=off (not recommended).
+// Needs at least ONE provider key as an environment variable on Render (never put keys in the code). Without any key everything here stays off and the shop works as before.
+//   GEMINI_API_KEY (or GOOGLE_API_KEY)  Google AI Studio, free tier
+//   GROQ_API_KEY                        Groq, free tier
+//   CEREBRAS_API_KEY                    Cerebras, free tier
+//   MISTRAL_API_KEY                     Mistral La Plateforme, free "Experiment" tier
+//   OPENROUTER_API_KEY                  OpenRouter, models ending in :free cost nothing
+//   NVIDIA_API_KEY                      NVIDIA NIM (build.nvidia.com), free developer tier
+//   GITHUB_MODELS_TOKEN                 GitHub Models, free for prototyping (token needs the "models" permission)
+//   XAI_API_KEY (or GROK_API_KEY)       xAI Grok, paid, so it is tried last
+//   AI_CUSTOM_BASE_URL + AI_CUSTOM_MODEL (+ AI_CUSTOM_API_KEY if needed)   any other OpenAI-compatible server (Ollama, Together, DeepSeek, Cloudflare, ...)
+// Several keys can be set at once: the providers are tried in the order above, and the next one takes over when one is out of quota or down.
+// Optional: AI_PROVIDERS=groq,gemini (only these, in this order), AI_<PROVIDER>_MODEL=model1,model2 (e.g. AI_GROQ_MODEL, AI_OPENROUTER_MODEL),
+//           AI_CUSTOMER_REPLIES=off, AI_CUSTOMER_MODEL / AI_ADMIN_MODEL (Gemini models), AI_CURRENCY, AI_SHOP_INFO, AI_STRICT_GATE=off (not recommended).
 module.exports = function mount(app, { pool, auth, admin, wrap, notify }) {
   const crypto = require('crypto');
   const q = (s, p) => pool.query(s, p);
   const bad = (m, c = 400) => Object.assign(new Error(m), { status: c });
-  const KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
-
-  // Model chains: the first entry is tried first, the others are fallbacks.
-  // If Google renames a model, set AI_CUSTOMER_MODEL / AI_ADMIN_MODEL in Render, or edit the names here.
-  // Free-tier quotas: the Flash Lite models allow 15 requests/min and 500/day; the full Flash models only 5/min and 20/day.
+  // ----- Providers. Keys come only from environment variables (nothing is stored in the code).
+  // Every provider except Gemini speaks the OpenAI "chat completions" format, so one adapter covers them all.
+  // Free-tier model names change from time to time: if one stops working, set AI_<PROVIDER>_MODEL in Render (comma-separated list, first is tried first).
+  // Gemini free-tier quotas: the Flash Lite models allow 15 requests/min and 500/day; the full Flash models only 5/min and 20/day.
   // So the lite models go first, the full Flash is a short-term backup, and Gemma (high daily quota) is the last safety net.
-  const MODEL_CUSTOMER = [process.env.AI_CUSTOMER_MODEL || 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.8-flash', 'gemma-4-26b-a4b'];
-  const MODEL_ADMIN = [process.env.AI_ADMIN_MODEL || 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.8-flash', 'gemma-4-26b-a4b'];
+  const csv = (v) => String(v || '').split(',').map((x) => x.trim()).filter(Boolean);
+  const envOf = (names) => { for (const n of names) if (process.env[n] && process.env[n].trim()) return process.env[n].trim(); return ''; };
+  const GEMINI_CHAIN = ['gemini-3.1-flash-lite', 'gemini-3.8-flash', 'gemma-4-26b-a4b'];
+  const PROVIDERS = [
+    { id: 'gemini', name: 'Google Gemini', kind: 'gemini', keys: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'],
+      models: { customer: [process.env.AI_CUSTOMER_MODEL || 'gemini-3.5-flash-lite', ...GEMINI_CHAIN], admin: [process.env.AI_ADMIN_MODEL || 'gemini-3.5-flash-lite', ...GEMINI_CHAIN] } },
+    { id: 'groq', name: 'Groq', url: 'https://api.groq.com/openai/v1', keys: ['GROQ_API_KEY'], models: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'] },
+    { id: 'cerebras', name: 'Cerebras', url: 'https://api.cerebras.ai/v1', keys: ['CEREBRAS_API_KEY'], models: ['gpt-oss-120b', 'llama3.1-8b'] },
+    { id: 'mistral', name: 'Mistral', url: 'https://api.mistral.ai/v1', keys: ['MISTRAL_API_KEY'], models: ['mistral-small-latest', 'open-mistral-nemo'] },
+    { id: 'openrouter', name: 'OpenRouter', url: 'https://openrouter.ai/api/v1', keys: ['OPENROUTER_API_KEY'], models: ['meta-llama/llama-3.3-70b-instruct:free', 'openai/gpt-oss-120b:free'], headers: { 'X-Title': 'Glass Shop' } },
+    { id: 'nvidia', name: 'NVIDIA NIM', url: 'https://integrate.api.nvidia.com/v1', keys: ['NVIDIA_API_KEY', 'NVIDIA_NIM_API_KEY'], models: ['meta/llama-3.3-70b-instruct', 'meta/llama-3.1-8b-instruct'] },
+    { id: 'github', name: 'GitHub Models', url: 'https://models.github.ai/inference', keys: ['GITHUB_MODELS_TOKEN'], models: ['openai/gpt-4.1-mini', 'openai/gpt-4o-mini'] },
+    { id: 'xai', name: 'xAI Grok', url: 'https://api.x.ai/v1', keys: ['XAI_API_KEY', 'GROK_API_KEY'], models: ['grok-4-fast', 'grok-3-mini'] },
+    { id: 'custom', name: 'Custom (OpenAI-compatible)', keys: ['AI_CUSTOM_API_KEY'], optionalKey: true, models: csv(process.env.AI_CUSTOM_MODEL) }
+  ];
+  const wanted = csv(process.env.AI_PROVIDERS).map((x) => x.toLowerCase());
+  const ACTIVE = PROVIDERS
+    .map((p) => {
+      const key = envOf(p.keys);
+      const url = p.id === 'custom' ? String(process.env.AI_CUSTOM_BASE_URL || '').trim().replace(/\/+$/, '') : p.url;
+      const own = p.kind === 'gemini' ? null : csv(process.env['AI_' + p.id.toUpperCase() + '_MODEL']);
+      return { ...p, key, url, models: own && own.length ? own : p.models };
+    })
+    .filter((p) => (p.optionalKey ? !!p.url && p.models.length : !!p.key) && (!wanted.length || wanted.includes(p.id)))
+    .sort((a, b) => (wanted.length ? wanted.indexOf(a.id) - wanted.indexOf(b.id) : 0));
+  // A chain is a list of { p: provider id, m: model, cfg }. The first entry is tried first, the others are fallbacks.
+  const chainFor = (role) => ACTIVE.flatMap((cfg) => (Array.isArray(cfg.models) ? cfg.models : cfg.models[role]).map((m) => ({ p: cfg.id, m, cfg })));
+  const MODEL_CUSTOMER = chainFor('customer');
+  const MODEL_ADMIN = chainFor('admin');
+  const idOf = (e) => e.p + '/' + e.m;
+  const ON = MODEL_CUSTOMER.length > 0;
 
   const AUTO = process.env.AI_CUSTOMER_REPLIES !== 'off';
   const GATE = process.env.AI_STRICT_GATE !== 'off';
@@ -28,7 +67,8 @@ module.exports = function mount(app, { pool, auth, admin, wrap, notify }) {
   const SENDER = 'Shop assistant (AI)';
   const SHOP_INFO = process.env.AI_SHOP_INFO || 'Customers pay cash when the order is handed to them. Orders placed before 10:00 PM are delivered the same day.';
   const REFUSAL = 'I can only help with this shop: products, prices, stock, your orders, delivery, payment and using the website. Is there something about the shop I can help with?';
-  if (!KEY) console.warn('[agent] GEMINI_API_KEY is not set: AI helper is off.');
+  if (!ON) console.warn('[agent] No AI provider key is set (GEMINI_API_KEY, GROQ_API_KEY, CEREBRAS_API_KEY, MISTRAL_API_KEY, OPENROUTER_API_KEY, NVIDIA_API_KEY, GITHUB_MODELS_TOKEN, XAI_API_KEY or AI_CUSTOM_BASE_URL): AI helper is off.');
+  else console.log('[agent] AI providers, in order: ' + ACTIVE.map((p) => p.id).join(', '));
 
   q(`CREATE TABLE IF NOT EXISTS ai_handoff (
       user_id INT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
@@ -59,61 +99,125 @@ module.exports = function mount(app, { pool, auth, admin, wrap, notify }) {
   let hourStart = 0, hourCount = 0;
   const capOk = () => { const now = Date.now(); if (now - hourStart > 3600e3) { hourStart = now; hourCount = 0; } return ++hourCount <= 400; };
 
-  // ----- Gemini API (plain fetch, no extra package)
-  // Tries each model in the chain. Only falls through on errors that another model could fix
-  // (404 unknown model, 429 quota, 5xx, timeouts, network). Other 4xx errors are real bugs in the request and are thrown right away.
-  // Returns { data, activeModel }.
+  // ----- Model calls (plain fetch, no extra package)
+  // Everything inside this file talks in Gemini's format (contents / parts / functionCall). Gemini is called as is; the other providers go through
+  // toOpenAI() / fromOpenAI() below, which translate to and from the OpenAI chat format. So the rest of the code does not care which provider answered.
+  // Tries each entry in the chain. Only falls through on errors that another model or provider could fix
+  // (404 unknown model, 429 quota, 401/403/402 bad key or no credit, 5xx, timeouts, network; and for non-Gemini providers also 400/413/422, since a
+  // free model may simply not support tools or JSON mode). Other 4xx errors from Gemini are real bugs in the request and are thrown right away.
+  // Returns { data, activeModel } where data always has the Gemini shape: data.candidates[0].content.parts.
   const FAST_MS = 5000, SLOW_MS = 40000; // first try every model for 5 seconds; if none answered, give the slow ones up to 40 seconds
-  const cool = new Map(); // model -> timestamp until which we skip it (set after a 429 quota error)
-  async function gemini({ model, system, contents, tools, max, schema: rs, quick }) {
+  const cool = new Map(); // model id -> timestamp until which we skip it (after a 429); 'auth:<provider>' -> skip the whole provider (after a bad key)
+  const isCool = (e) => Math.max(cool.get(idOf(e)) || 0, cool.get('auth:' + e.p) || 0) > Date.now();
+  const errMsg = (d) => (typeof d.error === 'string' ? d.error : (d.error && d.error.message) || d.message || 'request failed');
+
+  const lowerTypes = (v) => Array.isArray(v) ? v.map(lowerTypes)
+    : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, k === 'type' && typeof x === 'string' ? x.toLowerCase() : lowerTypes(x)])) : v;
+
+  function toOpenAI(system, contents, rs) {
+    const msgs = [{ role: 'system', content: system + (rs ? '\n\nReply with ONLY a single JSON object (no markdown, no extra text) with these keys: ' + Object.keys(rs.properties || {}).join(', ') + '.' : '') }];
+    let n = 0, pending = [];
+    for (const c of contents) {
+      const parts = c.parts || [];
+      const text = parts.filter((x) => typeof x.text === 'string' && !x.thought).map((x) => x.text).join('\n');
+      if (c.role === 'model') {
+        const calls = parts.filter((x) => x.functionCall);
+        const m = { role: 'assistant', content: text || (calls.length ? null : '') };
+        if (calls.length) {
+          pending = calls.map(() => 'call' + String(++n).padStart(5, '0')); // 9 characters: the strictest providers (Mistral) need exactly that
+          m.tool_calls = calls.map((x, i) => ({ id: pending[i], type: 'function', function: { name: x.functionCall.name, arguments: JSON.stringify(x.functionCall.args || {}) } }));
+        }
+        msgs.push(m);
+      } else {
+        parts.filter((x) => x.functionResponse).forEach((x, i) => msgs.push({ role: 'tool', tool_call_id: pending[i] || 'call00000', content: JSON.stringify(x.functionResponse.response) }));
+        if (text) msgs.push({ role: 'user', content: text });
+      }
+    }
+    return msgs;
+  }
+
+  function fromOpenAI(d) {
+    const msg = (d.choices && d.choices[0] && d.choices[0].message) || {};
+    let text = typeof msg.content === 'string' ? msg.content : Array.isArray(msg.content) ? msg.content.map((c) => (c && c.text) || '').join('') : '';
+    text = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim(); // some open models print their reasoning inline
+    const parts = [];
+    if (text) parts.push({ text });
+    for (const tc of msg.tool_calls || []) {
+      let args = {}; try { args = JSON.parse((tc.function && tc.function.arguments) || '{}'); } catch (e) { /* keep empty */ }
+      parts.push({ functionCall: { name: tc.function && tc.function.name, args: args && typeof args === 'object' ? args : {} } });
+    }
+    return { candidates: [{ content: { role: 'model', parts } }] };
+  }
+
+  // One attempt on one entry with its own time limit.
+  async function attemptGemini(e, { system, contents, tools, max, schema: rs, quick }, timeoutMs) {
     const generationConfig = { maxOutputTokens: max, temperature: 0.3 };
     if (rs) { generationConfig.responseMimeType = 'application/json'; generationConfig.responseSchema = rs; }
-
-    const all = Array.isArray(model) ? model : [model];
-    const live = all.filter((m) => (cool.get(m) || 0) < Date.now());
-    const chain = live.length ? live : all; // if every model is cooling down, try them all anyway
-    let lastError = null;
-
-    // One attempt on one model with its own time limit.
-    const attempt = async (modelString, timeoutMs) => {
-      const send = async (cfg) => {
-        const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(modelString) + ':generateContent', {
-          method: 'POST',
-          headers: { 'x-goog-api-key': KEY, 'content-type': 'application/json' },
-          body: JSON.stringify({
-            systemInstruction: { parts: [{ text: system }] }, contents, generationConfig: cfg,
-            ...(tools && tools.length ? { tools: [{ functionDeclarations: tools }] } : {})
-          }),
-          signal: AbortSignal.timeout(timeoutMs)
-        });
-        return { r, d: await r.json().catch(() => ({})) };
-      };
-      let { r, d } = await send(quick ? { ...generationConfig, thinkingConfig: { thinkingBudget: 0 } } : generationConfig);
-      if (!r.ok && quick && r.status === 400) ({ r, d } = await send(generationConfig)); // model does not accept thinkingConfig
-      if (!r.ok) {
-        const err = new Error('Gemini API ' + r.status + ': ' + ((d.error && d.error.message) || 'request failed'));
-        err.status = r.status;
-        throw err;
-      }
-      return { data: d, activeModel: modelString };
+    const send = async (cfg) => {
+      const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(e.m) + ':generateContent', {
+        method: 'POST',
+        headers: { 'x-goog-api-key': e.cfg.key, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: system }] }, contents, generationConfig: cfg,
+          ...(tools && tools.length ? { tools: [{ functionDeclarations: tools }] } : {})
+        }),
+        signal: AbortSignal.timeout(timeoutMs)
+      });
+      return { r, d: await r.json().catch(() => ({})) };
     };
+    let { r, d } = await send(quick ? { ...generationConfig, thinkingConfig: { thinkingBudget: 0 } } : generationConfig);
+    if (!r.ok && quick && r.status === 400) ({ r, d } = await send(generationConfig)); // model does not accept thinkingConfig
+    if (!r.ok) throw Object.assign(new Error(e.cfg.name + ' API ' + r.status + ': ' + errMsg(d)), { status: r.status });
+    return d;
+  }
+
+  async function attemptOpenAI(e, { system, contents, tools, max, schema: rs }, timeoutMs) {
+    const base = { model: e.m, messages: toOpenAI(system, contents, rs), max_tokens: max, temperature: 0.3 };
+    if (tools && tools.length) { base.tools = tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters ? lowerTypes(t.parameters) : { type: 'object', properties: {} } } })); base.tool_choice = 'auto'; }
+    const send = async (body) => {
+      const r = await fetch(e.cfg.url + '/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...(e.cfg.key ? { authorization: 'Bearer ' + e.cfg.key } : {}), ...(e.cfg.headers || {}) },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(timeoutMs)
+      });
+      return { r, d: await r.json().catch(() => ({})) };
+    };
+    let { r, d } = await send(rs ? { ...base, response_format: { type: 'json_object' } } : base);
+    if (!r.ok && rs && r.status === 400) ({ r, d } = await send(base)); // model does not accept JSON mode: the system prompt already asks for JSON
+    if (!r.ok) throw Object.assign(new Error(e.cfg.name + ' API ' + r.status + ': ' + errMsg(d)), { status: r.status });
+    const out = fromOpenAI(d);
+    if (!out.candidates[0].content.parts.length) throw new Error(e.cfg.name + ' returned an empty answer'); // no status = counts as retryable
+    return out;
+  }
+
+  async function llm({ model, system, contents, tools, max, schema, quick }) {
+    const all = Array.isArray(model) ? model : [model];
+    const live = all.filter((e) => !isCool(e));
+    const chain = live.length ? live : all; // if every model is cooling down, try them all anyway
+    const args = { system, contents, tools, max, schema, quick };
+    let lastError = null;
 
     // Pass 1: fast. Every model gets FAST_MS. Models that only timed out are remembered as "slow".
     // Pass 2: only if pass 1 found nobody, the slow models get SLOW_MS to finish the job.
     const slow = [];
     for (const [pass, list, ms] of [[1, chain, FAST_MS], [2, null, SLOW_MS]]) {
-      for (const modelString of (list || slow.splice(0))) {
+      for (const entry of (list || slow.splice(0))) {
+        if ((cool.get('auth:' + entry.p) || 0) > Date.now() && all.some((o) => o.p !== entry.p)) continue; // this provider's key was just refused
+        const name = idOf(entry);
         try {
-          return await attempt(modelString, ms);
+          const data = await (entry.cfg.kind === 'gemini' ? attemptGemini(entry, args, ms) : attemptOpenAI(entry, args, ms));
+          return { data, activeModel: entry };
         } catch (error) {
           lastError = error;
           const s = error.status;
-          if (s === 429) cool.set(modelString, Date.now() + 60e3); // skip this model for a minute
+          if (s === 429) cool.set(name, Date.now() + 60e3); // skip this model for a minute
+          if (s === 401 || s === 403) cool.set('auth:' + entry.p, Date.now() + 10 * 60e3); // bad or unauthorised key: skip the provider for 10 minutes
           const timedOut = !s && /timeout|abort/i.test((error.name || '') + ' ' + (error.message || ''));
-          const retryable = !s || s === 404 || s === 429 || s >= 500; // no status = timeout or network error
-          console.warn('[agent] ' + modelString + ' failed' + (pass === 1 ? ' (' + ms / 1000 + 's pass)' : ' (slow pass)') + ': ' + error.message + (retryable ? ' (trying next model)' : ''));
+          const retryable = !s || s === 401 || s === 402 || s === 403 || s === 404 || s === 408 || s === 429 || s >= 500 || (entry.p !== 'gemini' && (s === 400 || s === 413 || s === 422));
+          console.warn('[agent] ' + name + ' failed' + (pass === 1 ? ' (' + ms / 1000 + 's pass)' : ' (slow pass)') + ': ' + error.message + (retryable ? ' (trying next model)' : ''));
           if (!retryable) throw error;
-          if (pass === 1 && timedOut) slow.push(modelString);
+          if (pass === 1 && timedOut) slow.push(entry);
         }
       }
     }
@@ -123,13 +227,13 @@ module.exports = function mount(app, { pool, auth, admin, wrap, notify }) {
   const textOf = (content) => ((content && content.parts) || []).filter((p) => typeof p.text === 'string' && !p.thought).map((p) => p.text).join('\n').trim();
 
   // Lets the model call our tools (up to 6 rounds) and returns its final text.
-  // The model that worked is moved to the front of the chain, but the fallbacks stay available on every round.
+  // The model that worked is moved to the front of the chain, but the fallbacks (also other providers) stay available on every round.
   async function run({ model, system, contents, tools, exec, max = 1500, quick }) {
     const msgs = contents.slice();
     let chain = Array.isArray(model) ? model.slice() : [model];
 
     for (let i = 0; i < 6; i++) {
-      const { data: d, activeModel } = await gemini({ model: chain, system, contents: msgs, tools, max, quick });
+      const { data: d, activeModel } = await llm({ model: chain, system, contents: msgs, tools, max, quick });
       chain = [activeModel, ...chain.filter((m) => m !== activeModel)];
 
       const cand = (d.candidates || [])[0];
@@ -187,12 +291,12 @@ module.exports = function mount(app, { pool, auth, admin, wrap, notify }) {
     if (!GATE) return true;
     const transcript = rows.slice(-6).map((r) => (r.from_staff ? 'Shop: ' : 'Customer: ') + clean(r.body, 400)).join('\n');
     for (let i = 0; i < 2; i++) { // one retry if the answer is unreadable
-      const { data: d } = await gemini({
+      const { data: d } = await llm({
         model: MODEL_CUSTOMER, system: GATE_SYSTEM, max: 400, quick: true,
         contents: [{ role: 'user', parts: [{ text: '<chat>\n' + transcript + '\n</chat>' }] }],
         schema: { type: 'OBJECT', properties: { on_topic: { type: 'BOOLEAN' } }, required: ['on_topic'] }
       });
-      try { return JSON.parse(textOf(((d.candidates || [])[0] || {}).content)).on_topic === true; } catch (e) { /* try again */ }
+      try { const t = textOf(((d.candidates || [])[0] || {}).content); return JSON.parse((t.match(/\{[\s\S]*\}/) || [t])[0]).on_topic === true; } catch (e) { /* try again */ }
     }
     return false; // still unclear = not on topic
   }
@@ -248,7 +352,7 @@ module.exports = function mount(app, { pool, auth, admin, wrap, notify }) {
   const say = (uid, body) => q('INSERT INTO chat_messages (user_id,from_staff,sender,body,read_by_staff) VALUES ($1,true,$2,$3,true)', [uid, SENDER, body]);
 
   async function agentReply(uid) {
-    if (!KEY || !AUTO) return;
+    if (!ON || !AUTO) return;
     if (busy.has(uid)) { again.add(uid); return; }
     busy.add(uid);
     try {
@@ -450,7 +554,7 @@ module.exports = function mount(app, { pool, auth, admin, wrap, notify }) {
   const recent = new Map();
   const limit = (uid, n) => { const now = Date.now(), hits = (recent.get(uid) || []).filter((t) => now - t < 60e3); if (hits.length >= n) throw bad('Slow down a little, then try again.', 429); hits.push(now); recent.set(uid, hits); };
 
-  app.get('/api/admin/agent/status', auth, admin, (req, res) => res.json({ enabled: !!KEY, customer_replies: !!KEY && AUTO, strict_filter: GATE, provider: 'gemini', customer_model: MODEL_CUSTOMER, admin_model: MODEL_ADMIN }));
+  app.get('/api/admin/agent/status', auth, admin, (req, res) => res.json({ enabled: ON, customer_replies: ON && AUTO, strict_filter: GATE, provider: ACTIVE.length ? ACTIVE[0].id : null, providers: ACTIVE.map((p) => p.id), customer_model: MODEL_CUSTOMER.map(idOf), admin_model: MODEL_ADMIN.map(idOf) }));
 
   // ----- Teach screen (admin only): the notes the AI answers from
   app.get('/api/admin/agent/knowledge', auth, admin, wrap(async (req, res) => {
@@ -486,7 +590,7 @@ module.exports = function mount(app, { pool, auth, admin, wrap, notify }) {
   }));
 
   app.post('/api/admin/agent', auth, admin, wrap(async (req, res) => {
-    if (!KEY) throw bad('The AI is not set up yet. Add GEMINI_API_KEY in Render, then redeploy.', 503);
+    if (!ON) throw bad('The AI is not set up yet. Add an AI key in Render (for example GEMINI_API_KEY or GROQ_API_KEY), then redeploy.', 503);
     limit(req.user.id, 20);
     const body = req.body || {};
     const message = clean(body.message, 2000); if (!message) throw bad('Write a message first.');
