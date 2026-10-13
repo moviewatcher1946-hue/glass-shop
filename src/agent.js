@@ -44,15 +44,20 @@ module.exports = function mount(app, { pool, auth, admin, wrap, notify }) {
     .sort((a, b) => (ORDER.length ? ORDER.indexOf(a.id) - ORDER.indexOf(b.id) : 0));
   const ENABLED = ACTIVE.length > 0;
   // One flat list of { p: provider, m: model, key: 'provider/model' } per role; the first entry is tried first, the rest are fallbacks.
+  const saved = new Map(); // provider id -> models chosen by the admin in the Providers screen (kept in the database)
+  const envModels = (p) => listOf(process.env['AI_' + p.id.toUpperCase() + '_MODELS']);
   const chainFor = (role) => ACTIVE.flatMap((p) => {
-    let models = listOf(process.env['AI_' + p.id.toUpperCase() + '_MODELS']);
+    let models = envModels(p);
+    if (!models.length && saved.has(p.id)) models = saved.get(p.id);
     if (p.id === 'gemini' && !models.length) { const first = process.env[role === 'admin' ? 'AI_ADMIN_MODEL' : 'AI_CUSTOMER_MODEL']; models = first ? [first.trim()].concat(GEMINI_MODELS.filter((m) => m !== first.trim())) : GEMINI_MODELS; }
-    if (p.id === 'custom') models = listOf(process.env.AI_CUSTOM_MODELS);
+    if (p.id === 'custom' && !models.length) models = listOf(process.env.AI_CUSTOM_MODELS);
     return (models.length ? models : p.models).map((m) => ({ p, m, key: p.id + '/' + m }));
   });
-  const MODEL_CUSTOMER = chainFor('customer');
-  const MODEL_ADMIN = chainFor('admin');
 
+
+  q(`CREATE TABLE IF NOT EXISTS ai_models (provider TEXT PRIMARY KEY, models TEXT NOT NULL DEFAULT '')`)
+    .then(() => q('SELECT provider, models FROM ai_models')).then((r) => { for (const x of r.rows) saved.set(x.provider, listOf(x.models)); })
+    .catch((e) => console.error('agent models init:', e.message));
 
   const AUTO = process.env.AI_CUSTOMER_REPLIES !== 'off';
   const GATE = process.env.AI_STRICT_GATE !== 'off';
@@ -202,9 +207,9 @@ module.exports = function mount(app, { pool, auth, admin, wrap, notify }) {
           lastError = error;
           const s = error.status;
           if (s === 429) cool.set(e.key, Date.now() + 60e3); // skip this model for a minute
-          if (s === 401 || s === 402 || s === 403) cool.set(e.key, Date.now() + 600e3); // wrong key or no credit: skip for ten minutes
+          if (s === 401 || s === 402 || s === 403 || s === 404 || s === 410) cool.set(e.key, Date.now() + 600e3); // wrong key, no credit or model gone: skip for ten minutes
           const timedOut = !s && /timeout|abort/i.test((error.name || '') + ' ' + (error.message || ''));
-          const retryable = !s || s === 404 || s === 408 || s === 429 || s === 401 || s === 402 || s === 403 || s >= 500 || (e.p.id !== 'gemini' && (s === 400 || s === 422)); // no status = timeout or network error
+          const retryable = !s || (e.p.id === 'gemini' ? [401, 402, 403, 404, 408, 410, 429].includes(s) || s >= 500 : s >= 400); // no status = timeout or network error
           console.warn('[agent] ' + e.key + ' failed' + (pass === 1 ? ' (' + ms / 1000 + 's pass)' : ' (slow pass)') + ': ' + error.message + (retryable ? ' (trying next model)' : ''));
           if (!retryable) throw error;
           if (pass === 1 && timedOut) slow.push(e);
@@ -282,7 +287,7 @@ module.exports = function mount(app, { pool, auth, admin, wrap, notify }) {
     const transcript = rows.slice(-6).map((r) => (r.from_staff ? 'Shop: ' : 'Customer: ') + clean(r.body, 400)).join('\n');
     for (let i = 0; i < 2; i++) { // one retry if the answer is unreadable
       const { data: d } = await callModel({
-        model: MODEL_CUSTOMER, system: GATE_SYSTEM, max: 400, quick: true,
+        model: chainFor('customer'), system: GATE_SYSTEM, max: 400, quick: true,
         contents: [{ role: 'user', parts: [{ text: '<chat>\n' + transcript + '\n</chat>' }] }],
         schema: { type: 'OBJECT', properties: { on_topic: { type: 'BOOLEAN' } }, required: ['on_topic'] }
       });
@@ -364,7 +369,7 @@ module.exports = function mount(app, { pool, auth, admin, wrap, notify }) {
       if (!contents.length || contents[contents.length - 1].role !== 'user') return;
       if (!(await onTopic(rows))) { await say(uid, REFUSAL); return; } // strict: off-topic gets a fixed answer, no model-written text
       const flags = {};
-      let text = await run({ model: MODEL_CUSTOMER, system: await withKnowledge(CUSTOMER_SYSTEM), contents, tools: CUSTOMER_TOOLS, max: 1500, quick: true, exec: (n, i) => customerTools(uid, n, i, flags) });
+      let text = await run({ model: chainFor('customer'), system: await withKnowledge(CUSTOMER_SYSTEM), contents, tools: CUSTOMER_TOOLS, max: 1500, quick: true, exec: (n, i) => customerTools(uid, n, i, flags) });
       text = clean(text, 1000);
       if (!text) { // no usable answer: never leave the customer waiting in silence
         if (!flags.handoff) await customerTools(uid, 'hand_off_to_team', { reason: 'The AI could not answer' }, flags);
@@ -544,7 +549,7 @@ module.exports = function mount(app, { pool, auth, admin, wrap, notify }) {
   const recent = new Map();
   const limit = (uid, n) => { const now = Date.now(), hits = (recent.get(uid) || []).filter((t) => now - t < 60e3); if (hits.length >= n) throw bad('Slow down a little, then try again.', 429); hits.push(now); recent.set(uid, hits); };
 
-  app.get('/api/admin/agent/status', auth, admin, (req, res) => res.json({ enabled: ENABLED, customer_replies: ENABLED && AUTO, strict_filter: GATE, provider: ACTIVE[0] ? ACTIVE[0].id : null, providers: ACTIVE.map((p) => ({ id: p.id, label: p.label, models: MODEL_ADMIN.filter((e) => e.p.id === p.id).map((e) => e.m) })), missing: PROVIDERS.filter((p) => !ACTIVE.includes(p) && p.id !== 'custom').map((p) => ({ id: p.id, label: p.label, env: p.keys[0] })), customer_model: MODEL_CUSTOMER.map((e) => e.key), admin_model: MODEL_ADMIN.map((e) => e.key) }));
+  app.get('/api/admin/agent/status', auth, admin, (req, res) => res.json({ enabled: ENABLED, customer_replies: ENABLED && AUTO, strict_filter: GATE, provider: ACTIVE[0] ? ACTIVE[0].id : null, providers: ACTIVE.map((p) => ({ id: p.id, label: p.label, models: chainFor('admin').filter((e) => e.p.id === p.id).map((e) => e.m), locked: envModels(p).length > 0 })), missing: PROVIDERS.filter((p) => !ACTIVE.includes(p) && p.id !== 'custom').map((p) => ({ id: p.id, label: p.label, env: p.keys[0] })), customer_model: chainFor('customer').map((e) => e.key), admin_model: chainFor('admin').map((e) => e.key) }));
 
   // Admin test: sends one tiny request to ONE provider and model (no fallback to the others) and reports what happened.
   // It also checks tool calling, because the assistant needs it. Only providers that have a key and only their configured models can be tested.
@@ -552,8 +557,8 @@ module.exports = function mount(app, { pool, auth, admin, wrap, notify }) {
     limit('t' + req.user.id, 15);
     const b = req.body || {}, p = ACTIVE.find((x) => x.id === String(b.provider || ''));
     if (!p) throw bad('That provider has no key set.', 404);
-    const models = MODEL_ADMIN.filter((e) => e.p.id === p.id).map((e) => e.m), m = clean(b.model, 120) || models[0];
-    if (!models.includes(m)) throw bad('Unknown model for this provider.');
+    const m = clean(b.model, 120) || (chainFor('admin').find((e) => e.p.id === p.id) || {}).m;
+    if (!m || !/^[\w@.:\/-]+$/.test(m)) throw bad('Pick a model first.');
     const t0 = Date.now(); let called = false;
     try {
       const reply = await run({
@@ -565,6 +570,36 @@ module.exports = function mount(app, { pool, auth, admin, wrap, notify }) {
       });
       res.json({ ok: !!(reply || called), provider: p.id, model: m, ms: Date.now() - t0, tools: called, reply: String(reply || '').slice(0, 200), error: reply || called ? undefined : 'The model returned an empty answer.' });
     } catch (e) { res.json({ ok: false, provider: p.id, model: m, ms: Date.now() - t0, tools: false, error: String(e.message || e).slice(0, 300) }); }
+  }));
+
+  // Asks the provider itself which models it offers today (model names change, so nothing here is hard-coded).
+  async function listModels(p) {
+    const signal = AbortSignal.timeout(10000);
+    const r = p.id === 'gemini'
+      ? await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', { headers: { 'x-goog-api-key': p.key }, signal })
+      : await fetch((typeof p.url === 'function' ? p.url() : p.url).replace(/\/chat\/completions$/, '/models'), { headers: { authorization: 'Bearer ' + p.key, ...(p.headers || {}) }, signal });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw fail(p.label, r, d);
+    const raw = p.id === 'gemini' ? (d.models || []).filter((m) => (m.supportedGenerationMethods || []).includes('generateContent')).map((m) => String(m.name).replace(/^models\//, ''))
+      : (d.data || d.models || []).map((m) => (typeof m === 'string' ? m : m && (m.id || m.name)));
+    const skip = /embed|whisper|tts|guard|moderat|rerank|image|speech|transcri|diffusion|clip|ocr|audio/i;
+    return [...new Set(raw.filter((m) => typeof m === 'string' && m && !skip.test(m)))].sort().slice(0, 300);
+  }
+  app.get('/api/admin/agent/models/:provider', auth, admin, wrap(async (req, res) => {
+    limit('m' + req.user.id, 20);
+    const p = ACTIVE.find((x) => x.id === req.params.provider);
+    if (!p) throw bad('That provider has no key set.', 404);
+    try { res.json({ models: await listModels(p) }); } catch (e) { res.json({ models: [], error: String(e.message || e).slice(0, 300) }); }
+  }));
+  // The admin picks the model to use first for a provider. An empty list goes back to the built-in defaults.
+  app.post('/api/admin/agent/models', auth, admin, wrap(async (req, res) => {
+    const b = req.body || {}, p = ACTIVE.find((x) => x.id === String(b.provider || ''));
+    if (!p) throw bad('That provider has no key set.', 404);
+    const list = (Array.isArray(b.models) ? b.models : []).map((m) => clean(m, 120)).filter((m) => /^[\w@.:\/-]+$/.test(m)).slice(0, 5);
+    if (list.length) { await q('INSERT INTO ai_models (provider, models) VALUES ($1,$2) ON CONFLICT (provider) DO UPDATE SET models=$2', [p.id, list.join(',')]); saved.set(p.id, list); }
+    else { await q('DELETE FROM ai_models WHERE provider=$1', [p.id]); saved.delete(p.id); }
+    for (const k of [...cool.keys()]) if (k.startsWith(p.id + '/')) cool.delete(k);
+    res.json({ ok: true, locked: envModels(p).length > 0, models: chainFor('admin').filter((e) => e.p.id === p.id).map((e) => e.m) });
   }));
 
   // ----- Teach screen (admin only): the notes the AI answers from
@@ -614,7 +649,7 @@ module.exports = function mount(app, { pool, auth, admin, wrap, notify }) {
     const contents = turns(hist.concat([{ role: 'user', content: message }]));
     const flags = { actions: [] };
     let reply;
-    try { reply = await run({ model: MODEL_ADMIN, system: await withKnowledge(ADMIN_SYSTEM), contents, tools: ADMIN_TOOLS, max: 1500, exec: (n, i) => adminTools(req.user.id, n, i, flags) }); }
+    try { reply = await run({ model: chainFor('admin'), system: await withKnowledge(ADMIN_SYSTEM), contents, tools: ADMIN_TOOLS, max: 1500, exec: (n, i) => adminTools(req.user.id, n, i, flags) }); }
     catch (e) { console.error('admin agent:', e.message); throw bad('The AI could not answer right now. Try again in a moment.', 502); }
     res.json({ reply: reply || (flags.actions.length ? 'Please confirm the action below.' : 'I could not find an answer to that.'), actions: flags.actions });
   }));
