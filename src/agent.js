@@ -171,58 +171,131 @@ module.exports = function mount(app, { pool, auth, admin, wrap, notify }) {
     return d;
   }
 
+
   async function attemptOpenAI(e, { system, contents, tools, max, schema: rs }, timeoutMs) {
-    const base = { model: e.m, messages: toOpenAI(system, contents, rs), max_tokens: max, temperature: 0.3 };
-    if (tools && tools.length) { base.tools = tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters ? lowerTypes(t.parameters) : { type: 'object', properties: {} } } })); base.tool_choice = 'auto'; }
-    const send = async (body) => {
-      const r = await fetch(e.cfg.url + '/chat/completions', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', ...(e.cfg.key ? { authorization: 'Bearer ' + e.cfg.key } : {}), ...(e.cfg.headers || {}) },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(timeoutMs)
-      });
-      return { r, d: await r.json().catch(() => ({})) };
+    const messages = toOpenAI(system, contents, rs);
+
+    const base = {
+      model: e.m,
+      messages,
+      max_tokens: max,
+      temperature: 0.3
     };
-    let { r, d } = await send(rs ? { ...base, response_format: { type: 'json_object' } } : base);
-    if (!r.ok && rs && r.status === 400) ({ r, d } = await send(base)); // model does not accept JSON mode: the system prompt already asks for JSON
-    if (!r.ok) throw Object.assign(new Error(e.cfg.name + ' API ' + r.status + ': ' + errMsg(d)), { status: r.status });
-    const out = fromOpenAI(d);
-    if (!out.candidates[0].content.parts.length) throw new Error(e.cfg.name + ' returned an empty answer'); // no status = counts as retryable
-    return out;
-  }
 
-  async function llm({ model, system, contents, tools, max, schema, quick }) {
-    const all = Array.isArray(model) ? model : [model];
-    const live = all.filter((e) => !isCool(e));
-    const chain = live.length ? live : all; // if every model is cooling down, try them all anyway
-    const args = { system, contents, tools, max, schema, quick };
-    let lastError = null;
-
-    // Pass 1: fast. Every model gets FAST_MS. Models that only timed out are remembered as "slow".
-    // Pass 2: only if pass 1 found nobody, the slow models get SLOW_MS to finish the job.
-    const slow = [];
-    for (const [pass, list, ms] of [[1, chain, FAST_MS], [2, null, SLOW_MS]]) {
-      for (const entry of (list || slow.splice(0))) {
-        if ((cool.get('auth:' + entry.p) || 0) > Date.now() && all.some((o) => o.p !== entry.p)) continue; // this provider's key was just refused
-        const name = idOf(entry);
-        try {
-          const data = await (entry.cfg.kind === 'gemini' ? attemptGemini(entry, args, ms) : attemptOpenAI(entry, args, ms));
-          return { data, activeModel: entry };
-        } catch (error) {
-          lastError = error;
-          const s = error.status;
-          if (s === 429) cool.set(name, Date.now() + 60e3); // skip this model for a minute
-          if (s === 401 || s === 403) cool.set('auth:' + entry.p, Date.now() + 10 * 60e3); // bad or unauthorised key: skip the provider for 10 minutes
-          const timedOut = !s && /timeout|abort/i.test((error.name || '') + ' ' + (error.message || ''));
-          const retryable = !s || s === 401 || s === 402 || s === 403 || s === 404 || s === 408 || s === 429 || s >= 500 || (entry.p !== 'gemini' && (s === 400 || s === 413 || s === 422));
-          console.warn('[agent] ' + name + ' failed' + (pass === 1 ? ' (' + ms / 1000 + 's pass)' : ' (slow pass)') + ': ' + error.message + (retryable ? ' (trying next model)' : ''));
-          if (!retryable) throw error;
-          if (pass === 1 && timedOut) slow.push(entry);
+    if (tools && tools.length) {
+      base.tools = tools.map((t) => ({
+        type: 'function',
+        function: {
+          name: t.name,
+          description: t.description,
+          parameters: t.parameters
+            ? lowerTypes(t.parameters)
+            : { type: 'object', properties: {} }
         }
+      }));
+      base.tool_choice = 'auto';
+    }
+
+    const variants = [];
+    const addVariant = (body) => {
+      const key = JSON.stringify(body);
+      if (!variants.some((v) => JSON.stringify(v) === key)) {
+        variants.push(body);
+      }
+    };
+
+    addVariant(rs ? { ...base, response_format: { type: 'json_object' } } : base);
+
+    if (rs) addVariant(base);
+
+    const completionBody = { ...base };
+    delete completionBody.max_tokens;
+    completionBody.max_completion_tokens = max;
+    addVariant(completionBody);
+
+    if (rs) {
+      const jsonCompletionBody = { ...completionBody, response_format: { type: 'json_object' } };
+      addVariant(jsonCompletionBody);
+    }
+
+    const noTemperature = { ...base };
+    delete noTemperature.temperature;
+    addVariant(noTemperature);
+
+    const noTemperatureCompletion = { ...completionBody };
+    delete noTemperatureCompletion.temperature;
+    addVariant(noTemperatureCompletion);
+
+    let lastError;
+
+    for (const body of variants) {
+      let r;
+      let d;
+
+      try {
+        r = await fetch(
+          /\/chat\/completions\/?$/i.test(e.cfg.url)
+            ? e.cfg.url
+            : e.cfg.url + '/chat/completions',
+          {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              ...(e.cfg.key
+                ? { authorization: 'Bearer ' + e.cfg.key }
+                : {}),
+              ...(e.cfg.headers || {})
+            },
+            body: JSON.stringify(body),
+            signal: AbortSignal.timeout(timeoutMs)
+          }
+        );
+
+        d = await r.json().catch(() => ({}));
+      } catch (error) {
+        throw error;
+      }
+
+      if (r.ok) {
+        const out = fromOpenAI(d);
+
+        if (!out.candidates[0].content.parts.length) {
+          throw new Error(e.cfg.name + ' returned an empty answer');
+        }
+
+        return out;
+      }
+
+      const message = errMsg(d);
+      lastError = Object.assign(
+        new Error(e.cfg.name + ' (' + e.m + ') API ' + r.status + ': ' + message),
+        { status: r.status }
+      );
+
+      // These usually indicate an invalid key, exhausted quota, or a
+      // missing model/endpoint. Changing request parameters won't fix them.
+      if (
+        r.status === 401 ||
+        r.status === 402 ||
+        r.status === 403 ||
+        r.status === 404 ||
+        r.status === 408 ||
+        r.status === 429 ||
+        r.status >= 500
+      ) {
+        throw lastError;
+      }
+
+      // Try another request format for incompatible parameters, JSON mode,
+      // or tool-call settings. The outer fallback still tries other models.
+      if (![400, 413, 422].includes(r.status)) {
+        throw lastError;
       }
     }
-    throw lastError || new Error('All fallback models failed.');
+
+    throw lastError || new Error(e.cfg.name + ' request failed');
   }
+
 
   const textOf = (content) => ((content && content.parts) || []).filter((p) => typeof p.text === 'string' && !p.thought).map((p) => p.text).join('\n').trim();
 
