@@ -468,7 +468,7 @@ app.post('/api/auth/login', wrap(async (req, res) => {
   if (u.must_change && u.temp_expires && new Date(u.temp_expires) < new Date())
     throw bad('That temporary password expired. Ask the seller for a new one.', 401);
   const user = { id: u.id, username: u.username, role: u.role };
-  res.json({ token: sign(user, u.must_change), user, must_change: !!u.must_change });
+  res.json({ token: sign(user, u.must_change, u.pw_changed_at ? Math.max(Math.floor(Date.now() / 1000), Math.floor(new Date(u.pw_changed_at).getTime() / 1000)) : undefined), user, must_change: !!u.must_change });
 }));
 
 // Used after a reset (temporary password) and open to everyone who wants to change their own password.
@@ -480,11 +480,11 @@ app.post('/api/auth/change-password', auth, wrap(async (req, res) => {
   { const pw = sec.passwordProblem(new_password, u && u.username); if (pw) throw bad(pw.replace(/^Password/, 'New password')); }
   if (!u || !(await bcrypt.compare(String(current_password), u.password_hash))) { failLogin(req.ip); throw bad('The current password is wrong.', 401); }
   if (current_password === new_password) throw bad('Pick a different password.');
-  await pool.query('UPDATE users SET password_hash=$1, must_change=false, temp_expires=NULL, pw_changed_at=now() WHERE id=$2', [await bcrypt.hash(String(new_password), 12), u.id]);
+  const { rows: [chg] } = await pool.query('UPDATE users SET password_hash=$1, must_change=false, temp_expires=NULL, pw_changed_at=now() WHERE id=$2 RETURNING pw_changed_at', [await bcrypt.hash(String(new_password), 12), u.id]);
   invalidateUser(u.id); // every older login of this account stops working right now
   sec.logEvent('password_changed', { ip: req.ip, user: u }, 'changed their own password');
   const user = { id: u.id, username: u.username, role: u.role };
-  res.json({ token: sign(user), user });
+  res.json({ token: sign(user, false, Math.max(Math.floor(Date.now() / 1000), Math.floor(new Date(chg.pw_changed_at).getTime() / 1000))), user });
 }));
 
 app.get('/api/auth/me', auth, (req, res) => res.json({ user: req.user }));
