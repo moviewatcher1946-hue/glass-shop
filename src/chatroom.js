@@ -36,7 +36,9 @@ module.exports = function mount(app, { pool, auth, wrap }) {
     const c = (await q("SELECT COUNT(*) FILTER (WHERE created_at>now()-interval '1 minute')::int m, COUNT(*)::int d FROM chat_messages WHERE user_id=$1 AND NOT from_staff AND created_at>now()-interval '1 day'", [req.user.id])).rows[0];
     if (c.m >= 6) throw bad('Slow down a little, then try again.', 429);
     if (c.d >= 200) throw bad('Daily message limit reached. Try again tomorrow.', 429);
-    res.status(201).json((await q('INSERT INTO chat_messages (user_id,from_staff,sender,body,read_by_customer) VALUES ($1,false,$2,$3,true) RETURNING id,from_staff,sender,body,created_at', [req.user.id, req.user.username, body])).rows[0]);
+    const row = (await q('INSERT INTO chat_messages (user_id,from_staff,sender,body,read_by_customer) VALUES ($1,false,$2,$3,true) RETURNING id,from_staff,sender,body,created_at', [req.user.id, req.user.username, body])).rows[0];
+    res.status(201).json(row);
+    if (app.locals.agentReply) setImmediate(() => app.locals.agentReply(req.user.id).catch((e) => console.error('agent:', e.message))); // AI helper answers in the background
   }));
 
   // ----- staff side
