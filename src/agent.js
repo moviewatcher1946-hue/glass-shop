@@ -63,6 +63,7 @@ module.exports = function mount(app, { pool, auth, admin, wrap, notify }) {
   // Tries each model in the chain. Only falls through on errors that another model could fix
   // (404 unknown model, 429 quota, 5xx, timeouts, network). Other 4xx errors are real bugs in the request and are thrown right away.
   // Returns { data, activeModel }.
+  const FAST_MS = 5000, SLOW_MS = 40000; // first try every model for 5 seconds; if none answered, give the slow ones up to 40 seconds
   const cool = new Map(); // model -> timestamp until which we skip it (set after a 429 quota error)
   async function gemini({ model, system, contents, tools, max, schema: rs, quick }) {
     const generationConfig = { maxOutputTokens: max, temperature: 0.3 };
@@ -73,36 +74,47 @@ module.exports = function mount(app, { pool, auth, admin, wrap, notify }) {
     const chain = live.length ? live : all; // if every model is cooling down, try them all anyway
     let lastError = null;
 
-    for (const modelString of chain) {
-      try {
-        const send = async (cfg) => {
-          const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(modelString) + ':generateContent', {
-            method: 'POST',
-            headers: { 'x-goog-api-key': KEY, 'content-type': 'application/json' },
-            body: JSON.stringify({
-              systemInstruction: { parts: [{ text: system }] }, contents, generationConfig: cfg,
-              ...(tools && tools.length ? { tools: [{ functionDeclarations: tools }] } : {})
-            }),
-            signal: AbortSignal.timeout(40000)
-          });
-          return { r, d: await r.json().catch(() => ({})) };
-        };
+    // One attempt on one model with its own time limit.
+    const attempt = async (modelString, timeoutMs) => {
+      const send = async (cfg) => {
+        const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(modelString) + ':generateContent', {
+          method: 'POST',
+          headers: { 'x-goog-api-key': KEY, 'content-type': 'application/json' },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: system }] }, contents, generationConfig: cfg,
+            ...(tools && tools.length ? { tools: [{ functionDeclarations: tools }] } : {})
+          }),
+          signal: AbortSignal.timeout(timeoutMs)
+        });
+        return { r, d: await r.json().catch(() => ({})) };
+      };
+      let { r, d } = await send(quick ? { ...generationConfig, thinkingConfig: { thinkingBudget: 0 } } : generationConfig);
+      if (!r.ok && quick && r.status === 400) ({ r, d } = await send(generationConfig)); // model does not accept thinkingConfig
+      if (!r.ok) {
+        const err = new Error('Gemini API ' + r.status + ': ' + ((d.error && d.error.message) || 'request failed'));
+        err.status = r.status;
+        throw err;
+      }
+      return { data: d, activeModel: modelString };
+    };
 
-        let { r, d } = await send(quick ? { ...generationConfig, thinkingConfig: { thinkingBudget: 0 } } : generationConfig);
-        if (!r.ok && quick && r.status === 400) ({ r, d } = await send(generationConfig)); // model does not accept thinkingConfig
-        if (!r.ok) {
-          const err = new Error('Gemini API ' + r.status + ': ' + ((d.error && d.error.message) || 'request failed'));
-          err.status = r.status;
-          throw err;
+    // Pass 1: fast. Every model gets FAST_MS. Models that only timed out are remembered as "slow".
+    // Pass 2: only if pass 1 found nobody, the slow models get SLOW_MS to finish the job.
+    const slow = [];
+    for (const [pass, list, ms] of [[1, chain, FAST_MS], [2, null, SLOW_MS]]) {
+      for (const modelString of (list || slow.splice(0))) {
+        try {
+          return await attempt(modelString, ms);
+        } catch (error) {
+          lastError = error;
+          const s = error.status;
+          if (s === 429) cool.set(modelString, Date.now() + 60e3); // skip this model for a minute
+          const timedOut = !s && /timeout|abort/i.test((error.name || '') + ' ' + (error.message || ''));
+          const retryable = !s || s === 404 || s === 429 || s >= 500; // no status = timeout or network error
+          console.warn('[agent] ' + modelString + ' failed' + (pass === 1 ? ' (' + ms / 1000 + 's pass)' : ' (slow pass)') + ': ' + error.message + (retryable ? ' (trying next model)' : ''));
+          if (!retryable) throw error;
+          if (pass === 1 && timedOut) slow.push(modelString);
         }
-        return { data: d, activeModel: modelString };
-      } catch (error) {
-        lastError = error;
-        const s = error.status;
-        if (s === 429) cool.set(modelString, Date.now() + 60e3); // skip this model for a minute
-        const retryable = !s || s === 404 || s === 429 || s >= 500; // no status = timeout or network error
-        console.warn('[agent] ' + modelString + ' failed: ' + error.message + (retryable ? ' (trying next model)' : ''));
-        if (!retryable) throw error;
       }
     }
     throw lastError || new Error('All fallback models failed.');
