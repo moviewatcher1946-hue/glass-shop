@@ -249,12 +249,22 @@
     starFlag('listen', !!V.rec); var m = document.getElementById('mg-mic'); if (m) { m.classList.toggle('on', !!V.rec); m.title = V.want ? (V.rec ? 'Microphone is listening (click to turn off)' : 'Microphone on, restarting...') : 'Microphone is off (click to turn on)'; }
     refreshStrip();
   }
+  function getMic() { // asks the browser for the microphone directly and reports the real reason if it fails
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { V.denied = true; V.want = false; micUi(); notice('This browser cannot reach the microphone. Use Chrome, Edge or Safari on the https address.'); return Promise.resolve(false); }
+    return navigator.mediaDevices.getUserMedia({ audio: true }).then(function (st) { st.getTracks().forEach(function (t) { t.stop(); }); return true; }).catch(function (e) {
+      var n = (e && e.name) || 'denied'; V.denied = true; V.want = false; micUi();
+      notice(n === 'NotFoundError' ? 'No microphone was found on this device.' : n === 'NotReadableError' ? 'The microphone is busy or blocked by the system. Close other apps that use it and check the system privacy settings.' : n === 'SecurityError' ? 'The microphone needs a secure (https) page.' : 'The browser blocked the microphone (' + n + '). Click the padlock in the address bar, set Microphone to Allow, reload, then click the mic button.');
+      return false;
+    });
+  }
   function micStart() {
     if (!SR || !isAdmin() || V.rec || V.speaking || !V.want || V.denied) return;
+    if (!V.pre) { if (V.preBusy) return; V.preBusy = true; getMic().then(function (ok) { V.preBusy = false; if (ok) { V.pre = true; micStart(); } }); return; } // check the microphone itself first, so the exact problem can be shown
     var r = new SR(); r.continuous = true; r.interimResults = false; r.lang = P.lang || 'en-US'; r.maxAlternatives = 1;
     r.onresult = function (e) { V.delay = 500; for (var i = e.resultIndex; i < e.results.length; i++) { if (e.results[i].isFinal) { var t = String(e.results[i][0].transcript || '').trim(); if (t && !V.speaking) heard(t); } } };
     r.onerror = function (e) {
-      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') { V.denied = true; V.want = false; notice('Microphone blocked. Allow it in the browser address bar, then click the mic button.'); }
+      if (e.error === 'not-allowed') { V.denied = true; V.want = false; micUi(); notice('The browser blocked the microphone for this site. Click the padlock in the address bar, set Microphone to Allow, reload, then click the mic button.'); }
+      else if (e.error === 'service-not-allowed') { V.denied = true; V.want = false; micUi(); notice('This browser or app does not offer speech recognition. Open the shop in Chrome, Edge or Safari (not inside another app), or type instead.'); }
       else if (e.error === 'network') V.delay = 5000;
     };
     r.onend = function () { if (V.rec === r) V.rec = null; micUi(); if (V.want && !V.denied && isAdmin() && !V.speaking) setTimeout(micStart, V.delay); };
@@ -270,7 +280,7 @@
     var s = el('div', 'tabs'); s.id = 'mg-ai-mic';
     if (!SR) { s.appendChild(el('div', 'mg-note', 'Voice needs Chrome, Edge or Safari. Typing works everywhere.')); return s; }
     var mk = function (on, label, f) { var b = el('button', on ? 'on' : '', label); b.onclick = f; s.appendChild(b); };
-    mk(V.want, V.want ? (V.rec ? 'Mic: listening' : 'Mic: on') : 'Mic: off', function () { setMic(!V.want); });
+    mk(V.want, V.want ? (V.rec ? 'Mic: listening' : 'Mic: on') : 'Mic: off', function () { setMic(V.denied ? true : !V.want); });
     mk(P.speak, P.speak ? 'Voice replies: on' : 'Voice replies: off', function () { P.speak = !P.speak; savePrefs(); if (!P.speak && window.speechSynthesis) speechSynthesis.cancel(); refreshStrip(); });
     mk(P.wake, P.wake ? 'Wake word: on' : 'Wake word: off', function () { P.wake = !P.wake; savePrefs(); refreshStrip(); notice(P.wake ? 'Start with "shop" or "assistant", for example: shop, what is pending?' : 'Everything you say is sent to the assistant.'); });
     mk(false, (LANGS.filter(function (l) { return l[0] === P.lang; })[0] || LANGS[0])[1], function () { var i = 0; LANGS.forEach(function (l, k) { if (l[0] === P.lang) i = k; }); P.lang = LANGS[(i + 1) % LANGS.length][0]; savePrefs(); if (V.rec) { try { V.rec.abort(); } catch (e) { /* ignore */ } } refreshStrip(); });
@@ -425,8 +435,15 @@
     var m = document.getElementById('mg-mic');
     if (on && !m) {
       m = el('button'); m.id = 'mg-mic'; m.type = 'button'; m.innerHTML = SV('<path d="M12 3a3 3 0 00-3 3v6a3 3 0 006 0V6a3 3 0 00-3-3z"/><path d="M19 11a7 7 0 01-14 0M12 18v3"/>'); m.setAttribute('aria-label', 'Microphone');
-      m.onclick = function () { setMic(!V.want); }; document.body.appendChild(m);
-      V.want = P.mic !== false; V.brief = null; if (V.want) micStart(); micUi();
+      m.onclick = function () { setMic(V.denied ? true : !V.want); }; document.body.appendChild(m);
+      V.want = P.mic !== false; V.brief = null; micUi();
+      // Only start by itself when the browser already allows the microphone; otherwise wait for a click (a prompt at page load is often dismissed, which looks like "blocked").
+      if (V.want && navigator.permissions && navigator.permissions.query) {
+        navigator.permissions.query({ name: 'microphone' }).then(function (p) {
+          if (p.state === 'granted') micStart(); else if (p.state === 'denied') { V.denied = true; micUi(); notice('The microphone is blocked for this site. Click the padlock in the address bar, set Microphone to Allow, reload, then click the mic button.'); }
+          p.onchange = function () { if (p.state === 'granted' && isAdmin()) { V.denied = false; V.want = P.mic !== false; micStart(); } };
+        }).catch(function () { /* the first click will start it */ });
+      }
       if (!V.booted) { V.booted = true; document.addEventListener('click', function () { if (V.want && !V.rec && !V.denied && isAdmin()) micStart(); }, true); }
     }
     if (!on && m) { m.remove(); V.want = false; if (V.rec) { try { V.rec.abort(); } catch (e) { /* ignore */ } } V.rec = null; if (window.speechSynthesis) speechSynthesis.cancel(); var v = document.getElementById('mg-vb'); if (v) v.remove(); A.msgs = []; aiSave(); }
