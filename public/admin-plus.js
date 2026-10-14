@@ -371,14 +371,43 @@
   function close() { var o = $('#ap-dlg'); if (o) o.remove(); document.body.style.overflow = ''; document.removeEventListener('keydown', onKey); }
   function onKey(e) { if (e.key === 'Escape') close(); }
 
+  // The category bar and the preset bar scroll sideways and hide their scrollbar, which left mouse users stuck. Now the wheel moves them
+  // (when the pointer is over a bar) and they can be dragged with the cursor, like on a phone.
+  function barsByMouse(root) {
+    if (!document.getElementById('ap-bars-css')) {
+      var st = document.createElement('style'); st.id = 'ap-bars-css';
+      st.textContent = '@media (hover:hover) and (pointer:fine){#ap-dlg .hy-chips,#ap-dlg .hy-seg{cursor:grab;scrollbar-width:thin}#ap-dlg .hy-chips.drag,#ap-dlg .hy-seg.drag{cursor:grabbing;user-select:none}}';
+      document.head.appendChild(st);
+    }
+    var barOf = function (t) { var b = t && t.closest && t.closest('.hy-chips, .hy-seg'); return b && b.scrollWidth > b.clientWidth + 1 ? b : null; };
+    root.addEventListener('wheel', function (e) {
+      var b = barOf(e.target); if (!b || Math.abs(e.deltaX) >= Math.abs(e.deltaY)) return;
+      var before = b.scrollLeft; b.scrollLeft += e.deltaY;
+      if (b.scrollLeft !== before) e.preventDefault(); // at either end the wheel goes back to scrolling the list
+    }, { passive: false });
+    var drag = null, moved = false;
+    root.addEventListener('pointerdown', function (e) {
+      if (e.pointerType !== 'mouse' || e.button !== 0) return;
+      var b = barOf(e.target); if (b) { drag = { b: b, x: e.clientX, left: b.scrollLeft }; moved = false; }
+    });
+    document.addEventListener('pointermove', function (e) {
+      if (!drag) return; var dx = e.clientX - drag.x;
+      if (Math.abs(dx) > 4) { moved = true; drag.b.classList.add('drag'); }
+      if (moved) drag.b.scrollLeft = drag.left - dx;
+    });
+    document.addEventListener('pointerup', function () { if (drag) { drag.b.classList.remove('drag'); drag = null; } });
+    root.addEventListener('click', function (e) { if (moved) { e.preventDefault(); e.stopPropagation(); moved = false; } }, true); // a drag must not also press the button under the cursor
+  }
+
   function open() { loadPack().then(openNow, openNow); }
   function openNow() {
     close();
-    var d = document.createElement('div'); d.id = 'ap-dlg';
+    var d = document.createElement('div'); d.id = 'ap-dlg'; d.setAttribute('data-lenis-prevent', '');
     d.innerHTML = '<div class="hy-sheet" role="dialog" aria-label="Admin+"><div class="hy-bar"><div><h2>Admin+</h2><p>' + tools.length + ' tools and settings</p></div><button class="hy-x" type="button" aria-label="Close">' + ico('close') + '</button></div>' +
       '<label class="hy-search">' + ico('search') + '<input type="search" placeholder="Search ' + tools.length + ' tools" aria-label="Search tools"></label><div class="hy-chips"></div>' +
       '<div class="hy-scroll"><div class="hy-kpis"></div><div class="hy-groups"></div><p class="muted hy-none" hidden>No tools match.</p></div></div>';
     document.body.appendChild(d); document.body.style.overflow = 'hidden'; document.addEventListener('keydown', onKey);
+    barsByMouse(d);
     d.onclick = function (e) { if (e.target === d) close(); };
     $('.hy-x', d).onclick = close;
     api('/api/plus/summary').then(function (k) { $('.hy-kpis', d).innerHTML = [['Today', money(k.today), 25], ['7 days', money(k.week), 215], ['30 days', money(k.month), 265], ['Pending', k.pending, 45], ['Orders', k.orders, 140]].map(function (x) { return '<div class="hy-kpi" style="--h:' + x[2] + '"><small>' + x[0] + '</small><b>' + x[1] + '</b></div>'; }).join(''); }).catch(function () {});
