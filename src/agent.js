@@ -10,7 +10,7 @@
 //   GEMINI_API_KEY (Google AI Studio, free tier)      GROQ_API_KEY (Groq, free tier)           OPENROUTER_API_KEY (OpenRouter, ':free' models)
 //   NVIDIA_API_KEY (build.nvidia.com, free credits)   CEREBRAS_API_KEY (free tier)             MISTRAL_API_KEY (free 'Experiment' plan)
 //   SAMBANOVA_API_KEY (free tier)                     GITHUB_MODELS_TOKEN (free, needs models:read)   HF_TOKEN (Hugging Face router, monthly free credit)
-//   CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID (Workers AI free allowance)
+//   CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID (Workers AI free allowance)   AIMLAPI_API_KEY (AI/ML API)   EDENAI_API_KEY (Eden AI; EDENAI_BASE_URL to change its address)
 //   AI_CUSTOM_BASE_URL + AI_CUSTOM_API_KEY + AI_CUSTOM_MODELS (any other OpenAI-compatible server)
 // Several keys can be set at once: the providers are tried in order and the next one is the fallback when one is out of quota or down.
 // Optional: AI_PROVIDERS=groq,gemini (choose the order / switch others off), AI_<NAME>_MODELS=model1,model2 (e.g. AI_GROQ_MODELS), AI_CUSTOMER_MODEL / AI_ADMIN_MODEL (first Gemini model).
@@ -33,8 +33,10 @@ module.exports = function mount(app, { pool, auth, admin, wrap, notify }) {
     { id: 'mistral', label: 'Mistral', keys: ['MISTRAL_API_KEY'], url: 'https://api.mistral.ai/v1/chat/completions', models: ['mistral-small-latest'] },
     { id: 'sambanova', label: 'SambaNova', keys: ['SAMBANOVA_API_KEY'], url: 'https://api.sambanova.ai/v1/chat/completions', models: ['Meta-Llama-3.3-70B-Instruct'] },
     { id: 'github', label: 'GitHub Models', keys: ['GITHUB_MODELS_TOKEN'], url: 'https://models.github.ai/inference/chat/completions', models: ['openai/gpt-4.1-mini'] },
-    { id: 'cloudflare', label: 'Cloudflare Workers AI', keys: ['CLOUDFLARE_API_TOKEN'], needs: ['CLOUDFLARE_ACCOUNT_ID'], url: () => 'https://api.cloudflare.com/client/v4/accounts/' + encodeURIComponent(process.env.CLOUDFLARE_ACCOUNT_ID.trim()) + '/ai/v1/chat/completions', models: ['@cf/meta/llama-3.3-70b-instruct-fp8-fast'] },
-    { id: 'huggingface', label: 'Hugging Face', keys: ['HF_TOKEN', 'HUGGINGFACE_API_KEY'], url: 'https://router.huggingface.co/v1/chat/completions', models: ['meta-llama/Llama-3.3-70B-Instruct'] },
+    { id: 'cloudflare', label: 'Cloudflare Workers AI', keys: ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_API_KEY', 'CF_API_TOKEN'], needs: ['CLOUDFLARE_ACCOUNT_ID'], url: () => 'https://api.cloudflare.com/client/v4/accounts/' + encodeURIComponent(process.env.CLOUDFLARE_ACCOUNT_ID.trim()) + '/ai/v1/chat/completions', models: ['@cf/meta/llama-3.3-70b-instruct-fp8-fast'] },
+    { id: 'huggingface', label: 'Hugging Face', keys: ['HF_TOKEN', 'HUGGINGFACE_API_KEY', 'HUGGING_FACE_HUB_TOKEN'], url: 'https://router.huggingface.co/v1/chat/completions', models: ['meta-llama/Llama-3.3-70B-Instruct'] },
+    { id: 'aimlapi', label: 'AI/ML API', keys: ['AIMLAPI_API_KEY'], url: 'https://api.aimlapi.com/v1/chat/completions', models: ['gpt-4o-mini'] },
+    { id: 'edenai', label: 'Eden AI', keys: ['EDENAI_API_KEY', 'EDEN_AI_API_KEY'], url: () => (process.env.EDENAI_BASE_URL || 'https://api.edenai.run/v2/llm').trim().replace(/\/+$/, '') + '/chat/completions', models: ['openai/gpt-4o-mini'] },
     { id: 'custom', label: 'Custom endpoint', keys: ['AI_CUSTOM_API_KEY'], needs: ['AI_CUSTOM_BASE_URL', 'AI_CUSTOM_MODELS'], url: () => process.env.AI_CUSTOM_BASE_URL.trim().replace(/\/+$/, '') + '/chat/completions', models: [] }
   ];
   const envOf = (names) => { for (const n of names) { const v = (process.env[n] || '').trim(); if (v) return v; } return ''; };
@@ -42,21 +44,29 @@ module.exports = function mount(app, { pool, auth, admin, wrap, notify }) {
   const ORDER = listOf(process.env.AI_PROVIDERS).map((x) => x.toLowerCase());
   const ACTIVE = PROVIDERS.filter((p) => (p.key = envOf(p.keys)) && (p.needs || []).every((n) => (process.env[n] || '').trim()) && (!ORDER.length || ORDER.includes(p.id)))
     .sort((a, b) => (ORDER.length ? ORDER.indexOf(a.id) - ORDER.indexOf(b.id) : 0));
-  const ENABLED = ACTIVE.length > 0;
+  // The admin can turn a provider off and change the order in the Providers screen; both are kept in the database.
+  const settings = new Map(); // provider id -> { enabled, pos }
+  const isOn = (p) => !(settings.get(p.id) && settings.get(p.id).enabled === false);
+  const posOf = (p) => (settings.get(p.id) && settings.get(p.id).pos != null ? settings.get(p.id).pos : 1000 + ACTIVE.indexOf(p));
+  const ordered = () => ACTIVE.slice().sort((x, y) => posOf(x) - posOf(y));
+  const usable = () => ordered().filter(isOn);
   // One flat list of { p: provider, m: model, key: 'provider/model' } per role; the first entry is tried first, the rest are fallbacks.
   const saved = new Map(); // provider id -> models chosen by the admin in the Providers screen (kept in the database)
   const envModels = (p) => listOf(process.env['AI_' + p.id.toUpperCase() + '_MODELS']);
-  const chainFor = (role) => ACTIVE.flatMap((p) => {
+  const modelsOf = (p, role) => {
     let models = envModels(p);
     if (!models.length && saved.has(p.id)) models = saved.get(p.id);
     if (p.id === 'gemini' && !models.length) { const first = process.env[role === 'admin' ? 'AI_ADMIN_MODEL' : 'AI_CUSTOMER_MODEL']; models = first ? [first.trim()].concat(GEMINI_MODELS.filter((m) => m !== first.trim())) : GEMINI_MODELS; }
     if (p.id === 'custom' && !models.length) models = listOf(process.env.AI_CUSTOM_MODELS);
-    return (models.length ? models : p.models).map((m) => ({ p, m, key: p.id + '/' + m }));
-  });
+    return models.length ? models : p.models;
+  };
+  const chainFor = (role) => usable().flatMap((p) => modelsOf(p, role).map((m) => ({ p, m, key: p.id + '/' + m })));
 
 
   q(`CREATE TABLE IF NOT EXISTS ai_models (provider TEXT PRIMARY KEY, models TEXT NOT NULL DEFAULT '')`)
-    .then(() => q('SELECT provider, models FROM ai_models')).then((r) => { for (const x of r.rows) saved.set(x.provider, listOf(x.models)); })
+    .then(() => q('ALTER TABLE ai_models ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT true'))
+    .then(() => q('ALTER TABLE ai_models ADD COLUMN IF NOT EXISTS pos INT'))
+    .then(() => q('SELECT provider, models, enabled, pos FROM ai_models')).then((r) => { for (const x of r.rows) { const l = listOf(x.models); if (l.length) saved.set(x.provider, l); settings.set(x.provider, { enabled: x.enabled, pos: x.pos }); } })
     .catch((e) => console.error('agent models init:', e.message));
 
   const AUTO = process.env.AI_CUSTOMER_REPLIES !== 'off';
@@ -66,7 +76,7 @@ module.exports = function mount(app, { pool, auth, admin, wrap, notify }) {
   const SENDER = 'Shop assistant (AI)';
   const SHOP_INFO = process.env.AI_SHOP_INFO || 'Customers pay cash when the order is handed to them. Orders placed before 10:00 PM are delivered the same day.';
   const REFUSAL = 'I can only help with this shop: products, prices, stock, your orders, delivery, payment and using the website. Is there something about the shop I can help with?';
-  if (!ENABLED) console.warn('[agent] No AI provider key is set (for example GEMINI_API_KEY or GROQ_API_KEY): AI helper is off.');
+  if (!usable().length) console.warn('[agent] No AI provider key is set (for example GEMINI_API_KEY or GROQ_API_KEY): AI helper is off.');
   else console.log('[agent] AI providers: ' + ACTIVE.map((p) => p.id).join(', '));
 
   q(`CREATE TABLE IF NOT EXISTS ai_handoff (
@@ -347,7 +357,7 @@ module.exports = function mount(app, { pool, auth, admin, wrap, notify }) {
   const say = (uid, body) => q('INSERT INTO chat_messages (user_id,from_staff,sender,body,read_by_staff) VALUES ($1,true,$2,$3,true)', [uid, SENDER, body]);
 
   async function agentReply(uid) {
-    if (!ENABLED || !AUTO) return;
+    if (!usable().length || !AUTO) return;
     if (busy.has(uid)) { again.add(uid); return; }
     busy.add(uid);
     try {
@@ -549,7 +559,7 @@ module.exports = function mount(app, { pool, auth, admin, wrap, notify }) {
   const recent = new Map();
   const limit = (uid, n) => { const now = Date.now(), hits = (recent.get(uid) || []).filter((t) => now - t < 60e3); if (hits.length >= n) throw bad('Slow down a little, then try again.', 429); hits.push(now); recent.set(uid, hits); };
 
-  app.get('/api/admin/agent/status', auth, admin, (req, res) => res.json({ enabled: ENABLED, customer_replies: ENABLED && AUTO, strict_filter: GATE, provider: ACTIVE[0] ? ACTIVE[0].id : null, providers: ACTIVE.map((p) => ({ id: p.id, label: p.label, models: chainFor('admin').filter((e) => e.p.id === p.id).map((e) => e.m), locked: envModels(p).length > 0 })), missing: PROVIDERS.filter((p) => !ACTIVE.includes(p) && p.id !== 'custom').map((p) => ({ id: p.id, label: p.label, env: p.keys[0] })), customer_model: chainFor('customer').map((e) => e.key), admin_model: chainFor('admin').map((e) => e.key) }));
+  app.get('/api/admin/agent/status', auth, admin, (req, res) => res.json({ enabled: usable().length > 0, customer_replies: usable().length > 0 && AUTO, strict_filter: GATE, provider: ACTIVE[0] ? ACTIVE[0].id : null, providers: ordered().map((p) => ({ id: p.id, label: p.label, enabled: isOn(p), models: modelsOf(p, 'admin'), locked: envModels(p).length > 0 })), missing: PROVIDERS.filter((p) => !ACTIVE.includes(p) && p.id !== 'custom').map((p) => ({ id: p.id, label: p.label, env: p.key && p.needs ? (p.needs.find((n) => !(process.env[n] || '').trim()) || p.keys[0]) : p.keys[0] })), customer_model: chainFor('customer').map((e) => e.key), admin_model: chainFor('admin').map((e) => e.key) }));
 
   // Admin test: sends one tiny request to ONE provider and model (no fallback to the others) and reports what happened.
   // It also checks tool calling, because the assistant needs it. Only providers that have a key and only their configured models can be tested.
@@ -577,11 +587,13 @@ module.exports = function mount(app, { pool, auth, admin, wrap, notify }) {
     const signal = AbortSignal.timeout(10000);
     const r = p.id === 'gemini'
       ? await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', { headers: { 'x-goog-api-key': p.key }, signal })
+      : p.id === 'cloudflare'
+      ? await fetch('https://api.cloudflare.com/client/v4/accounts/' + encodeURIComponent(process.env.CLOUDFLARE_ACCOUNT_ID.trim()) + '/ai/models/search?per_page=100&task=Text%20Generation', { headers: { authorization: 'Bearer ' + p.key }, signal })
       : await fetch((typeof p.url === 'function' ? p.url() : p.url).replace(/\/chat\/completions$/, '/models'), { headers: { authorization: 'Bearer ' + p.key, ...(p.headers || {}) }, signal });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) throw fail(p.label, r, d);
     const raw = p.id === 'gemini' ? (d.models || []).filter((m) => (m.supportedGenerationMethods || []).includes('generateContent')).map((m) => String(m.name).replace(/^models\//, ''))
-      : (d.data || d.models || []).map((m) => (typeof m === 'string' ? m : m && (m.id || m.name)));
+      : (d.data || d.models || d.result || []).map((m) => (typeof m === 'string' ? m : m && (m.id || m.name)));
     const skip = /embed|whisper|tts|guard|moderat|rerank|image|speech|transcri|diffusion|clip|ocr|audio/i;
     return [...new Set(raw.filter((m) => typeof m === 'string' && m && !skip.test(m)))].sort().slice(0, 300);
   }
@@ -595,11 +607,29 @@ module.exports = function mount(app, { pool, auth, admin, wrap, notify }) {
   app.post('/api/admin/agent/models', auth, admin, wrap(async (req, res) => {
     const b = req.body || {}, p = ACTIVE.find((x) => x.id === String(b.provider || ''));
     if (!p) throw bad('That provider has no key set.', 404);
-    const list = (Array.isArray(b.models) ? b.models : []).map((m) => clean(m, 120)).filter((m) => /^[\w@.:\/-]+$/.test(m)).slice(0, 5);
+    const list = (Array.isArray(b.models) ? b.models : []).map((m) => clean(m, 120)).filter((m) => /^[\w@.:\/-]+$/.test(m)).slice(0, 8);
     if (list.length) { await q('INSERT INTO ai_models (provider, models) VALUES ($1,$2) ON CONFLICT (provider) DO UPDATE SET models=$2', [p.id, list.join(',')]); saved.set(p.id, list); }
-    else { await q('DELETE FROM ai_models WHERE provider=$1', [p.id]); saved.delete(p.id); }
+    else { await q("INSERT INTO ai_models (provider, models) VALUES ($1,'') ON CONFLICT (provider) DO UPDATE SET models=''", [p.id]); saved.delete(p.id); }
     for (const k of [...cool.keys()]) if (k.startsWith(p.id + '/')) cool.delete(k);
-    res.json({ ok: true, locked: envModels(p).length > 0, models: chainFor('admin').filter((e) => e.p.id === p.id).map((e) => e.m) });
+    res.json({ ok: true, locked: envModels(p).length > 0, models: modelsOf(p, 'admin') });
+  }));
+  // Turn one provider on or off, and set the order they are tried in.
+  app.post('/api/admin/agent/provider', auth, admin, wrap(async (req, res) => {
+    const b = req.body || {}, p = ACTIVE.find((x) => x.id === String(b.provider || ''));
+    if (!p) throw bad('That provider has no key set.', 404);
+    const on = !(b.enabled === false || b.enabled === 'false');
+    await q('INSERT INTO ai_models (provider, enabled) VALUES ($1,$2) ON CONFLICT (provider) DO UPDATE SET enabled=$2', [p.id, on]);
+    settings.set(p.id, { ...(settings.get(p.id) || {}), enabled: on });
+    res.json({ ok: true, enabled: on });
+  }));
+  app.post('/api/admin/agent/order', auth, admin, wrap(async (req, res) => {
+    const want = (Array.isArray((req.body || {}).order) ? req.body.order : []).map(String), ids = ACTIVE.map((p) => p.id);
+    const all = [...new Set(want.filter((id) => ids.includes(id)).concat(ids))];
+    for (let i = 0; i < all.length; i++) {
+      await q('INSERT INTO ai_models (provider, pos) VALUES ($1,$2) ON CONFLICT (provider) DO UPDATE SET pos=$2', [all[i], i]);
+      settings.set(all[i], { ...(settings.get(all[i]) || {}), pos: i });
+    }
+    res.json({ ok: true, order: all });
   }));
 
   // ----- Teach screen (admin only): the notes the AI answers from
@@ -636,7 +666,7 @@ module.exports = function mount(app, { pool, auth, admin, wrap, notify }) {
   }));
 
   app.post('/api/admin/agent', auth, admin, wrap(async (req, res) => {
-    if (!ENABLED) throw bad('The AI is not set up yet. Add an AI key in Render (for example GEMINI_API_KEY or GROQ_API_KEY), then redeploy.', 503);
+    if (!usable().length) throw bad('No AI is turned on. Add an AI key in Render (for example GROQ_API_KEY) and redeploy, or turn one on in Messages > AI assistant > Providers.', 503);
     limit(req.user.id, 20);
     const body = req.body || {};
     const message = clean(body.message, 2000); if (!message) throw bad('Write a message first.');
