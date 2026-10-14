@@ -746,7 +746,7 @@
   window.addEventListener('orientationchange', function () { setTimeout(fitMobile, 250); });
   function closeBox() { clearInterval(timer); if (box) box.remove(); box = null; S.view = 'list'; pollSummary(); }
   function toggle() {
-    if (box) return closeBox(); box = el('div'); box.id = 'mg-box'; document.body.appendChild(box); fitMobile(); S = { view: 'list', tab: 'all', pending: [], latest: [], older: [] }; render(); pollSummary();
+    if (box) return closeBox(); box = el('div'); box.id = 'mg-box'; box.setAttribute('data-lenis-prevent', ''); document.body.appendChild(box); fitMobile(); S = { view: 'list', tab: 'all', pending: [], latest: [], older: [] }; render(); pollSummary();
   }
   document.addEventListener('keydown', function (e) {
     if (!btn) return;
