@@ -151,7 +151,12 @@
               window.__lenis = new Lenis({
                 autoRaf: true,
                 duration: 1.1,
-                prevent: function (n) { return !!(n.closest && n.closest('dialog, .picks, [data-lenis-prevent]')); } // popups and inner lists keep their own scrolling
+                prevent: function (n) { // popups, the Messages panel, Admin+ and any other box that scrolls by itself keep their own wheel scrolling
+                  if (!n || n.nodeType !== 1) return false;
+                  if (n.closest && n.closest('dialog, .picks, [data-lenis-prevent], #mg-box, #ap-dlg, #bx-pulse, #bx-help')) return true;
+                  if (n === document.body || n === document.documentElement) return false;
+                  var o = getComputedStyle(n).overflowY; return (o === 'auto' || o === 'scroll') && n.scrollHeight > n.clientHeight + 1;
+                }
               });
             } catch (e) {}
           });
