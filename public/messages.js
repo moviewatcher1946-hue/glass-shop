@@ -129,7 +129,8 @@
     `#mg-box .mg-menu,#mg-box.dk .mg-menu,#mg-box .mg-card,#mg-box.dk .mg-card{background:var(--solid,rgba(250,250,252,.98));color:var(--txt);border:1px solid var(--edge)}`,
     `#mg-box{height:min(600px,calc(100vh - 100px - var(--bn,0px) - var(--sa,0px)))}#mg-box.big{height:calc(100vh - 100px - var(--bn,0px) - var(--sa,0px))}`,
     `@supports(height:100dvh){#mg-box{height:min(600px,calc(100dvh - 100px - var(--bn,0px) - var(--sa,0px)))}#mg-box.big{height:calc(100dvh - 100px - var(--bn,0px) - var(--sa,0px))}}`,
-    `@media(max-width:520px){#mg-box,#mg-box.big{top:env(safe-area-inset-top,0px);left:0;right:0;width:auto;height:auto;border-radius:24px 24px 0 0}}`
+    // Phones: the chat fills the screen (no floating sheet), the round Messages button hides while it is open, and the AI star and its bubble are not shown at all.
+    `@media(max-width:700px){#mg-box,#mg-box.big{top:0!important;left:0!important;right:0!important;bottom:0!important;width:100%!important;height:100%!important;max-height:none!important;border-radius:0!important;border:0!important;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px)}#mg-box footer{padding-bottom:calc(10px + env(safe-area-inset-bottom,0px))}#mg-body .mg-m{max-width:86%}body:has(#mg-box) #mg-btn{display:none!important}#mg-star,#mg-vb{display:none!important}}`
   ].join('');
   document.head.appendChild(css);
 
@@ -278,42 +279,68 @@
     };
     load(); tx.focus();
   }
-  // ----- AI providers screen (admin only): test each AI on its own (one request, no fallback to the others).
+  // ----- AI providers screen (admin only): choose which AIs are used and in what order, remove models, and test each AI on its own.
   function viewProviders() {
     frame('AI providers', '', { back: function () { go('assistant'); } });
     var b = bodyBox(); b.appendChild(el('div', 'mg-note', 'Loading...'));
+    var redo = function () { if (S.view === 'providers') viewProviders(); };
+    var post = function (url, body, out) { return api(url, 'POST', body).then(redo).catch(function (e) { if (out) out.textContent = 'Could not save: ' + e.message; }); };
+    var field = 'width:100%;box-sizing:border-box;margin-top:6px;padding:6px 8px;border-radius:8px;border:1px solid var(--edge);background:var(--field);color:var(--txt)';
     api('/api/admin/agent/status').then(function (st) {
       if (S.view !== 'providers') return; b.textContent = '';
-      b.appendChild(el('div', 'mg-note', st.enabled ? 'Test each AI on its own. The assistant tries them in this order and uses the next one when one fails.' : 'No AI key is set yet. Add one in Render, then redeploy.'));
-      var runs = [];
-      (st.providers || []).forEach(function (p) {
-        var c = el('div', 'mg-act'), sel = el('select'), flt = el('input'), r = el('div', 'row'), t = el('button', 'p', 'Test'), ld = el('button', '', 'Load models'), us = el('button', '', 'Use this model'), out = el('div'), list = p.models.slice();
-        var line = 'width:100%;box-sizing:border-box;margin-top:6px;padding:6px 8px;border-radius:8px;border:1px solid var(--edge);background:var(--field);color:var(--txt)';
-        c.appendChild(el('b', '', p.label)); sel.style.cssText = line; flt.style.cssText = line; flt.placeholder = 'Filter models';
-        var fill = function (items) { var cur = sel.value; sel.textContent = ''; items.forEach(function (m) { var o = el('option', '', m); o.value = m; sel.appendChild(o); }); if (items.indexOf(cur) >= 0) sel.value = cur; };
-        fill(list); flt.oninput = function () { var q = flt.value.trim().toLowerCase(); fill(list.filter(function (m) { return !q || m.toLowerCase().indexOf(q) >= 0; })); };
-        c.appendChild(flt); c.appendChild(sel); out.style.cssText = 'margin-top:6px;opacity:.85;white-space:pre-wrap';
+      var ps = st.providers || [], runs = [], anyOn = ps.some(function (p) { return p.enabled; });
+      b.appendChild(el('div', 'mg-note', !ps.length ? 'No AI key is set yet. Add one in Render, then redeploy.' : anyOn ? 'The assistant tries the AIs that are on, from the top down, and uses the next one when one fails.' : 'Every AI is turned off, so the assistant is off. Turn one on below.'));
+      ps.forEach(function (p, i) {
+        var c = el('div', 'mg-act'), head = el('div', 'row'), out = el('div'), chips = el('div'), models = p.models.slice();
+        if (!p.enabled) c.style.opacity = '.75';
+        head.style.cssText = 'align-items:center;flex-wrap:wrap;margin:0';
+        var nm = el('b', '', (i + 1) + '. ' + p.label + (p.enabled ? '' : ' (off)')); nm.style.flex = '1'; head.appendChild(nm);
+        var mv = function (d) { var o = ps.map(function (x) { return x.id; }), j = i + d, t = o[i]; if (j < 0 || j >= o.length) return; o[i] = o[j]; o[j] = t; post('/api/admin/agent/order', { order: o }, out); };
+        var bu = el('button', '', 'Up'), bd = el('button', '', 'Down'), bt = el('button', p.enabled ? '' : 'p', p.enabled ? 'Turn off' : 'Turn on');
+        bu.onclick = function () { mv(-1); }; bd.onclick = function () { mv(1); }; bt.onclick = function () { post('/api/admin/agent/provider', { provider: p.id, enabled: !p.enabled }, out); };
+        bu.disabled = i === 0; bd.disabled = i === ps.length - 1;
+        [bu, bd, bt].forEach(function (x) { head.appendChild(x); }); c.appendChild(head);
+        c.appendChild(el('div', 'mg-note', 'Models in use (the first is tried first):'));
+        chips.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;margin-top:4px';
+        models.forEach(function (m) {
+          var ch = el('span', '', m), x = el('button', '', '\u2715');
+          ch.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:3px 4px 3px 10px;border-radius:999px;border:1px solid var(--edge);background:var(--field);font-size:13px;word-break:break-all';
+          x.setAttribute('aria-label', 'Remove ' + m); x.title = 'Remove this model'; x.style.cssText = 'padding:2px 8px;border-radius:999px'; x.disabled = p.locked || models.length < 2;
+          x.onclick = function () { post('/api/admin/agent/models', { provider: p.id, models: models.filter(function (y) { return y !== m; }) }, out); };
+          ch.appendChild(x); chips.appendChild(ch);
+        });
+        c.appendChild(chips);
+        if (p.locked) c.appendChild(el('div', 'mg-note', 'These models are fixed by AI_' + p.id.toUpperCase() + '_MODELS in Render. Remove that variable to change them here.'));
+        else if (models.length < 2) c.appendChild(el('div', 'mg-note', 'To stop using this AI completely, press Turn off.'));
+        var sel = el('select'), flt = el('input'), own = el('input'), r = el('div', 'row'), list = [];
+        var t = el('button', 'p', 'Test'), ld = el('button', '', 'Load models'), ad = el('button', '', 'Add model'), rs = el('button', '', 'Reset models');
+        var fill = function (items) { sel.textContent = ''; var o0 = el('option', '', items.length ? 'Pick a model...' : 'Press "Load models" to see the list'); o0.value = ''; sel.appendChild(o0); items.forEach(function (m) { var o = el('option', '', m); o.value = m; sel.appendChild(o); }); };
+        fill([]); sel.style.cssText = field; flt.style.cssText = field; own.style.cssText = field; flt.placeholder = 'Filter the list'; own.placeholder = 'Or type a model name'; out.style.cssText = 'margin-top:6px;opacity:.85;white-space:pre-wrap';
+        flt.oninput = function () { var q = flt.value.trim().toLowerCase(); fill(list.filter(function (m) { return !q || m.toLowerCase().indexOf(q) >= 0; })); };
+        var pick = function () { return own.value.trim() || sel.value; };
         ld.onclick = function () {
           ld.disabled = true; out.textContent = 'Asking ' + p.label + ' which models it offers...';
           api('/api/admin/agent/models/' + p.id).then(function (x) {
-            if (x.error) { out.textContent = 'Could not load the list: ' + x.error; return; }
-            if (!x.models.length) { out.textContent = 'The provider returned no models.'; return; }
-            list = x.models; flt.value = ''; fill(list); out.textContent = x.models.length + ' models found. Pick one, press Test, then Use this model.';
+            if (x.error) { out.textContent = 'Could not load the list: ' + x.error + '\nYou can still type a model name above.'; return; }
+            if (!x.models.length) { out.textContent = 'The provider returned no models. You can type a model name instead.'; return; }
+            list = x.models; flt.value = ''; fill(list); out.textContent = x.models.length + ' models found. Pick one, press Test, then Add model.';
           }).catch(function (e) { out.textContent = 'Could not load the list: ' + e.message; }).then(function () { ld.disabled = false; });
         };
-        us.onclick = function () {
-          if (!sel.value) return; us.disabled = true;
-          api('/api/admin/agent/models', 'POST', { provider: p.id, models: [sel.value] }).then(function (x) {
-            out.textContent = x.locked ? 'Saved, but AI_' + p.id.toUpperCase() + '_MODELS is set in Render and takes priority. Remove that variable to use this choice.' : 'Saved. The assistant will try ' + sel.value + ' first for ' + p.label + '.';
-          }).catch(function (e) { out.textContent = 'Could not save: ' + e.message; }).then(function () { us.disabled = false; });
+        ad.onclick = function () {
+          var m = pick(); if (!m) { out.textContent = 'Pick or type a model first.'; return; }
+          if (models.indexOf(m) >= 0) { out.textContent = m + ' is already in use.'; return; }
+          post('/api/admin/agent/models', { provider: p.id, models: models.concat([m]) }, out);
         };
+        rs.onclick = function () { post('/api/admin/agent/models', { provider: p.id, models: [] }, out); };
         var test = function () {
           t.disabled = true; out.textContent = 'Testing...';
-          return api('/api/admin/agent/test', 'POST', { provider: p.id, model: sel.value }).then(function (x) {
+          return api('/api/admin/agent/test', 'POST', { provider: p.id, model: pick() || models[0] }).then(function (x) {
             out.textContent = x.ok ? 'Working (' + (x.ms / 1000).toFixed(1) + ' s). ' + (x.tools ? 'Tool calling works.' : 'It answered but did not use the tool, so the assistant may not work well with this model.') : 'Failed: ' + x.error;
           }).catch(function (e) { out.textContent = 'Failed: ' + e.message; }).then(function () { t.disabled = false; });
         };
-        t.onclick = test; runs.push(test); r.appendChild(t); r.appendChild(ld); r.appendChild(us); r.style.flexWrap = 'wrap'; c.appendChild(r); c.appendChild(out); b.appendChild(c);
+        t.onclick = test; runs.push(test); r.style.flexWrap = 'wrap';
+        [t, ld, ad].concat(p.locked ? [] : [rs]).forEach(function (x) { r.appendChild(x); });
+        [flt, sel, own, r, out].forEach(function (x) { c.appendChild(x); }); b.appendChild(c);
       });
       (st.missing || []).forEach(function (p) { var c = el('div', 'mg-act'); c.style.opacity = '.55'; c.appendChild(el('b', '', p.label)); c.appendChild(el('div', '', 'Not set. Add ' + p.env + ' in Render to use it.')); b.appendChild(c); });
       if (runs.length > 1) {
@@ -398,6 +425,7 @@
     V.twT = setInterval(function () { i += step; o.textContent = txt.slice(0, i); if (i >= txt.length) clearInterval(V.twT); }, 30);
     clearTimeout(V.vbT); V.vbT = setTimeout(function () { o.remove(); }, 9000);
   }
+  var MOB = window.matchMedia ? window.matchMedia('(max-width:700px)') : { matches: false };
   function starBoot(on) {
     if (on && !star) {
       var P4 = 'M50 0C54 30 70 46 100 50C70 54 54 70 50 100C46 70 30 54 0 50C30 46 46 30 50 0Z', tw = '<svg viewBox="0 0 100 100"><path fill="#fff" d="' + P4 + '"/></svg>';
@@ -708,9 +736,17 @@
   }
 
   // ---------- open, close, start
+  // On a phone the on-screen keyboard shrinks the visible area: keep the chat (and its message box) inside what is really visible.
+  function fitMobile() {
+    if (!box) return; var vv = window.visualViewport;
+    if (MOB.matches && vv) { box.style.setProperty('height', vv.height + 'px', 'important'); box.style.setProperty('top', vv.offsetTop + 'px', 'important'); box.style.setProperty('bottom', 'auto', 'important'); }
+    else { box.style.removeProperty('height'); box.style.removeProperty('top'); box.style.removeProperty('bottom'); }
+  }
+  if (window.visualViewport) { window.visualViewport.addEventListener('resize', fitMobile); window.visualViewport.addEventListener('scroll', fitMobile); }
+  window.addEventListener('orientationchange', function () { setTimeout(fitMobile, 250); });
   function closeBox() { clearInterval(timer); if (box) box.remove(); box = null; S.view = 'list'; pollSummary(); }
   function toggle() {
-    if (box) return closeBox(); box = el('div'); box.id = 'mg-box'; document.body.appendChild(box); S = { view: 'list', tab: 'all', pending: [], latest: [], older: [] }; render(); pollSummary();
+    if (box) return closeBox(); box = el('div'); box.id = 'mg-box'; document.body.appendChild(box); fitMobile(); S = { view: 'list', tab: 'all', pending: [], latest: [], older: [] }; render(); pollSummary();
   }
   document.addEventListener('keydown', function (e) {
     if (!btn) return;
@@ -729,7 +765,7 @@
     var u = me(), on = !!(u && LS('token'));
     if (on && !btn) { staff = u.role !== 'customer'; btn = el('button'); btn.id = 'mg-btn'; btn.type = 'button'; btn.title = 'Messages (Ctrl+Shift+M)'; btn.onclick = toggle; document.body.appendChild(btn); setBadge(0); pollSummary(); if (!linked) { linked = true; deepLink(); } }
     if (!on && btn) { closeBox(); btn.remove(); btn = null; lastUnread = 0; setBadge(0); }
-    adminBoot(on && isAdmin()); starBoot(on);
+    adminBoot(on && isAdmin()); starBoot(on && !MOB.matches);
   }, 2000);
   setInterval(pollSummary, 25000);
 })();
