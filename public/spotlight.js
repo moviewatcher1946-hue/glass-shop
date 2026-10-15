@@ -304,4 +304,10 @@
 
   // Other scripts can open it: window.SnackifyAI.open('dash') or .ask('some question')
   window.SnackifyAI = { open: open, close: close, ask: function (q) { open('ask'); setTimeout(function () { send(q); }, 50); } };
+  // Used by the tutorial's "Ask the guide" box: same AI, returns the text instead of showing the panel.
+  window.SnackifyAI.answer = function (q, where) {
+    if (!signedIn()) return Promise.reject(new Error('Sign in to ask the guide.'));
+    var msg = where ? 'I am on the tutorial step "' + where + '". My question: ' + q : q;
+    return api('/api/ai/ask', 'POST', { message: msg, history: [], screen: screenContext() }).then(function (r) { return r.reply || 'No answer came back.'; });
+  };
 })();
