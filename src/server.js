@@ -512,7 +512,7 @@ app.get('/api/sellers/public', wrap(async (req, res) => {
 }));
 
 app.get('/api/products', softAuth, wrap(async (req, res) => {
-  await sweepFlash().catch(() => {});
+  await sweepFlashSoon();
   const hidden = 'COALESCE((SELECT products_hidden FROM users WHERE users.id=products.owner_id), false) AS hidden';
   const hot = await hotIds();
   res.json((await pool.query(`SELECT ${COLS}, ${req.user && req.user.role === 'admin' ? hidden : 'false AS hidden'}, (id = ANY($1::int[])) AS hot FROM products ${isStaffReq(req) ? '' : `WHERE ${HIDE_PROD}`} ORDER BY pinned DESC, sort_order ASC NULLS LAST, created_at DESC`, [hot])).rows);
@@ -1568,6 +1568,9 @@ async function sweepFlash() {
   if (rows.length) await repriceSafe(rows.map((r) => r.id)).catch(() => {});
 }
 setInterval(() => sweepFlash().catch(() => {}), 60000).unref();
+// Shop pages used to run the flash-sale sweep (a write to the products table) on every product request. Now it runs at most every 15 s.
+let lastSweep = 0;
+const sweepFlashSoon = () => { if (Date.now() - lastSweep < 15e3) return Promise.resolve(); lastSweep = Date.now(); return sweepFlash().catch(() => {}); };
 app.patch('/api/products/:id/flash', auth, staff, wrap(async (req, res) => {
   const id = parseInt(req.params.id), pct = parseInt(req.body.percent), mins = parseInt(req.body.minutes);
   if (!Number.isInteger(id)) throw bad('Product not found.', 404);
