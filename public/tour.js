@@ -19,9 +19,19 @@
 
   var idx = 0, root = null, voiceOn = LS('tour_voice') !== '0', rate = parseFloat(LS('tour_rate')) || 1;
 
-  // ---------- speech
-  function say(text) {
-    if (!canSpeak || !voiceOn || !text) return;
+  // ---------- speech: Gemini voice when the server has a key, otherwise the device's own voice
+  var aiVoice = null;          // null = not checked yet, true/false after the status check
+  var audioEl = null, seq = 0;
+  fetch('/api/ai/status', { cache: 'no-store' }).then(function (r) { return r.json(); })
+    .then(function (st) { aiVoice = !!st.voice; }).catch(function () { aiVoice = false; });
+
+  function stopSpeech() {
+    seq++;
+    if (audioEl) { try { audioEl.pause(); } catch (e) {} }
+    if (canSpeak) { try { window.speechSynthesis.cancel(); } catch (e) {} }
+  }
+  function speakDevice(text) {
+    if (!canSpeak) return;
     try {
       window.speechSynthesis.cancel();
       var u = new SpeechSynthesisUtterance(text);
@@ -29,7 +39,34 @@
       window.speechSynthesis.speak(u);
     } catch (e) { /* speech blocked on this device */ }
   }
-  function stopSpeech() { if (canSpeak) { try { window.speechSynthesis.cancel(); } catch (e) {} } }
+  function speakGemini(text, mine) {
+    return fetch('/api/ai/speak', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: text }) })
+      .then(function (r) { if (!r.ok) throw new Error('voice unavailable'); return r.blob(); })
+      .then(function (blob) {
+        if (mine !== seq) return; // the person has moved on since
+        if (!audioEl) audioEl = new Audio();
+        audioEl.src = URL.createObjectURL(blob);
+        audioEl.playbackRate = rate;
+        return audioEl.play();
+      });
+  }
+  function say(text) {
+    if (!voiceOn || !text) return;
+    var mine = ++seq;
+    if (aiVoice) {
+      speakGemini(text, mine).catch(function () { if (mine === seq) speakDevice(text); });
+    } else {
+      speakDevice(text);
+    }
+  }
+  // Phones only let audio start after a tap. Starting the tour is that tap, so unlock the player then.
+  function unlockAudio() {
+    try {
+      if (!audioEl) audioEl = new Audio();
+      audioEl.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQAAAAA=';
+      audioEl.play().catch(function () {});
+    } catch (e) { /* ignore */ }
+  }
 
   // ---------- styles
   var css = document.createElement('style');
@@ -139,6 +176,7 @@
 
   function open() {
     stopSpeech();
+    unlockAudio();
     if (!visibleSteps().length) return;
     showStep(0);
   }
