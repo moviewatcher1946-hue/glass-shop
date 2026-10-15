@@ -1,9 +1,9 @@
 // Snack Shop service worker: installable, fast on bad signal.
 // Pages and files: network first (a new deploy shows right away), but if the network takes over 4 s the saved copy is shown instead.
 // Product pictures and the /vendor scripts: saved on the device, shown instantly. Live data (/api/...) is never stored.
-const CACHE = 'shop-v24-bottomfix';
+const CACHE = 'shop-v25-spotlight';
 const IMG = 'shop-img-v1';
-const SHELL = ['/', '/style.css', '/boost.css', '/app.js', '/boost.js', '/tour.js', '/admin-plus.js', '/site-guard.js', '/messages.js', '/manifest.json', '/icon-192.png', '/icon-512.png', '/vendor/gsap.min.js', '/vendor/lenis.min.js'];
+const SHELL = ['/', '/style.css', '/boost.css', '/app.js', '/boost.js', '/tour.js', '/admin-plus.js', '/site-guard.js', '/messages.js', '/spotlight.js', '/manifest.json', '/icon-192.png', '/icon-512.png', '/vendor/gsap.min.js', '/vendor/lenis.min.js'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => Promise.allSettled(SHELL.map((u) => c.add(u)))).then(() => self.skipWaiting()));
