@@ -1,180 +1,159 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Snackify</title>
-  <script>
+// Guided tour with voice. Opens from the Tutorial button (#tour-btn, or the Tutorial pill).
+// Each step is read aloud with the browser's own speech engine (no key, no cost). The "Ask the guide" box sends the question
+// to the Snackify AI and reads the answer aloud too. Mute and speed are remembered on this device.
+(function () {
+  'use strict';
+  if (window.__tour) return; window.__tour = true;
+
+  var LS = function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } };
+  var LSET = function (k, v) { try { localStorage.setItem(k, v); } catch (e) {} };
+  var canSpeak = 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window;
+
+  var STEPS = [
+    { sel: '#nav', title: 'Find your way', text: 'These buttons move you around the shop. Shop is the menu, Cart holds what you have chosen, and My orders shows what you have bought.' },
+    { sel: '#sp-dock', title: 'Ask Snackify AI', text: 'This is the AI button. Tap it, or press Control K on a computer, to ask anything: a product, your order, or how to do something on this site. It can also open pages for you.' },
+    { sel: '#cartbar', title: 'Your cart', text: 'When you add something, your cart shows here. Tap it to review, change quantities, or check out.' },
+    { sel: '#theme', title: 'Light or dark', text: 'Switch between light and dark mode here. The site also follows your phone or computer setting.' },
+    { sel: '#helpfab', title: 'Need help again?', text: 'You can open this tutorial any time from the Tutorial button.' }
+  ];
+
+  var idx = 0, root = null, voiceOn = LS('tour_voice') !== '0', rate = parseFloat(LS('tour_rate')) || 1;
+
+  // ---------- speech
+  function say(text) {
+    if (!canSpeak || !voiceOn || !text) return;
     try {
-      document.documentElement.dataset.theme =
-        localStorage.theme || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
-      if (localStorage.glass === 'lite') document.documentElement.dataset.glass = 'lite'; // lite mode is only on when the person chose it (boost.js asks on slow devices)
-    } catch (e) {}
-  </script>
-  <script>
-    // Start fetching the shop's products and photos right away, while the page and the startup animation are still loading.
-    // A free server that was asleep can fail or stall on the first try, so each request is retried a few times quietly.
-    (function () {
-      function get(u, left) {
-        return fetch(u).then(function (r) { if (!r.ok) throw 0; return r.json(); })
-          .catch(function (e) { if (left <= 0) throw e; return new Promise(function (ok) { setTimeout(ok, 1800 + (4 - left) * 1500); }).then(function () { return get(u, left - 1); }); });
-      }
-      var data = Promise.all([get('/api/products', 4), get('/api/combos', 4), get('/api/settings', 4)]);
-      window.__pre = data; // app.js picks this up instead of asking the server again
-      data.catch(function () {});
-      function thumb(u, w) { return u + (u.indexOf('?') < 0 ? '?' : '&') + 'w=' + w; }
-      window.__preReady = data.then(function (d) {
-        var urls = [];
-        d[0].forEach(function (p) { if (p.image_url) urls.push(thumb(p.image_url, 640)); });
-        d[1].forEach(function (c) { (c.items || []).slice(0, 4).forEach(function (x) { var t = x.image_url && thumb(x.image_url, 480); if (t && urls.indexOf(t) < 0) urls.push(t); }); });
-        var first = urls.slice(0, 8), rest = urls.slice(8, 24); // wait for the first screenful only; the rest loads as people scroll
-        return Promise.all(first.map(function (u) { return new Promise(function (ok) { var i = new Image(); i.onload = i.onerror = ok; i.src = u; setTimeout(ok, 4000); }); }))
-          .then(function () { rest.forEach(function (u) { new Image().src = u; }); });
-      }).catch(function () {});
-    })();
-  </script>
-  <link rel="stylesheet" href="style.css?v=24">
-  <link rel="stylesheet" href="boost.css">
-  <link rel="preload" href="app.js" as="script">
-  <link rel="preload" href="tour.js" as="script">
-  <link rel="icon" href="/favicon.ico?v=3" sizes="any">
-  <link rel="shortcut icon" href="/favicon.ico?v=3">
-  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=3">
-  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png?v=3">
-  <link rel="manifest" href="manifest.json">
-  <link rel="apple-touch-icon" href="/icon-180.png?v=3">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-title" content="Snackify">
-  <meta name="apple-mobile-web-app-status-bar-style" content="default">
-  <meta name="theme-color" content="#070a1c">
-  <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;500;600;700;800&display=swap" media="print" onload="this.media='all'">
-  <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;500;600;700;800&display=swap"></noscript>
-  <meta name="description" content="Snackify: drinks, snacks and combos, ordered in a few taps.">
-  <meta name="color-scheme" content="dark light">
-  <meta property="og:title" content="Snackify"><meta property="og:type" content="website"><meta property="og:image" content="/icon-512.png">
-</head>
-<body>
-  <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><filter id="liquid-lens" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB"><feTurbulence type="fractalNoise" baseFrequency="0.006 0.01" numOctaves="2" seed="7" result="n"/><feDisplacementMap in="SourceGraphic" in2="n" scale="16" xChannelSelector="R" yChannelSelector="G"/></filter></svg>
-  <div id="gw" role="status" aria-live="polite">
-    <div class="gw-cols" aria-hidden="true"></div><div class="gw-rows" aria-hidden="true"></div><div class="gw-shine" aria-hidden="true"></div><div class="gw-ribbons" aria-hidden="true"><i></i><i></i><i></i></div>
-    <div class="gw-wipe" style="--w:0" aria-hidden="true"></div><div class="gw-wipe" style="--w:1" aria-hidden="true"></div><div class="gw-wipe" style="--w:2" aria-hidden="true"></div>
-    <div class="gw-center">
-      <div class="gw-tv" aria-hidden="true"><i style="--k:0"></i><i style="--k:1"></i><i style="--k:2"></i><i style="--k:3"></i></div>
-      <div class="gw-title" aria-label="Snackify"><span style="--i:0">S</span><span style="--i:1">n</span><span style="--i:2">a</span><span style="--i:3">c</span><span style="--i:4">k</span><span style="--i:5">i</span><span style="--i:6">f</span><span style="--i:7">y</span></div>
-            <p class="gw-msg" id="gw-msg"></p>
-    </div>
-  </div>
-  <script>
-    // Startup: sheets of glass slide in, drift and shine while the shop loads, then a stack of glass wipes sweeps away to reveal the page.
-    // It stays up until the shop's products and first photos have really loaded, so nobody stares at a blank page. If the free server is still
-    // waking up it says so, and after a very long wait it offers a retry button. Tap anywhere to skip. Skipped for reduced-motion.
-    (function () {
-      var b = document.getElementById('gw'), msg = document.getElementById('gw-msg'), body = document.body, seen = false, shown = false, minDone = false, ready = false;
-      try { seen = sessionStorage.boot === '1'; sessionStorage.boot = '1'; } catch (e) {}
-      if (matchMedia('(prefers-reduced-motion: reduce)').matches) { b.remove(); return; }
-      function fill(sel, n, fn) { var s = ''; for (var k = 0; k < n; k++) s += fn(k); b.querySelector(sel).innerHTML = s; }
-      function dir(k) { return k % 2 ? -1 : 1; }
-      fill('.gw-cols', 14, function (k) { return '<i style="--i:' + k + ';--s:' + dir(k) + '"></i>'; });
-      fill('.gw-rows', 9, function (k) { return '<i style="--i:' + k + ';--s:' + dir(k) + '"></i>'; });
-      body.classList.add('booting'); // hides the page underneath so the phone only has the animation to draw
-      function say(t) { msg.textContent = t; msg.classList.add('on'); }
-      function lift(cls, ms) {
-        if (shown) return; shown = true;
-        b.classList.add(cls);
-        body.classList.remove('booting'); // the page is already there underneath while the glass wipes away
-        window.dispatchEvent(new Event('bootdone'));
-        setTimeout(function () { b.remove(); }, ms);
-      }
-      function check() { if (minDone && ready) lift('out', 1500); }
-      b.onclick = function (e) { if (e.target.closest && e.target.closest('button')) return; lift('skip', 400); };
-      // Start the clock only after the browser has painted the first frame, so a slow phone doesn't lose the first half second.
-      requestAnimationFrame(function () { requestAnimationFrame(function () {
-        b.classList.add('go');
-        setTimeout(function () { minDone = true; check(); }, seen ? 1800 : 2600);
-        setTimeout(function () { if (!shown && !ready) { b.classList.add('slow'); say('Waking the shop up. The server sleeps when it is quiet, so this can take up to a minute the first time.'); } }, 4000);
-      }); });
-      (window.__pre || Promise.resolve()).then(function () { return window.__preReady; }).then(function () { ready = true; check(); }, function () {
-        // Every retry failed: say so, and let the person try again or carry on without data.
-        b.classList.remove('slow');
-        msg.innerHTML = 'Cannot reach the shop right now.<br><button type="button" class="primary" id="gw-retry">Try again</button>';
-        msg.classList.add('on');
-        document.getElementById('gw-retry').onclick = function () { location.reload(); };
+      window.speechSynthesis.cancel();
+      var u = new SpeechSynthesisUtterance(text);
+      u.lang = 'en-US'; u.rate = rate; u.pitch = 1;
+      window.speechSynthesis.speak(u);
+    } catch (e) { /* speech blocked on this device */ }
+  }
+  function stopSpeech() { if (canSpeak) { try { window.speechSynthesis.cancel(); } catch (e) {} } }
+
+  // ---------- styles
+  var css = document.createElement('style');
+  css.textContent = [
+    '#tour-root{position:fixed;inset:0;z-index:9800;pointer-events:none;font:15px system-ui,-apple-system,sans-serif}',
+    '#tour-card{pointer-events:auto;position:fixed;left:50%;transform:translateX(-50%);top:max(14px,env(safe-area-inset-top,0px));width:min(440px,calc(100vw - 24px));max-height:calc(100vh - 28px);overflow:auto;',
+    'border-radius:20px;padding:16px 18px;color:#1d1d1f;background:rgba(250,250,252,.94);border:1px solid rgba(255,255,255,.6);box-shadow:0 24px 60px rgba(0,0,0,.28);',
+    'backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);animation:tIn .28s ease both}',
+    '@media(prefers-color-scheme:dark){#tour-card{color:#f2f2f4;background:rgba(30,30,36,.94);border-color:rgba(255,255,255,.12)}}',
+    'html[data-theme="dark"] #tour-card{color:#f2f2f4;background:rgba(30,30,36,.94);border-color:rgba(255,255,255,.12)}',
+    'html[data-theme="light"] #tour-card{color:#1d1d1f;background:rgba(250,250,252,.94)}',
+    '#tour-card h3{margin:0 0 6px;font-size:17px}#tour-card p{margin:0 0 10px;line-height:1.45}',
+    '#tour-card .meta{font-size:12px;opacity:.6;margin-bottom:4px}',
+    '#tour-card .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px}',
+    '#tour-card .row button{border:0;border-radius:12px;padding:9px 14px;font:600 14px system-ui,sans-serif;cursor:pointer;background:rgba(128,128,128,.18);color:inherit}',
+    '#tour-card .row button.primary,#tour-card form button{background:#0a84ff;color:#fff}',
+    '#tour-card .row button:disabled,#tour-card form button:disabled{opacity:.4;cursor:default}',
+    '#tour-card .spacer{flex:1}',
+    '#tour-card form{display:flex;gap:8px;margin-top:12px}',
+    '#tour-card form input{flex:1;min-width:0;padding:10px 12px;border-radius:12px;border:1px solid rgba(128,128,128,.35);background:rgba(255,255,255,.7);color:inherit;font:inherit}',
+    '@media(prefers-color-scheme:dark){#tour-card form input{background:rgba(255,255,255,.08)}}',
+    '#tour-card form button{border:0;border-radius:12px;padding:0 16px;font:600 14px system-ui,sans-serif;cursor:pointer}',
+    '#tour-card .answer{margin-top:10px;padding:10px 12px;border-radius:12px;background:rgba(128,128,128,.12);white-space:pre-wrap;word-break:break-word;max-height:30vh;overflow:auto}',
+    '#tour-hi{position:fixed;z-index:9799;pointer-events:none;border-radius:16px;box-shadow:0 0 0 3px #0a84ff,0 0 0 9999px rgba(10,10,16,.35);transition:all .3s ease}',
+    '@keyframes tIn{from{opacity:0;transform:translate(-50%,-10px)}to{opacity:1;transform:translate(-50%,0)}}'
+  ].join('');
+  document.head.appendChild(css);
+
+  // ---------- highlight the element a step is about
+  function highlight(sel) {
+    var old = document.getElementById('tour-hi'); if (old) old.remove();
+    var el = document.querySelector(sel);
+    if (!el) return null;
+    var r = el.getBoundingClientRect();
+    if (!r.width || !r.height) return null;
+    var hi = document.createElement('div'); hi.id = 'tour-hi';
+    hi.style.left = (r.left - 6) + 'px'; hi.style.top = (r.top - 6) + 'px';
+    hi.style.width = (r.width + 12) + 'px'; hi.style.height = (r.height + 12) + 'px';
+    document.body.appendChild(hi);
+    return el;
+  }
+
+  // ---------- steps (only the ones visible on this screen)
+  function visibleSteps() {
+    return STEPS.filter(function (s) { var e = document.querySelector(s.sel); return e && e.getBoundingClientRect().width > 0; });
+  }
+  function showStep(i) {
+    var list = visibleSteps();
+    if (!list.length) return;
+    idx = Math.max(0, Math.min(list.length - 1, i));
+    var s = list[idx];
+    var el = highlight(s.sel);
+    if (el && window.smoothTo) { try { window.smoothTo(el, { block: 'center' }); } catch (e) {} }
+    renderCard(s, idx, list.length);
+    say(s.title + '. ' + s.text);
+  }
+
+  // ---------- card
+  function btn(label, fn, primary) {
+    var b = document.createElement('button'); b.type = 'button'; b.textContent = label; if (primary) b.className = 'primary';
+    b.onclick = fn; return b;
+  }
+  function renderCard(step, i, n) {
+    if (!root) { root = document.createElement('div'); root.id = 'tour-root'; document.body.appendChild(root); }
+    root.textContent = '';
+    var card = document.createElement('div'); card.id = 'tour-card'; card.setAttribute('role', 'dialog'); card.setAttribute('aria-label', 'Tutorial');
+    var meta = document.createElement('div'); meta.className = 'meta'; meta.textContent = 'Step ' + (i + 1) + ' of ' + n;
+    var h = document.createElement('h3'); h.textContent = step.title;
+    var p = document.createElement('p'); p.textContent = step.text;
+    card.appendChild(meta); card.appendChild(h); card.appendChild(p);
+
+    var row = document.createElement('div'); row.className = 'row';
+    var back = btn('Back', function () { showStep(i - 1); }); back.disabled = i === 0;
+    var next = btn(i === n - 1 ? 'Finish' : 'Next', function () { if (i === n - 1) close(); else showStep(i + 1); }, true);
+    var mute = btn(voiceOn ? 'Mute voice' : 'Turn voice on', function () {
+      voiceOn = !voiceOn; LSET('tour_voice', voiceOn ? '1' : '0');
+      if (!voiceOn) stopSpeech(); else say(step.title + '. ' + step.text);
+      renderCard(step, i, n);
+    });
+    var speed = btn(rate === 1 ? 'Speed: normal' : rate < 1 ? 'Speed: slow' : 'Speed: fast', function () {
+      rate = rate === 1 ? 0.85 : rate < 1 ? 1.2 : 1; LSET('tour_rate', String(rate));
+      renderCard(step, i, n);
+    });
+    var spacer = document.createElement('span'); spacer.className = 'spacer';
+    row.appendChild(back); row.appendChild(next); row.appendChild(mute); row.appendChild(speed); row.appendChild(spacer); row.appendChild(btn('Close', close));
+    card.appendChild(row);
+
+    // The AI guide: ask anything, the answer is read aloud.
+    if (window.SnackifyAI && window.SnackifyAI.answer) {
+      var form = document.createElement('form');
+      var input = document.createElement('input'); input.type = 'text'; input.maxLength = 300; input.placeholder = 'Ask the guide a question\u2026'; input.setAttribute('aria-label', 'Ask the guide');
+      var send = document.createElement('button'); send.type = 'submit'; send.textContent = 'Ask';
+      var out = document.createElement('div'); out.className = 'answer'; out.hidden = true;
+      form.appendChild(input); form.appendChild(send);
+      form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        var q = input.value.trim(); if (!q) return;
+        out.hidden = false; out.textContent = 'Thinking\u2026'; send.disabled = true;
+        window.SnackifyAI.answer(q, step.title)
+          .then(function (a) { out.textContent = a; say(a); }, function (err) { out.textContent = err.message || 'The guide is not available right now.'; })
+          .then(function () { send.disabled = false; });
       });
-      setTimeout(function () { lift('skip', 0); }, 120000); // safety net
-    })();
-  </script>
-  <header class="glass nav">
-    <h1><img class="logo" src="icon-192.png" alt="" width="36" height="36">Shop</h1>
-    <div class="tools">
-      <nav id="nav"></nav>
-      <button id="tour-btn" type="button" title="Tutorial" aria-label="Tutorial"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.5a2.5 2.5 0 1 1 3.4 2.3c-.7.3-1 .8-1 1.5M12 17v.01"/></svg></button>
-      <button id="sfx-btn" type="button" title="Sounds" aria-label="Sounds"></button>
-      <button id="theme" type="button"></button>
-    </div>
-  </header>
-  <main id="app"><div class="grid" aria-hidden="true"><div class="sk"></div><div class="sk"></div><div class="sk"></div><div class="sk"></div></div></main>
-  <dialog id="dlg" class="glass"></dialog>
-  <div id="toast" class="glass" role="status"></div>
-  <script>
-    const tb = document.getElementById('theme');
-    const MOON = '<svg viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/></svg>', SUN = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4L7 17M17 7l1.4-1.4"/></svg>';
-    const label = () => { const d = document.documentElement.dataset.theme === 'dark'; tb.innerHTML = d ? SUN : MOON; tb.title = tb.ariaLabel = d ? 'Light mode' : 'Dark mode'; };
-    tb.onclick = (ev) => {
-      const root = document.documentElement, t = root.dataset.theme === 'dark' ? 'light' : 'dark';
-      const apply = () => { root.dataset.theme = t; try { localStorage.theme = t; } catch (e) {} label(); };
-      const r = tb.getBoundingClientRect(), none = !r.width; // the phone's footer button clicks this one while it is hidden: then the wave starts at the bottom middle
-      const x = ev && ev.clientX ? ev.clientX : none ? innerWidth / 2 : r.left + r.width / 2, y = ev && ev.clientY ? ev.clientY : none ? innerHeight : r.top + r.height / 2;
-      root.style.setProperty('--tx', x + 'px'); root.style.setProperty('--ty', y + 'px');
-      root.style.setProperty('--tr', Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y)) + 'px');
-      if (document.startViewTransition && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
-        // A circle of the new colours grows out from the button. The old colour sits underneath it the whole time, so no frame can ever flash plain white or black.
-        root.style.setProperty('--vt-old', getComputedStyle(root).getPropertyValue('--bg').trim() || 'transparent');
-        try { window.__vt && window.__vt.skipTransition(); } catch (e) {}
-        const vt = window.__vt = document.startViewTransition(apply);
-        setTimeout(() => { try { vt.skipTransition(); } catch (e) {} }, 2000); // safety: never leave a transition hanging
-      } else { root.classList.add('theme-anim'); apply(); clearTimeout(window.__themeT); window.__themeT = setTimeout(() => root.classList.remove('theme-anim'), 900); } // browsers without it: a smooth colour fade
-    };
-    label();
-  </script>
-  <script>
-    // The app's scripts start a moment after the startup animation does, so they can't freeze it.
-    (function () {
-      function load(src, cb) { var s = document.createElement('script'); s.src = src; if (cb) s.onload = cb; document.body.appendChild(s); }
-      function start() { load('app.js', function () { load('tour.js'); load('admin-plus.js'); load('boost.js'); load('site-guard.js'); load('messages.js'); }); }
-      if (document.getElementById('gw')) setTimeout(start, 300); else start();
-      // Smooth scrolling (Lenis). Skipped for reduced-motion and lite mode. If the script cannot load, the page just scrolls normally.
-      if (!matchMedia('(prefers-reduced-motion: reduce)').matches && document.documentElement.dataset.glass !== 'lite') {
-        setTimeout(function () {
-          load('/vendor/lenis.min.js', function () {
-            try {
-              window.__lenis = new Lenis({
-                autoRaf: true,
-                duration: 1.1,
-                prevent: function (n) { return !!(n.closest && n.closest('dialog, .picks, [data-lenis-prevent]')); } // popups and inner lists keep their own scrolling
-              });
-            } catch (e) {}
-          });
-        }, 600);
-      }
-    })();
-  </script>
-  <script>
-    // One helper for "scroll to this element", used by app.js and tour.js: smooth through Lenis when it is running, native otherwise.
-    window.smoothTo = function (el, o) {
-      o = o || {};
-      var l = window.__lenis;
-      if (l) l.scrollTo(el, { offset: o.block === 'center' ? el.offsetHeight / 2 - innerHeight / 2 : 0 });
-      else el.scrollIntoView({ behavior: 'smooth', block: o.block || 'start' });
-    };
-  </script>
-  <script>
-    // Specular glow follows the pointer on cards and buttons (visionOS-style hover highlight).
-    document.addEventListener('pointermove', function (e) {
-      var t = e.target.closest && e.target.closest('.card, button'); if (!t) return;
-      var r = t.getBoundingClientRect();
-      t.style.setProperty('--mx', (e.clientX - r.left) + 'px'); t.style.setProperty('--my', (e.clientY - r.top) + 'px');
-    }, { passive: true });
-  </script>
-</body>
-</html>
+      card.appendChild(form); card.appendChild(out);
+    }
+    root.appendChild(card);
+  }
+
+  function open() {
+    stopSpeech();
+    if (!visibleSteps().length) return;
+    showStep(0);
+  }
+  function close() {
+    stopSpeech();
+    if (root) root.textContent = '';
+    var hi = document.getElementById('tour-hi'); if (hi) hi.remove();
+  }
+
+  // Opens from the Tutorial button; the help pill in app.js clicks #tour-btn.
+  document.addEventListener('click', function (e) {
+    if (e.target.closest && e.target.closest('#tour-btn')) { e.preventDefault(); open(); }
+  });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && root && root.textContent) close(); });
+  window.addEventListener('resize', function () { if (root && root.textContent) { var s = visibleSteps()[idx]; if (s) highlight(s.sel); } });
+
+  window.SnackifyTour = { open: open, close: close };
+})();
