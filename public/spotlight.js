@@ -24,8 +24,8 @@
   // ---------- styles
   var css = document.createElement('style');
   css.textContent = [
-    '#sp-dock{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(14px + env(safe-area-inset-bottom,0px));z-index:9500;display:flex;align-items:center;gap:10px;',
-    'padding:10px 18px 10px 12px;border-radius:999px;border:1px solid rgba(255,255,255,.4);color:#fff;font:600 14px system-ui,-apple-system,sans-serif;cursor:pointer;',
+    '#sp-dock{position:fixed;right:16px;bottom:calc(16px + var(--bn,0px) + var(--sa,0px) + var(--cb,0px));z-index:46;display:flex;align-items:center;gap:8px;',
+    'min-height:0;padding:11px 18px 11px 12px;border-radius:999px;border:1px solid rgba(255,255,255,.4);color:#fff;font:700 14px system-ui,-apple-system,sans-serif;cursor:pointer;',
     'background:linear-gradient(120deg,rgba(94,92,230,.85),rgba(10,132,255,.8) 50%,rgba(191,90,242,.8));background-size:200% 200%;animation:spGrad 9s ease infinite;',
     'backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);box-shadow:0 14px 40px rgba(10,132,255,.35);max-width:calc(100vw - 24px);white-space:nowrap}',
     '#sp-dock .orb{width:26px;height:26px;border-radius:50%;background:radial-gradient(circle at 30% 30%,#fff,rgba(255,255,255,.2) 60%,transparent 70%);animation:spPulse 2.4s ease-in-out infinite;flex:0 0 auto}',
@@ -73,7 +73,7 @@
     '.sp-card b{font-size:22px}.sp-card span{font-size:13px;opacity:.75}',
     '.sp-list button{display:block;width:100%;text-align:left;border:0;background:rgba(128,128,128,.09);color:inherit;border-radius:12px;padding:10px 12px;margin-bottom:6px;font:inherit;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
     '.sp-empty{padding:18px;text-align:center;opacity:.7}',
-    '@media(max-width:600px){#sp-dock kbd{display:none}#sp-wrap{padding:0;align-items:stretch}#sp-panel{width:100%;max-height:none;height:100%;border-radius:0}}'
+    '@media(max-width:600px){#sp-dock kbd{display:none}#sp-dock{padding:11px 14px 11px 10px}#sp-wrap{padding:0;align-items:stretch}#sp-panel{width:100%;max-height:none;height:100%;border-radius:0}}'
   ].join('');
   document.head.appendChild(css);
 
@@ -81,14 +81,26 @@
   var dock = el('button'); dock.id = 'sp-dock'; dock.type = 'button';
   dock.setAttribute('aria-label', 'Ask Snackify AI (Ctrl+K)');
   dock.appendChild(el('span', 'orb'));
-  dock.appendChild(el('span', 't', 'Ask Snackify AI'));
+  dock.appendChild(el('span', 't', 'Ask AI'));
   var kbd = el('kbd', '', '\u2318K'); if (!/Mac|iPhone|iPad/.test(navigator.platform || '')) kbd.textContent = 'Ctrl K';
   dock.appendChild(kbd);
   dock.onclick = function () { open('ask'); };
 
-  function mountDock() { if (!dock.isConnected) document.body.appendChild(dock); }
-  mountDock();
-  setInterval(mountDock, 1500); // the page can re-render its body; keep the launcher on top
+  // Same line as Admin+: measured from its button, placed just to its left. Without Admin+ it sits in the same bottom corner.
+  function placeDock() {
+    if (!dock.isConnected) document.body.appendChild(dock);
+    var ref = document.getElementById('ap-fab'), r = ref && ref.getBoundingClientRect();
+    if (r && r.width) {
+      dock.style.bottom = Math.round(innerHeight - r.bottom) + 'px';
+      dock.style.right = Math.round(innerWidth - r.left + 8) + 'px';
+    } else {
+      dock.style.bottom = 'calc(16px + var(--bn,0px) + var(--sa,0px) + var(--cb,0px))';
+      dock.style.right = '16px';
+    }
+  }
+  placeDock();
+  setInterval(placeDock, 1000);
+  window.addEventListener('resize', placeDock);
 
   // ---------- panel
   var wrap = null, tab = 'ask', busy = false, pending = null;
@@ -203,6 +215,13 @@
     return s;
   }
 
+  // Opens a page of the site the way a person would: the app's own nav button. Then the panel steps aside.
+  function goTo(page) {
+    var b = document.querySelector('#nav [data-act="' + page + '"]') || document.querySelector('[data-act="' + page + '"]');
+    if (!b) return false;
+    close(); b.click(); return true;
+  }
+
   function send(text) {
     text = String(text || '').trim();
     if (!text || busy || !signedIn()) return;
@@ -217,6 +236,7 @@
       saveHistory(h);
       pending = (r.actions && r.actions.length) ? r.actions : null;
       busy = false; render();
+      if (r.navigate) goTo(r.navigate);
     }).catch(function (e) {
       var h = history();
       h.push({ role: 'assistant', content: e.message || 'The AI could not answer right now.', error: true, at: Date.now() });
