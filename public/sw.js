@@ -1,7 +1,7 @@
 // Snack Shop service worker: installable, fast on bad signal.
 // Pages and files: network first (a new deploy shows right away), but if the network takes over 4 s the saved copy is shown instead.
 // Product pictures and the /vendor scripts: saved on the device, shown instantly. Live data (/api/...) is never stored.
-const CACHE = 'shop-v27-lighter';
+const CACHE = 'shop-v28-perks';
 const IMG = 'shop-img-v1';
 const SHELL = ['/', '/style.min.css', '/boost.min.css', '/app.min.js', '/boost.js', '/tour.js', '/admin-plus.js', '/site-guard.js', '/messages.js', '/spotlight.js', '/manifest.json', '/icon-192.png', '/icon-512.png', '/vendor/gsap.min.js', '/vendor/lenis.min.js'];
 
@@ -38,4 +38,19 @@ self.addEventListener('fetch', (e) => {
     return;
   }
   e.respondWith(netFirst(r));
+});
+
+// Order alerts: show the notification, and open the shop when it is tapped.
+self.addEventListener('push', (e) => {
+  let d = {};
+  try { d = e.data ? e.data.json() : {}; } catch (err) { d = { body: e.data ? e.data.text() : '' }; }
+  e.waitUntil(self.registration.showNotification(d.title || 'Snack Shop', { body: d.body || '', icon: '/icon-192.png', badge: '/icon-192.png', data: { url: d.url || '/' } }));
+});
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+  const url = (e.notification.data && e.notification.data.url) || '/';
+  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
+    const w = list.find((c) => 'focus' in c);
+    return w ? w.focus() : self.clients.openWindow(url);
+  }));
 });
