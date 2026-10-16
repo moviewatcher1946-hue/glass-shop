@@ -254,6 +254,36 @@
   }
 
   // ---------- Dashboard tab
+  // Order alerts: ask for permission, subscribe this phone, and save the subscription on the server.
+  function b64ToBytes(str) {
+    var pad = '='.repeat((4 - str.length % 4) % 4), raw = atob((str + pad).replace(/-/g, '+').replace(/_/g, '/'));
+    var out = new Uint8Array(raw.length); for (var i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+    return out;
+  }
+  function alertsSetup(btn) {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
+      btn.textContent = 'Alerts are not supported in this browser'; btn.disabled = true; return;
+    }
+    btn.onclick = function () {
+      btn.disabled = true; btn.textContent = 'Turning on\u2026';
+      Notification.requestPermission().then(function (p) {
+        if (p !== 'granted') throw new Error('Allow notifications in your browser settings to get order alerts.');
+        return api('/api/push/key');
+      }).then(function (k) {
+        return navigator.serviceWorker.ready.then(function (reg) {
+          return reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(k.key) });
+        });
+      }).then(function (sub) {
+        return api('/api/push/subscribe', 'POST', sub.toJSON());
+      }).then(function () {
+        btn.textContent = 'Order alerts are on';
+      }).catch(function (e) {
+        btn.disabled = false; btn.textContent = 'Turn on order alerts';
+        btn.setAttribute('title', e.message || 'Could not turn on alerts.');
+      });
+    };
+  }
+
   function renderDash(panel) {
     var dash = el('div'); dash.id = 'sp-dash'; panel.appendChild(dash);
     var h = el('div'); h.appendChild(el('h3', '', 'Your Snackify AI')); h.appendChild(el('div', 'muted', 'Everything the assistant can do, and what it has been doing for you.'));
@@ -265,6 +295,19 @@
         (s.enabled ? (s.scope === 'shop' ? ' \u00B7 Shop topics only' : ' \u00B7 General help and shop help') : '') +
         (s.ordering === 'on' ? ' \u00B7 Ordering in chat is on' : '');
     }).catch(function () { status.textContent = 'Status unavailable right now.'; });
+
+    // Customers: loyalty points and order alerts.
+    if (signedIn() && !isAdmin()) {
+      var pcard = el('div', 'sp-card'); pcard.style.cursor = 'default';
+      var ptxt = el('b', '', '\u2026'), phint = el('span', '', 'Loading your points\u2026');
+      pcard.appendChild(ptxt); pcard.appendChild(phint); dash.appendChild(pcard);
+      api('/api/me/points').then(function (r) {
+        ptxt.textContent = r.points + ' points';
+        phint.textContent = 'You earn 1 point for every \u20B1' + r.per_peso + ' on a delivered order.';
+      }).catch(function () { phint.textContent = 'Points are not available right now.'; });
+      var abtn = el('button', 'sp-card', 'Turn on order alerts'); abtn.type = 'button'; abtn.style.alignSelf = 'flex-start';
+      alertsSetup(abtn); dash.appendChild(abtn);
+    }
 
     var grid = el('div', 'sp-grid'); dash.appendChild(grid);
     var quick = isAdmin()
