@@ -415,6 +415,7 @@
     '#mg-star.think .grow{animation:mgListen .8s ease-in-out infinite}#mg-star.think .core{animation-duration:1.4s}#mg-star.talk .grow{animation:mgBig 1.3s ease-in-out infinite}#mg-star.talk .halo,#mg-star.think .halo{animation-duration:1.2s}' +
     '@keyframes mgFloat{50%{transform:translateY(-9px)}}@keyframes mgGrow{0%,100%{transform:scale(.9)}50%{transform:scale(1.12)}}@keyframes mgListen{0%,100%{transform:scale(1.05)}50%{transform:scale(1.32)}}@keyframes mgBig{0%,100%{transform:scale(1.4)}50%{transform:scale(1.65)}}' +
     '@keyframes mgSpin{0%,100%{transform:rotateY(-30deg) rotateX(8deg)}50%{transform:rotateY(30deg) rotateX(-8deg)}}@keyframes mgGlow{0%,100%{opacity:.95;transform:scale(1)}50%{opacity:.55;transform:scale(1.15)}}@keyframes mgTw{0%,100%{opacity:0;transform:scale(.3)}50%{opacity:1;transform:scale(1)}}' +
+    '#mg-star .halo{display:none!important}' +
     'body:has(#mg-star) #ap-fab{right:16px!important;bottom:calc(var(--bn,0px) + var(--sa,0px) + 192px)!important}@media (prefers-reduced-motion:reduce){#mg-star,#mg-star *{animation:none!important}}';
   document.head.appendChild(scss);
   function starFlag(c, on, ms) { if (!star) return; star.classList.toggle(c, !!on); clearTimeout(star['t' + c]); if (on && ms) star['t' + c] = setTimeout(function () { if (star) star.classList.remove(c); }, ms); }
