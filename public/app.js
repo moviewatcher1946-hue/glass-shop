@@ -161,7 +161,7 @@ function animateApp() {
 }
 const bumpCart = () => document.querySelectorAll('[data-act="cart"]').forEach((b) => { b.classList.remove('bump'); void b.offsetWidth; b.classList.add('bump'); });
 const saveCart = () => { localStorage.cart = JSON.stringify(cart); renderNav(); bumpCart(); };
-const setSession = (t, u) => { token = t; user = u; favs = new Set(); loadFavs(); statusMap = null; crMap = null; revSig = ''; try { localStorage.token = t; localStorage.user = JSON.stringify(u); } catch (e) { /* storage blocked: the login lasts until the page is closed */ } };
+const setSession = (t, u) => { if (window.__onSession) window.__onSession(u); token = t; user = u; favs = new Set(); loadFavs(); statusMap = null; crMap = null; revSig = ''; try { localStorage.token = t; localStorage.user = JSON.stringify(u); } catch (e) { /* storage blocked: the login lasts until the page is closed */ } };
 const clearSession = () => { token = ''; user = null; favs = new Set(); if (catFilter === 'favs') catFilter = 'all'; statusMap = null; crMap = null; revSig = ''; try { localStorage.removeItem('token'); localStorage.removeItem('user'); } catch (e) {} };
 // isAdmin = any staff account (raven or a seller); isRaven = the main admin, who controls everything.
 const isAdmin = () => user && (user.role === 'admin' || user.role === 'seller');
@@ -382,10 +382,25 @@ const arrBar = () => (arrange
   ? '<div class="arr-bar glass"><div><b>Arrange mode</b><span class="muted">Drag the handle on a card to move it, or focus it and use the arrow keys. The pin features a product at the top. It saves by itself and customers see it live.</span></div><button type="button" class="primary sq" data-act="arrange">Done</button></div>'
   : '<div class="arr-open"><button type="button" class="sq" data-act="arrange">Arrange shop</button></div>');
 const CAT_IC = { all: '\u2728', combos: '\u{1F381}', drinks: '\u{1F964}', snacks: '\u{1F37F}' };
+// "Your usual": the snacks this person orders most. Uses the page's own Add button, so adding works the same as everywhere else.
+let usualData = null, usualAt = 0;
+async function loadUsual() {
+  const box = document.getElementById('usual');
+  if (!box) return;
+  if (!token) { box.innerHTML = ''; return; }
+  if (!usualData || Date.now() - usualAt > 60000) {
+    try { usualData = await api('/api/me/usual'); } catch (e) { usualData = []; }
+    usualAt = Date.now();
+  }
+  if (!usualData.length) { box.innerHTML = ''; return; }
+  box.innerHTML = `<h2 class="cat-title">Your usual</h2><div class="rv">${usualData.map((p) => `<article class="rv-card">${p.image_url ? `<img loading="lazy" decoding="async" src="${esc(p.image_url)}" alt="">` : ''}<b>${esc(p.title)}</b><span>${money(p.price)}</span><button class="primary" data-act="add" data-id="${p.id}"${p.is_sold_out ? ' disabled' : ''}>${p.is_sold_out ? 'Sold out' : 'Add'}</button></article>`).join('')}</div>`;
+}
 function renderShop() {
+  Promise.resolve().then(loadUsual); // fills #usual once this markup is in place
   const tile = (id, label) => `<button class="tile${catFilter === id ? ' on' : ''}" data-act="cat" data-cat="${id}">${label}</button>`;
   $('#app').innerHTML = `<section class="hero"><h2>What are you craving?</h2><p>Fresh drinks and snacks. Pay cash when it is handed to you.</p>
       <div id="herochips"></div><input id="search" type="search" placeholder="Search snacks and drinks..." value="${esc(searchText)}" autocomplete="off" list="sugg"><datalist id="sugg">${products.filter((x) => !x.hidden).slice(0, 80).map((x) => `<option value="${esc(x.title)}"></option>`).join('')}</datalist><div id="heropics" aria-hidden="true"></div></section>
+    <div id="usual"></div>
     <div class="divider" aria-hidden="true"></div>
     ${(() => { const msgs = ['Fresh drinks and snacks', 'Pay cash on delivery', 'New picks added often', 'Tap the heart to save your favorites', orderNote()].filter(Boolean), one = msgs.map((m) => `<span>\u2726 ${esc(m)}</span>`).join('');
       return `<div class="ticker" aria-hidden="true"><div class="ticker-track">${one}${one}</div></div>`; })()}
@@ -1224,11 +1239,15 @@ function askQty(key, title, stock, hint) {
 let forcePw = false;
 function changePwDialog() {
   forcePw = true;
-  $('#dlg').innerHTML = `<h2>Choose a new password</h2><p class="muted">You logged in with a temporary password. Pick your own to continue.</p><form data-form="changepw">
+  const dlg = $('#dlg');
+  // Background requests can ask for this again while the form is open. Rebuilding it would wipe what the person is typing and close the phone keyboard.
+  if (dlg.open && dlg.querySelector('[data-form="changepw"]')) return;
+  dlg.innerHTML = `<h2>Choose a new password</h2><p class="muted">You logged in with a temporary password. Pick your own to continue.</p><form data-form="changepw">
     <label>Temporary password</label><input name="current_password" type="password" required autocomplete="current-password">
     <label>New password (8+ characters)</label><input name="new_password" type="password" required minlength="8" autocomplete="new-password">
     <button class="primary">Save new password</button><button type="button" data-act="logout">Log out</button></form>`;
-  if (!$('#dlg').open) $('#dlg').showModal();
+  if (!dlg.open) dlg.showModal();
+  setTimeout(() => { const i = dlg.querySelector('input[name="current_password"]'); if (i) i.focus(); }, 80);
 }
 function rememberLogin(name, pw) {
   try { localStorage.setItem('shop_last_user', name); } catch (e) { /* storage blocked */ }
