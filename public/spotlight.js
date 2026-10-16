@@ -87,8 +87,17 @@
   dock.onclick = function () { open('ask'); };
 
   // Same line as Admin+: measured from its button, placed just to its left. Without Admin+ it sits in the same bottom corner.
+  // Desktop and tall Android screens: bottom middle. Other phones: beside Admin+.
+  var centerMQ = window.matchMedia('(min-width: 769px), (max-width: 768px) and (max-aspect-ratio: 1/2)');
   function placeDock() {
     if (!dock.isConnected) document.body.appendChild(dock);
+    if (centerMQ.matches) {
+      dock.style.left = '50%'; dock.style.right = 'auto'; dock.style.transform = 'translateX(-50%)';
+      dock.style.bottom = 'calc(16px + var(--bn,0px) + var(--sa,0px) + var(--cb,0px))';
+      dock.style.width = 'min(440px, calc(100vw - 32px))'; dock.style.justifyContent = 'center';
+      return;
+    }
+    dock.style.left = 'auto'; dock.style.transform = 'none'; dock.style.width = ''; dock.style.justifyContent = '';
     var ref = document.getElementById('ap-fab'), r = ref && ref.getBoundingClientRect();
     if (r && r.width) {
       dock.style.bottom = Math.round(innerHeight - r.bottom) + 'px';
