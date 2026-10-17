@@ -16,7 +16,8 @@ module.exports = function mount(app, { pool, auth, admin, wrap }) {
     walkId = u.id;
   })().catch((e) => console.error('[walkin] setup:', e.message));
 
-  async function recordSale(items, paidBy) {
+  // paid_by holds the id of the person who took the money. The method (cash or GCash) goes in the note.
+  async function recordSale(items, paidBy, collectorId) {
     await ready;
     if (!walkId) throw bad('Walk-in sales are not ready yet. Try again in a moment.', 503);
     const want = new Map();
@@ -38,8 +39,8 @@ module.exports = function mount(app, { pool, auth, admin, wrap }) {
         total += Number(p.price) * q;
       }
       const { rows: [o] } = await c.query(
-        "INSERT INTO orders (user_id, total, status, channel, paid_by, paid_at, note) VALUES ($1, $2, 'completed', 'walkin', $3, now(), 'Walk-in sale') RETURNING id",
-        [walkId, total.toFixed(2), paidBy]);
+        "INSERT INTO orders (user_id, total, status, channel, paid_by, paid_at, note) VALUES ($1, $2, 'completed', 'walkin', $3, now(), $4) RETURNING id",
+        [walkId, total.toFixed(2), collectorId || null, 'Walk-in sale, paid by ' + paidBy]);
       for (const p of prods) {
         const q = want.get(p.id);
         await c.query('INSERT INTO order_items (order_id, product_id, title, unit_price, quantity) VALUES ($1, $2, $3, $4, $5)', [o.id, p.id, p.title, p.price, q]);
@@ -56,7 +57,7 @@ module.exports = function mount(app, { pool, auth, admin, wrap }) {
   app.post('/api/admin/walkin', auth, admin, wrap(async (req, res) => {
     const b = req.body || {};
     const paid = ['cash', 'gcash'].includes(b.paid_by) ? b.paid_by : 'cash';
-    res.json(await recordSale(Array.isArray(b.items) ? b.items : [], paid));
+    res.json(await recordSale(Array.isArray(b.items) ? b.items : [], paid, req.user.id));
   }));
 
   // Walk-in totals for today (Philippine time) and for all time.
