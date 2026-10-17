@@ -344,11 +344,21 @@
       var ptxt = el('b', '', '\u2026'), phint = el('span', '', 'Loading your points\u2026');
       pcard.appendChild(ptxt); pcard.appendChild(phint); dash.appendChild(pcard);
       api('/api/me/points').then(function (r) {
-        ptxt.textContent = r.points + ' points';
-        phint.textContent = 'You earn 1 point for every \u20B1' + r.per_peso + ' on a delivered order.';
+        ptxt.textContent = r.points + ' points \u00B7 ' + r.tier;
+        phint.textContent = 'Earn 1 point per \u20B1' + r.per_peso + ' on delivered orders. ' + r.redeem_points + ' points = \u20B1' + r.redeem_peso + ' off at checkout. Points expire after ' + r.expiry_days + ' days.' + (r.next_tier ? ' ' + (r.next_tier.at - r.lifetime) + ' more lifetime points to ' + r.next_tier.name + '.' : '');
       }).catch(function () { phint.textContent = 'Points are not available right now.'; });
       var abtn = el('button', 'sp-card', 'Turn on order alerts'); abtn.type = 'button'; abtn.style.alignSelf = 'flex-start';
       alertsSetup(abtn); dash.appendChild(abtn);
+      // Marketing consent: off until the customer turns it on.
+      var mbtn = el('button', 'sp-card', 'Offers and news: \u2026'); mbtn.type = 'button'; mbtn.style.alignSelf = 'flex-start'; mbtn.disabled = true;
+      var mOn = false;
+      var paintMk = function () { mbtn.textContent = 'Offers and news: ' + (mOn ? 'on (tap to turn off)' : 'off (tap to turn on)'); };
+      api('/api/me/privacy').then(function (r) { mOn = !!r.marketing; paintMk(); mbtn.disabled = false; }).catch(function () { mbtn.textContent = 'Offers and news: unavailable'; });
+      mbtn.onclick = function () {
+        mbtn.disabled = true;
+        api('/api/me/privacy', 'POST', { marketing: !mOn }).then(function () { mOn = !mOn; paintMk(); mbtn.disabled = false; }).catch(function () { mbtn.disabled = false; });
+      };
+      dash.appendChild(mbtn);
     }
 
     var grid = el('div', 'sp-grid'); dash.appendChild(grid);
