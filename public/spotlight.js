@@ -313,6 +313,82 @@
     }).catch(function () { /* no service worker yet: try again next visit */ });
   }
 
+  // Admin: record a face-to-face sale by hand. Same saving rules as the Ask AI option: stock is checked and the sale counts in the totals.
+  function walkinUI(dash) {
+    var box = el('div', 'sp-card'); box.style.cursor = 'default';
+    var head = el('div', '', 'Walk-in sales'); head.style.fontWeight = '700';
+    var sum = el('span', '', 'Loading today\u2019s total\u2026');
+    var openBtn = el('button', 'sp-card', 'Record a walk-in sale'); openBtn.type = 'button'; openBtn.style.alignSelf = 'flex-start';
+    box.appendChild(head); box.appendChild(sum); box.appendChild(openBtn); dash.appendChild(box);
+
+    var form = el('div'); form.style.cssText = 'display:none;flex-direction:column;gap:10px;padding:12px;border-radius:16px;background:rgba(128,128,128,.11);border:1px solid rgba(128,128,128,.2)';
+    var payRow = el('div'); payRow.style.cssText = 'display:flex;align-items:center;gap:10px';
+    var payLabel = el('span', '', 'Paid by'); payLabel.style.flex = '1';
+    var pay = el('select'); pay.setAttribute('aria-label', 'Paid by');
+    pay.style.cssText = 'padding:9px;border-radius:12px;border:1px solid rgba(128,128,128,.35);background:transparent;color:inherit;font:inherit';
+    ['cash', 'gcash'].forEach(function (v) { var o = el('option', '', v); o.value = v; pay.appendChild(o); });
+    payRow.appendChild(payLabel); payRow.appendChild(pay);
+    var list = el('div'); list.style.cssText = 'display:flex;flex-direction:column;gap:6px;max-height:40vh;overflow:auto';
+    var totalRow = el('div'); totalRow.style.cssText = 'display:flex;justify-content:space-between;align-items:center';
+    var totalLabel = el('span', '', 'Total'); var totalEl = el('b', '', '\u20B10.00');
+    totalRow.appendChild(totalLabel); totalRow.appendChild(totalEl);
+    var msg = el('div', '', ''); msg.style.fontSize = '13px';
+    var save = el('button', '', 'Save sale'); save.type = 'button';
+    save.style.cssText = 'border:0;border-radius:12px;padding:10px 14px;background:#0a84ff;color:#fff;font:600 14px system-ui,sans-serif;cursor:pointer';
+    form.appendChild(payRow); form.appendChild(list); form.appendChild(totalRow); form.appendChild(msg); form.appendChild(save);
+    dash.appendChild(form);
+
+    var lines = [];
+    function recalc() {
+      var t = 0;
+      lines.forEach(function (l) { var q = parseInt(l.input.value, 10) || 0; if (q > 0) t += q * l.price; });
+      totalEl.textContent = '\u20B1' + t.toFixed(2);
+    }
+    function refreshSum() {
+      api('/api/admin/walkin/summary').then(function (s) {
+        sum.textContent = 'Today: ' + s.today.orders + ' sale(s), \u20B1' + Number(s.today.total).toFixed(2);
+      }).catch(function () { sum.textContent = 'Walk-in total not available right now.'; });
+    }
+    function loadProducts() {
+      list.textContent = ''; lines = [];
+      api('/api/products').then(function (rows) {
+        rows.forEach(function (p) {
+          var row = el('div'); row.style.cssText = 'display:flex;align-items:center;gap:8px';
+          var name = el('span', '', p.title); name.style.flex = '1';
+          var left = p.is_sold_out ? 'sold out' : (p.stock != null ? p.stock + ' left' : '');
+          var st = el('span', '', left); st.style.cssText = 'font-size:12px;opacity:.7;min-width:64px;text-align:right';
+          var inp = el('input'); inp.type = 'number'; inp.min = '0'; inp.value = '0';
+          if (p.stock != null) inp.max = String(p.stock);
+          inp.setAttribute('aria-label', 'Quantity of ' + p.title);
+          inp.style.cssText = 'width:72px;padding:7px;border-radius:10px;border:1px solid rgba(128,128,128,.35);background:transparent;color:inherit;font:inherit';
+          if (p.is_sold_out) inp.disabled = true;
+          inp.oninput = recalc;
+          row.appendChild(name); row.appendChild(st); row.appendChild(inp); list.appendChild(row);
+          lines.push({ id: p.id, price: Number(p.price), input: inp });
+        });
+        recalc();
+      }).catch(function (e) { msg.textContent = e.message || 'Could not load products.'; });
+    }
+    openBtn.onclick = function () {
+      var showing = form.style.display !== 'none';
+      form.style.display = showing ? 'none' : 'flex';
+      openBtn.textContent = showing ? 'Record a walk-in sale' : 'Hide the form';
+      if (!showing) { msg.textContent = ''; loadProducts(); }
+    };
+    save.onclick = function () {
+      var items = lines.map(function (l) { return { product_id: l.id, quantity: parseInt(l.input.value, 10) || 0 }; })
+        .filter(function (i) { return i.quantity > 0; });
+      if (!items.length) { msg.textContent = 'Choose at least one product and a quantity.'; return; }
+      save.disabled = true; msg.textContent = 'Saving\u2026';
+      api('/api/admin/walkin', 'POST', { items: items, paid_by: pay.value }).then(function (r) {
+        msg.textContent = 'Saved. Total \u20B1' + Number(r.total).toFixed(2) + ', paid by ' + pay.value + '.';
+        loadProducts(); refreshSum();
+      }).catch(function (e) { msg.textContent = e.message || 'Could not save the sale.'; })
+        .then(function () { save.disabled = false; });
+    };
+    refreshSum();
+  }
+
   function renderDash(panel) {
     var dash = el('div'); dash.id = 'sp-dash'; panel.appendChild(dash);
     var h = el('div'); h.appendChild(el('h3', '', 'Your Snackify AI')); h.appendChild(el('div', 'muted', 'Everything the assistant can do, and what it has been doing for you.'));
@@ -372,6 +448,7 @@
       }).catch(function () { brief.textContent = ''; });
     }
 
+    if (isAdmin()) walkinUI(dash);
     var hd = el('div'); hd.appendChild(el('h3', '', 'Recent conversations'));
     dash.appendChild(hd);
     var list = el('div', 'sp-list'); dash.appendChild(list);
