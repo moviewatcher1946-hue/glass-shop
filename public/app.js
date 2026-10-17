@@ -188,6 +188,7 @@ function renderMobileNav() {
   $('#foot').innerHTML = `<button id="foot-theme" type="button">${document.documentElement.dataset.theme === 'dark' ? 'Light mode' : 'Dark mode'}</button>` +
     (installEvt ? '<button data-act="install">Install app</button>' : '') +
     (user ? '<button data-act="logout">Log out</button>' : '');
+  $('#foot').insertAdjacentHTML('beforeend', ' <a href="/terms.html">Terms</a> <a href="/privacy.html">Privacy</a>');
 }
 
 const IC = (p) => `<svg viewBox="0 0 24 24" aria-hidden="true">${p}</svg>`;
