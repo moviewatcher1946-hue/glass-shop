@@ -35,7 +35,7 @@
     'html.nerv ::selection{background:#ff7a00;color:#120803}',
 
     // ---- Open button and NERV on/off switch
-    '#magi-bar{position:fixed;top:calc(10px + env(safe-area-inset-top,0px));left:50%;transform:translateX(-50%);z-index:46;display:flex;gap:8px;align-items:center}',
+    '#magi-bar{position:fixed;top:calc(10px + env(safe-area-inset-top,0px));left:50%;transform:translateX(-50%);z-index:650;display:flex;gap:8px;align-items:center}',
     '#magi-fab{min-height:0;padding:7px 26px;font-weight:800;letter-spacing:.3em;color:#000;background:#ff7a00;border:0;border-radius:0!important;clip-path:' + CUT + ';box-shadow:none}',
     '#nerv-tgl{min-height:0;padding:6px 12px;font:800 .72rem/1 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.14em;white-space:nowrap;color:#fff;background:rgba(20,20,40,.82);border:1px solid rgba(255,255,255,.45);border-radius:999px;box-shadow:none}',
     'html.nerv #nerv-tgl{color:#ff7a00;background:#000;border:2px solid #ff7a00;border-radius:0!important}',
