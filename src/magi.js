@@ -13,17 +13,17 @@ const FORMAT = 'On the first line write exactly APPROVED or DENIED. Then give yo
 const NODES = [
   {
     id: 'melchior', name: 'MELCHIOR-1', role: 'SCIENCE', provider: 'gemini', label: 'Google Gemini',
-    keys: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'], model: () => process.env.MAGI_GEMINI_MODEL || 'gemini-2.5-flash',
+    keys: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'], model: () => process.env.MAGI_GEMINI_MODEL || 'gemini-3.5-flash-lite',
     persona: 'You are MELCHIOR-1, the rational, scientific node. You decide on evidence, logic and measurable outcomes. You distrust sentiment and want proof. You are sceptical of anything you cannot verify.',
   },
   {
     id: 'balthasar', name: 'BALTHASAR-2', role: 'MATERNAL', provider: 'groq', label: 'Groq',
-    keys: ['GROQ_API_KEY'], model: () => process.env.MAGI_GROQ_MODEL || 'llama-3.3-70b-versatile',
+    keys: ['GROQ_API_KEY'], model: () => process.env.MAGI_GROQ_MODEL || 'qwen/qwen3.8-27b',
     persona: 'You are BALTHASAR-2, the protective, maternal node. You decide on the wellbeing and safety of people. You are cautious about harm to anyone, and you weigh the human cost first.',
   },
   {
     id: 'caspar', name: 'CASPAR-3', role: 'PERSONAL', provider: 'openrouter', label: 'OpenRouter',
-    keys: ['OPENROUTER_API_KEY'], model: () => process.env.MAGI_OPENROUTER_MODEL || 'meta-llama/llama-3.3-70b-instruct:free',
+    keys: ['OPENROUTER_API_KEY'], model: () => process.env.MAGI_OPENROUTER_MODEL || 'nvidia/nemotron-3.5-lightning:free',
     persona: 'You are CASPAR-3, the personal, intuitive node. You decide on conviction and what feels right in the situation. You are willing to stand against the others when you believe they are wrong.',
   },
 ];
