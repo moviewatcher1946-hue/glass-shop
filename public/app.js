@@ -2702,6 +2702,11 @@ function stockCtl(pr, mine) {
 // Back from Google sign-in: the server puts the session in the address after #. Read it, then remove it from the address.
 (function googleReturn() {
   const q = new URLSearchParams(location.search);
+  if (q.get('google_linked')) {
+    history.replaceState(null, '', location.pathname);
+    setTimeout(() => toast('Your Google account is linked. You can now sign in with it.'), 400);
+    return;
+  }
   if (q.get('google_error')) {
     history.replaceState(null, '', location.pathname);
     setTimeout(() => toast('Google sign-in: ' + q.get('google_error') + '.'), 400);
