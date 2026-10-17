@@ -748,6 +748,8 @@ require('./dataguard').mount(app, { pool, auth, admin, notify: (m) => notify(m) 
 require('./chatroom')(app, { pool, auth, wrap }); // shop support thread (shown inside Messages)
 require('./agent')(app, { pool, auth, admin, wrap, notify }); // AI helper in Shop support + admin assistant (needs ANTHROPIC_API_KEY)
 require('./messages')(app, { pool, auth, admin, wrap }); // Messages: send and receive between everyone
+const perks = require('./perks')(app, { pool, auth, wrap }); // Your usual, loyalty points, order alerts
+require('./google')(app, { pool, wrap }); // Sign in with Google (only when GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are set)
 // Memory tools for the admin: see what the server uses and drop the in-memory picture cache on demand.
 app.get('/api/plus/p/mem-now', auth, admin, (req, res) => { const m = process.memoryUsage(), mb = (n) => Math.round(n / 1048576); res.json([{ rss_mb: mb(m.rss), heap_mb: mb(m.heapUsed), external_mb: mb(m.external), picture_cache_mb: mb(thumbBytes), pictures_cached: thumbs.size, uptime_min: Math.round(process.uptime() / 60) }]); });
 app.post('/api/plus/p/act-clear-pictures', auth, admin, (req, res) => { const n = thumbs.size; thumbs.clear(); thumbBytes = 0; if (global.gc) global.gc(); res.json({ message: `Cleared ${n} cached pictures. They are rebuilt on demand.` }); });
@@ -1086,14 +1088,14 @@ app.patch('/api/orders/:id/status', auth, staff, wrap(async (req, res) => {
     for (const x of owners)
       await pool.query('INSERT INTO order_approvals (order_id, owner_id, status) VALUES ($1,$2,$3) ON CONFLICT (order_id, owner_id) DO UPDATE SET status=EXCLUDED.status', [id, x, status]);
     if (status === 'cancelled') await restoreStock(pool, id);
-    return res.json(o);
+    { await perks.onOrderStatus(id, status).catch((e) => console.error('perks:', e.message)); return res.json(o); }
   }
 
   // One owner: change the status directly.
   if (owners.length < 2) {
     const { rows: [o] } = await pool.query("UPDATE orders SET status=$1::text, cancel_reason=CASE WHEN $1::text='cancelled' THEN NULLIF($3::text,'') ELSE cancel_reason END WHERE id=$2 RETURNING id,status", [status, id, reason]);
     if (status === 'cancelled') await restoreStock(pool, id);
-    return res.json(o);
+    { await perks.onOrderStatus(id, status).catch((e) => console.error('perks:', e.message)); return res.json(o); }
   }
 
   // Mixed order: every owner approves their own part; the order moves only as far as all of them have.
@@ -1106,6 +1108,7 @@ app.patch('/api/orders/:id/status', auth, staff, wrap(async (req, res) => {
   const rank = { pending: 0, packed: 1, completed: 2, cancelled: 0 };
   const overall = sts.every((x) => x === 'cancelled') ? 'cancelled' : ['pending', 'packed', 'completed'][Math.min(...sts.map((x) => rank[x]))];
   await pool.query('UPDATE orders SET status=$1 WHERE id=$2', [overall, id]);
+  await perks.onOrderStatus(id, overall).catch((e) => console.error('perks:', e.message));
   if (overall === 'cancelled') await restoreStock(pool, id);
   const waiting = ow.filter((r) => (got.get(r.owner_id) || 'pending') !== status && r.owner_id !== req.user.id).map((r) => r.username);
   if (waiting.length) {
