@@ -8,6 +8,9 @@
 // The admin can link any node to any provider that has a key (saved in the magi_links table).
 const TIMEOUT = 25000;
 const QUESTION_MAX = 1000;
+// Reasoning models (Qwen on Groq, Nemotron, Gemini 3.5) spend output tokens on thinking before the visible answer.
+// 1024 was often used up by the thinking alone, which left an empty or cut-off answer.
+const MAX_OUT = 2048;
 
 const FORMAT = 'On the first line write exactly APPROVED or DENIED. Then give your reasoning in at most three sentences. Plain text only.';
 
@@ -57,48 +60,81 @@ function effective(n) {
   return { node: n, provider: p, label: p.label, model: (link && link.model) || p.model(), key: keyOf(p) };
 }
 
-// Verdict = the first APPROVED or DENIED word on the first non-empty line (tolerates "Verdict: APPROVED", "**APPROVED**", etc.).
-const verdictOf = (t) => {
-  const first = String(t || '').split('\n').find((l) => l.trim()) || '';
-  const m = first.toUpperCase().match(/\b(APPROVED|DENIED)\b/);
-  return m ? m[1] : 'UNCLEAR';
+// Remove a reasoning model's visible "thinking" (<think>...</think>), which would otherwise be read as the verdict line.
+const stripThink = (t) => {
+  let s = String(t || '').replace(/<think>[\s\S]*?<\/think>/gi, '');
+  const i = s.lastIndexOf('</think>');
+  if (i >= 0) s = s.slice(i + 8);
+  return s.replace(/<think>[\s\S]*$/i, '').trim();
 };
+
+// Verdict = the first APPROVED or DENIED word on the first non-empty line (tolerates "Verdict: APPROVED", "**APPROVED**", etc.).
+// If that line is only a short label such as "Verdict:", the next line is used. "NOT APPROVED" counts as DENIED and "NOT DENIED" as APPROVED.
+const verdictOf = (t) => {
+  const lines = String(t || '').split('\n').filter((l) => l.trim());
+  for (let i = 0; i < Math.min(2, lines.length); i++) {
+    const up = lines[i].toUpperCase();
+    const m = up.match(/\b(NOT\s+)?(APPROVED|DENIED)\b/);
+    if (m) return m[1] ? (m[2] === 'APPROVED' ? 'DENIED' : 'APPROVED') : m[2];
+    if (up.replace(/[^A-Z]/g, '').length > 20) break; // a real sentence with no verdict: stop looking
+  }
+  return 'UNCLEAR';
+};
+
+// A readable message from an API error body (the body can be a string, an object with message, or an object without one).
+const errText = (d, status) => {
+  const e = d && d.error;
+  if (e && typeof e === 'object') return String(e.message || (e.metadata && e.metadata.raw) || JSON.stringify(e)).slice(0, 200);
+  return String(e || 'HTTP ' + status).slice(0, 200);
+};
+
+// POST JSON. A rate limit (429) or a briefly unavailable server (503) is tried once more, since the free tiers hit those often.
+async function postJson(url, headers, body) {
+  for (let attempt = 0; ; attempt++) {
+    const r = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(TIMEOUT) });
+    if ((r.status === 429 || r.status === 503) && attempt === 0) {
+      const wait = Math.min(4000, (Number(r.headers.get('retry-after')) || 1.5) * 1000);
+      await new Promise((ok) => setTimeout(ok, wait));
+      continue;
+    }
+    const d = await r.json().catch(() => ({}));
+    return { r, d };
+  }
+}
 
 // One call to one provider. system and user are plain strings.
 async function callProvider(view, system, user) {
   const { provider: p, key, model } = view;
   if (p.id === 'gemini') {
-    const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent', {
-      method: 'POST',
-      headers: { 'x-goog-api-key': key, 'content-type': 'application/json' },
-      body: JSON.stringify({
+    const { r, d } = await postJson(
+      'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent',
+      { 'x-goog-api-key': key, 'content-type': 'application/json' },
+      {
         systemInstruction: { parts: [{ text: system }] },
         contents: [{ role: 'user', parts: [{ text: user }] }],
-        // Generous limit: reasoning-capable Gemini models spend output tokens on thinking, and a small cap leaves no visible text.
-        generationConfig: { temperature: 0.4, maxOutputTokens: 1024 },
-      }),
-      signal: AbortSignal.timeout(TIMEOUT),
-    });
-    const d = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error((d.error && d.error.message) || 'HTTP ' + r.status);
+        generationConfig: { temperature: 0.4, maxOutputTokens: MAX_OUT },
+      }
+    );
+    if (!r.ok) throw new Error(errText(d, r.status));
     const c = (d.candidates || [])[0];
-    return c && c.content ? (c.content.parts || []).filter((x) => !x.thought).map((x) => x.text || '').join('') : '';
+    const text = c && c.content ? (c.content.parts || []).filter((x) => !x.thought).map((x) => x.text || '').join('') : '';
+    if (!text.trim() && d.promptFeedback && d.promptFeedback.blockReason) throw new Error('Blocked by Gemini: ' + d.promptFeedback.blockReason);
+    if (!text.trim() && c && c.finishReason === 'MAX_TOKENS') throw new Error('Ran out of tokens while thinking');
+    return stripThink(text);
   }
   const url = p.id === 'groq' ? 'https://api.groq.com/openai/v1/chat/completions' : 'https://openrouter.ai/api/v1/chat/completions';
   const headers = { 'content-type': 'application/json', authorization: 'Bearer ' + key };
   if (p.id === 'openrouter') headers['X-Title'] = 'MAGI';
-  const r = await fetch(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({
-      model, temperature: 0.4, max_tokens: 1024,
-      messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
-    }),
-    signal: AbortSignal.timeout(TIMEOUT),
+  const { r, d } = await postJson(url, headers, {
+    model, temperature: 0.4, max_tokens: MAX_OUT,
+    messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
   });
-  const d = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error((d.error && (d.error.message || d.error)) || 'HTTP ' + r.status);
-  return (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';
+  if (!r.ok) throw new Error(errText(d, r.status));
+  const ch = d.choices && d.choices[0];
+  if (d.error) throw new Error(errText(d, r.status)); // OpenRouter can answer 200 with an error body
+  const text = stripThink((ch && ch.message && ch.message.content) || '');
+  if (!text && ch && ch.finish_reason === 'length') throw new Error('Ran out of tokens while thinking');
+  return text;
 }
 
 function shape(view, text, started) {
@@ -127,7 +163,8 @@ async function round2(n, question, first, others) {
   const user = 'Question: ' + question + '\n\nYour first verdict was ' + first.verdict + '.\n\nThe other nodes said:\n\n' + lines +
     '\n\nConsider their reasoning. Keep your position if you still believe it, or change it if they convinced you. ' + FORMAT;
   try {
-    const text = await callProvider(v, n.persona + ' This is the second round of deliberation.', user);
+    // FORMAT is in the system text too, so the answer starts with the verdict word in round 2 as well.
+    const text = await callProvider(v, n.persona + ' This is the second round of deliberation. ' + FORMAT, user);
     if (!String(text).trim()) throw new Error('empty');
     return { ...shape(v, text, started), initial: first.verdict, revised: verdictOf(text) !== first.verdict };
   } catch (e) {
