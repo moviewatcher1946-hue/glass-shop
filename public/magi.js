@@ -2,8 +2,9 @@
 //  - Lives INSIDE the admin Dashboard (above the numbers) and appears only while NERV mode is on.
 //  - Layout copies the MAGI screen: Balthasar on top, Casper left, Melchior right, MAGI in the middle.
 //  - The LINKS button (top right of the panel) opens the provider / model switches for each node.
-//  - Sound (Web Audio, nothing to download): a hum + a thin "dhik" tick on every green flicker while the nodes think, a loud bell "ding" on the verdict.
-//    The SOUND button in the panel mutes it (remembered on this device).
+//  - Sound (Web Audio, nothing to download): a mechanical machine-room drone with relay clicks and servo whines while the nodes think,
+//    and a struck bell with echo and hall reverb on the verdict. The SOUND button mutes it (remembered on this device).
+//  - EXPAND uses real browser fullscreen (falls back to a full-window overlay where fullscreen is not supported).
 // Uses textContent for everything that comes from the server, so an AI answer can never inject HTML.
 // Colours are CSS variables on #magi-dash (--mg-or, --mg-gn, --mg-no, ...).
 (function () {
@@ -168,6 +169,8 @@
     // expanded: fills the whole screen
     '#magi-dash.max{position:fixed;inset:0;z-index:700;margin:0;padding:16px 16px 56px;overflow:auto;background:#000 url("__HEX__")}',
     '#magi-dash.max .mg-panel{max-width:1180px;margin:0 auto}',
+    '#magi-dash:fullscreen{overflow:auto;background:#000 url("__HEX__")}',
+    '#magi-dash:-webkit-full-screen{overflow:auto;background:#000 url("__HEX__")}',
 
     '@media (max-width:860px){.mg-links{grid-template-columns:1fr}.mg-top{grid-template-columns:1fr}.mg-res{margin-left:0;max-width:none}.mg-map{grid-template-columns:1fr;grid-template-areas:"b" "m" "c" "e"}.mg-mid:before,.mg-mid:after{display:none}.mg-ctls{grid-template-columns:1fr}.mg-form{grid-template-columns:1fr}.mg-run{min-height:48px}}',
     '@media (prefers-reduced-motion:reduce){#magi-dash *{animation:none!important}}',
@@ -180,7 +183,8 @@
   // ===== sound: all synthesized, nothing to load =====
   var SND = 'magi_snd';
   function soundOn() { try { return localStorage.getItem(SND) !== '0'; } catch (e) { return true; } }
-  var AC = window.AudioContext || window.webkitAudioContext, ctx = null, bus = null, hum = null, chirpT = null;
+  var AC = window.AudioContext || window.webkitAudioContext, ctx = null, bus = null, fx = null, noiseBuf = null, hum = null;
+
   function audio() {
     if (!AC) return null;
     if (!ctx) {
@@ -190,65 +194,117 @@
       comp.connect(master);
       master.connect(ctx.destination);
       bus = comp;
+
+      // shared FX send: a dark echo plus a big hall reverb
+      fx = ctx.createGain();
+      var dly = ctx.createDelay(1), fb = ctx.createGain(), tone = ctx.createBiquadFilter(), eo = ctx.createGain();
+      dly.delayTime.value = 0.31; fb.gain.value = 0.45; eo.gain.value = 0.55;
+      tone.type = 'lowpass'; tone.frequency.value = 3000;
+      fx.connect(dly); dly.connect(tone); tone.connect(fb); fb.connect(dly); tone.connect(eo); eo.connect(bus);
+      var rv = ctx.createConvolver(), rg = ctx.createGain(), len = Math.floor(ctx.sampleRate * 2.8), imp = ctx.createBuffer(2, len, ctx.sampleRate);
+      for (var ch = 0; ch < 2; ch++) {
+        var d = imp.getChannelData(ch);
+        for (var i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 2.6);
+      }
+      rv.buffer = imp; rg.gain.value = 0.55;
+      fx.connect(rv); rv.connect(rg); rg.connect(bus);
+
+      // 1 second of white noise, reused for clicks, hiss and bell strikes
+      noiseBuf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
+      var nd = noiseBuf.getChannelData(0);
+      for (var j = 0; j < nd.length; j++) nd[j] = Math.random() * 2 - 1;
     }
     if (ctx.state === 'suspended') ctx.resume();
     return ctx;
   }
-  // thinking: a slow, wobbling, slightly eerie choir-like chord with an echo,
+
+  // a short filtered noise burst (used for relay clicks and the bell strike)
+  function burst(t, dur, type, freq, vol, send) {
+    var s = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain();
+    s.buffer = noiseBuf; f.type = type; f.frequency.value = freq; f.Q.value = 1.2;
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(f); f.connect(g); g.connect(bus);
+    if (send) { var sg = ctx.createGain(); sg.gain.value = send; g.connect(sg); sg.connect(fx); }
+    s.start(t, Math.random() * 0.8); s.stop(t + dur + 0.02);
+  }
+  // relay / switch click: noise snap plus a tiny square "clack"
+  function relay(t, vol) {
+    burst(t, 0.018, 'highpass', 2600, vol * 0.5, 0.15);
+    var o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = 'square'; o.frequency.setValueAtTime(900 + Math.random() * 500, t);
+    o.frequency.exponentialRampToValueAtTime(260, t + 0.02);
+    g.gain.setValueAtTime(vol * 0.12, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.025);
+    o.connect(g); g.connect(bus); o.start(t); o.stop(t + 0.04);
+  }
+  // servo whine: a short sweeping buzz through a narrow filter
+  function servo(t) {
+    var o = ctx.createOscillator(), f = ctx.createBiquadFilter(), g = ctx.createGain();
+    var a = 220 + Math.random() * 120, b = a * (1.8 + Math.random() * 1.2), d = 0.16 + Math.random() * 0.2;
+    o.type = 'sawtooth'; f.type = 'bandpass'; f.Q.value = 7; f.frequency.value = 1100;
+    o.frequency.setValueAtTime(a, t);
+    o.frequency.exponentialRampToValueAtTime(b, t + d * 0.5);
+    o.frequency.exponentialRampToValueAtTime(a * 0.9, t + d);
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(0.06, t + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+    o.connect(f); f.connect(g); g.connect(bus);
+    var sg = ctx.createGain(); sg.gain.value = 0.3; g.connect(sg); sg.connect(fx);
+    o.start(t); o.stop(t + d + 0.05);
+  }
+
+  // thinking: a machine room. Pulsing motor drone, fan hiss, servo chirps and relay chatter.
   function startHum() {
     if (!soundOn() || hum || !audio()) return;
     var t = ctx.currentTime, out = ctx.createGain(), oscs = [];
     out.gain.setValueAtTime(0, t);
-    out.gain.linearRampToValueAtTime(0.17, t + 1.4);
-    var lp = ctx.createBiquadFilter();
-    lp.type = 'lowpass'; lp.frequency.value = 1300; lp.Q.value = 2;
-    var sweep = ctx.createOscillator(), sweepG = ctx.createGain();
-    sweep.frequency.value = 0.09; sweepG.gain.value = 450;
-    sweep.connect(sweepG); sweepG.connect(lp.frequency); sweep.start(t); oscs.push(sweep);
-    var dly = ctx.createDelay(1), fb = ctx.createGain(), wet = ctx.createGain();
-    dly.delayTime.value = 0.27; fb.gain.value = 0.5; wet.gain.value = 0.6;
-    dly.connect(fb); fb.connect(dly); dly.connect(wet); wet.connect(bus);
-    out.connect(lp); lp.connect(bus); lp.connect(dly);
-    // root, fifth, octave, a slightly sour minor second above the octave, then airy highs
-    [[196, 0, 0.5], [294, 4, 0.4], [392, -5, 0.35], [415.3, 7, 0.16], [587, 3, 0.16], [784, -3, 0.1]].forEach(function (p, i) {
+    out.gain.linearRampToValueAtTime(0.2, t + 0.8);
+    out.connect(bus);
+    var send = ctx.createGain(); send.gain.value = 0.2; out.connect(send); send.connect(fx);
+
+    var lp = ctx.createBiquadFilter(), pulse = ctx.createGain();
+    lp.type = 'lowpass'; lp.frequency.value = 280; lp.Q.value = 5;
+    pulse.gain.value = 0.7;
+    lp.connect(pulse); pulse.connect(out);
+    var mot = ctx.createOscillator(), motG = ctx.createGain();   // motor shudder
+    mot.frequency.value = 8.5; motG.gain.value = 0.28;
+    mot.connect(motG); motG.connect(pulse.gain); mot.start(t); oscs.push(mot);
+    [[55, 'sawtooth', 0, 0.5], [55, 'sawtooth', 9, 0.4], [110, 'square', -7, 0.14]].forEach(function (p) {
       var o = ctx.createOscillator(), g = ctx.createGain();
-      o.type = 'sine'; o.frequency.value = p[0]; o.detune.value = p[1];
-      g.gain.value = p[2];
-      var vib = ctx.createOscillator(), vibG = ctx.createGain();
-      vib.frequency.value = 4.6 + i * 0.35; vibG.gain.value = 7;
-      vib.connect(vibG); vibG.connect(o.detune);
-      var lfo = ctx.createOscillator(), lfoG = ctx.createGain();
-      lfo.frequency.value = 0.12 + i * 0.07; lfoG.gain.value = p[2] * 0.55;
-      lfo.connect(lfoG); lfoG.connect(g.gain);
-      o.connect(g); g.connect(out);
-      [o, vib, lfo].forEach(function (x) { x.start(t); oscs.push(x); });
+      o.type = p[1]; o.frequency.value = p[0]; o.detune.value = p[2]; g.gain.value = p[3];
+      o.connect(g); g.connect(lp); o.start(t); oscs.push(o);
     });
-    hum = { out: out, oscs: oscs, alive: true };
+
+    var ns = ctx.createBufferSource(), nf = ctx.createBiquadFilter(), ng = ctx.createGain();   // fan hiss
+    ns.buffer = noiseBuf; ns.loop = true; nf.type = 'bandpass'; nf.frequency.value = 2400; nf.Q.value = 0.7; ng.gain.value = 0.035;
+    ns.connect(nf); nf.connect(ng); ng.connect(out); ns.start(t); oscs.push(ns);
+
+    var h = { out: out, oscs: oscs, alive: true, timer: null }, step = 0;
+    h.timer = setInterval(function () {
+      if (!h.alive || !ctx) return;
+      var now = ctx.currentTime; step++;
+      if (step % 5 === 0) servo(now);
+      else if (Math.random() < 0.3) relay(now, 0.6);
+      if (Math.random() < 0.12) relay(now + 0.07, 0.4);
+    }, 150);
+    hum = h;
   }
   function stopHum() {
     if (!hum || !ctx) { hum = null; return; }
     var h = hum, t = ctx.currentTime;
-    hum = null; h.alive = false;
+    hum = null; h.alive = false; clearInterval(h.timer);
     h.out.gain.cancelScheduledValues(t);
     h.out.gain.setValueAtTime(h.out.gain.value, t);
-    h.out.gain.linearRampToValueAtTime(0, t + 0.35);
-    setTimeout(function () { h.oscs.forEach(function (o) { try { o.stop(); } catch (e) { } }); }, 450);
+    h.out.gain.linearRampToValueAtTime(0, t + 0.3);
+    setTimeout(function () { h.oscs.forEach(function (o) { try { o.stop(); } catch (e) { } }); }, 400);
   }
-  // thin "dhik" tick: a very short, high, glassy blip (played on every flicker step)
+  // the flicker tick: a dry mechanical relay click
   function tick() {
     if (!soundOn() || !ctx || ctx.state !== 'running') return;
-    var t = ctx.currentTime, f = [1900, 2300, 2800, 3400, 4100][Math.floor(Math.random() * 5)];
-    [[f, 'sine', 0.05], [f * 2.01, 'triangle', 0.02]].forEach(function (p) {
-      var o = ctx.createOscillator(), g = ctx.createGain();
-      o.type = p[1];
-      o.frequency.setValueAtTime(p[0], t);
-      o.frequency.exponentialRampToValueAtTime(p[0] * 0.72, t + 0.035);
-      g.gain.setValueAtTime(0, t);
-      g.gain.linearRampToValueAtTime(p[2], t + 0.002);
-      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.045);
-      o.connect(g); g.connect(bus); o.start(t); o.stop(t + 0.06);
-    });
+    relay(ctx.currentTime, 0.8);
   }
+
   // while thinking: each screen randomly drops to a darker green, very fast, until the verdict
   var flickT = null;
   function flickerStep() {
@@ -267,20 +323,31 @@
     clearTimeout(flickT); flickT = null;
     Object.keys(cards).forEach(function (id) { cards[id].hx.style.removeProperty('--flick'); });
   }
-  // verdict: a loud bell that rings out and fades in about a second
+
+  // verdict: a real struck bell (inharmonic partials, beating pairs, strike noise) into the echo and hall
+  function bell(t, base, vol) {
+    burst(t, 0.03, 'bandpass', base * 3.2, vol * 0.5, 0.5);
+    // ratio, level, decay seconds
+    [[0.5, 0.5, 3.4], [1, 1, 3.0], [1.183, 0.55, 2.4], [1.506, 0.5, 2.0], [2, 0.7, 1.8], [2.514, 0.3, 1.3], [2.662, 0.35, 1.1], [3.011, 0.2, 0.9], [4.166, 0.15, 0.6]].forEach(function (p) {
+      [0, 1.3].forEach(function (beat, k) {       // a twin partial slightly off-pitch makes the bell shimmer
+        var o = ctx.createOscillator(), g = ctx.createGain(), s = ctx.createGain();
+        o.type = 'sine'; o.frequency.value = base * p[0] + beat * p[0];
+        var lv = p[1] * vol * (k ? 0.55 : 1);
+        g.gain.setValueAtTime(0, t);
+        g.gain.linearRampToValueAtTime(lv, t + 0.003);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + p[2]);
+        s.gain.value = 0.7;
+        o.connect(g); g.connect(bus); g.connect(s); s.connect(fx);
+        o.start(t); o.stop(t + p[2] + 0.05);
+      });
+    });
+  }
   function ding(verdict) {
     if (!soundOn() || !audio()) return;
     var t = ctx.currentTime;
-    var base = verdict === 'APPROVED' ? 880 : verdict === 'DENIED' ? 233 : 587;
-    var parts = verdict === 'DENIED' ? [[1, 1, 1.3], [1.414, 0.6, 1.0], [2.76, 0.45, 0.7], [5.4, 0.2, 0.4]] : [[1, 1, 1.3], [2.0, 0.45, 0.9], [2.76, 0.4, 0.7], [5.4, 0.2, 0.4], [8.93, 0.1, 0.25]];
-    parts.forEach(function (p) {
-      var o = ctx.createOscillator(), g = ctx.createGain();
-      o.type = 'sine'; o.frequency.value = base * p[0];
-      g.gain.setValueAtTime(0, t);
-      g.gain.linearRampToValueAtTime(p[1] * 0.85, t + 0.004);
-      g.gain.exponentialRampToValueAtTime(0.0001, t + p[2]);
-      o.connect(g); g.connect(bus); o.start(t); o.stop(t + p[2] + 0.05);
-    });
+    if (verdict === 'APPROVED') bell(t, 740, 0.5);
+    else if (verdict === 'DENIED') { bell(t, 196, 0.55); bell(t + 0.42, 185, 0.45); }
+    else bell(t, 494, 0.5);
   }
 
   // ===== NERV mode (remembered on this device; on unless it was switched off) =====
@@ -406,22 +473,32 @@
     syncToggles();
   });
 
-  // ===== expand to full screen =====
+  // ===== expand: real browser fullscreen, with a full-window overlay as the fallback =====
   function expand() {
     root.classList.add('max');
     document.body.appendChild(root);
     document.body.style.overflow = 'hidden';
     maxBtn.textContent = 'COLLAPSE';
+    var rf = root.requestFullscreen || root.webkitRequestFullscreen;
+    if (rf) { try { var p = rf.call(root); if (p && p.catch) p.catch(function () { }); } catch (e) { } }
   }
   function collapse() {
     if (!root.classList.contains('max')) return;
     root.classList.remove('max');
     document.body.style.overflow = '';
     maxBtn.textContent = 'EXPAND';
+    var fe = document.fullscreenElement || document.webkitFullscreenElement;
+    if (fe) { var ef = document.exitFullscreen || document.webkitExitFullscreen; try { var p = ef.call(document); if (p && p.catch) p.catch(function () { }); } catch (e) { } }
     place();
   }
   maxBtn.addEventListener('click', function () { if (root.classList.contains('max')) collapse(); else expand(); });
   document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && root.classList.contains('max')) collapse(); });
+  // leaving browser fullscreen with Esc or the browser's own button also closes the overlay
+  function fsChange() {
+    if (!(document.fullscreenElement || document.webkitFullscreenElement) && root.classList.contains('max')) collapse();
+  }
+  document.addEventListener('fullscreenchange', fsChange);
+  document.addEventListener('webkitfullscreenchange', fsChange);
 
   // ===== keep the block above the Dashboard numbers (the page is rebuilt whenever an admin tab changes) =====
   var loaded = false;
