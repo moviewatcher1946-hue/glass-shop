@@ -5,63 +5,93 @@
 // Majority rule: two matching verdicts decide. A node that fails or answers unclearly does not vote.
 // Melchior = Google Gemini, Balthasar = Groq, Caspar = OpenRouter. Admin only. Keys come from environment variables only.
 // Optional models: MAGI_GEMINI_MODEL, MAGI_GROQ_MODEL, MAGI_OPENROUTER_MODEL.
+// The admin can link any node to any provider that has a key (saved in the magi_links table).
 const TIMEOUT = 25000;
 const QUESTION_MAX = 1000;
 
 const FORMAT = 'On the first line write exactly APPROVED or DENIED. Then give your reasoning in at most three sentences. Plain text only.';
 
+// Providers: one entry per AI service. "model" is the built-in default, overridable with the env var.
+const PROVIDERS = {
+  gemini: {
+    id: 'gemini', label: 'Google Gemini', keys: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'],
+    model: () => process.env.MAGI_GEMINI_MODEL || 'gemini-3.5-flash-lite',
+  },
+  groq: {
+    id: 'groq', label: 'Groq', keys: ['GROQ_API_KEY'],
+    model: () => process.env.MAGI_GROQ_MODEL || 'qwen/qwen3.8-27b',
+  },
+  openrouter: {
+    id: 'openrouter', label: 'OpenRouter', keys: ['OPENROUTER_API_KEY'],
+    model: () => process.env.MAGI_OPENROUTER_MODEL || 'nvidia/nemotron-3.5-lightning:free',
+  },
+};
+
+// Nodes: fixed personality and role. "home" is the provider a node starts on.
 const NODES = [
   {
-    id: 'melchior', name: 'MELCHIOR-1', role: 'SCIENCE', provider: 'gemini', label: 'Google Gemini',
-    keys: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'], model: () => process.env.MAGI_GEMINI_MODEL || 'gemini-3.5-flash-lite',
+    id: 'melchior', name: 'MELCHIOR-1', role: 'SCIENCE', home: 'gemini',
     persona: 'You are MELCHIOR-1, the rational, scientific node. You decide on evidence, logic and measurable outcomes. You distrust sentiment and want proof. You are sceptical of anything you cannot verify.',
   },
   {
-    id: 'balthasar', name: 'BALTHASAR-2', role: 'MATERNAL', provider: 'groq', label: 'Groq',
-    keys: ['GROQ_API_KEY'], model: () => process.env.MAGI_GROQ_MODEL || 'qwen/qwen3.8-27b',
+    id: 'balthasar', name: 'BALTHASAR-2', role: 'MATERNAL', home: 'groq',
     persona: 'You are BALTHASAR-2, the protective, maternal node. You decide on the wellbeing and safety of people. You are cautious about harm to anyone, and you weigh the human cost first.',
   },
   {
-    id: 'caspar', name: 'CASPAR-3', role: 'PERSONAL', provider: 'openrouter', label: 'OpenRouter',
-    keys: ['OPENROUTER_API_KEY'], model: () => process.env.MAGI_OPENROUTER_MODEL || 'nvidia/nemotron-3.5-lightning:free',
+    id: 'caspar', name: 'CASPAR-3', role: 'PERSONAL', home: 'openrouter',
     persona: 'You are CASPAR-3, the personal, intuitive node. You decide on conviction and what feels right in the situation. You are willing to stand against the others when you believe they are wrong.',
   },
 ];
+const NODE_BY_ID = Object.fromEntries(NODES.map((n) => [n.id, n]));
 
-const keyOf = (n) => { for (const k of n.keys) { const v = (process.env[k] || '').trim(); if (v) return v; } return ''; };
+// node id -> { provider, model } saved by the admin. Empty model means "the provider's default".
+const links = new Map();
+
+const keyOf = (p) => { for (const k of p.keys) { const v = (process.env[k] || '').trim(); if (v) return v; } return ''; };
+
+// The provider and model a node is actually using right now.
+function effective(n) {
+  const link = links.get(n.id);
+  const pid = link && PROVIDERS[link.provider] ? link.provider : n.home;
+  const p = PROVIDERS[pid];
+  return { node: n, provider: p, label: p.label, model: (link && link.model) || p.model(), key: keyOf(p) };
+}
+
+// Verdict = the first APPROVED or DENIED word on the first non-empty line (tolerates "Verdict: APPROVED", "**APPROVED**", etc.).
 const verdictOf = (t) => {
-  const w = String(t || '').trim().split(/\s+/)[0] || '';
-  const u = w.toUpperCase().replace(/[^A-Z]/g, '');
-  return u === 'APPROVED' ? 'APPROVED' : u === 'DENIED' ? 'DENIED' : 'UNCLEAR';
+  const first = String(t || '').split('\n').find((l) => l.trim()) || '';
+  const m = first.toUpperCase().match(/\b(APPROVED|DENIED)\b/);
+  return m ? m[1] : 'UNCLEAR';
 };
 
-// One call to one node. system and user are plain strings; provider adapters are below.
-async function callNode(n, system, user) {
-  const key = keyOf(n);
-  if (n.provider === 'gemini') {
-    const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(n.model()) + ':generateContent', {
+// One call to one provider. system and user are plain strings.
+async function callProvider(view, system, user) {
+  const { provider: p, key, model } = view;
+  if (p.id === 'gemini') {
+    const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent', {
       method: 'POST',
       headers: { 'x-goog-api-key': key, 'content-type': 'application/json' },
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: system }] },
         contents: [{ role: 'user', parts: [{ text: user }] }],
-        generationConfig: { temperature: 0.4, maxOutputTokens: 350 },
+        // Generous limit: reasoning-capable Gemini models spend output tokens on thinking, and a small cap leaves no visible text.
+        generationConfig: { temperature: 0.4, maxOutputTokens: 1024 },
       }),
       signal: AbortSignal.timeout(TIMEOUT),
     });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error((d.error && d.error.message) || 'HTTP ' + r.status);
     const c = (d.candidates || [])[0];
-    return c && c.content ? (c.content.parts || []).map((p) => p.text || '').join('') : '';
+    return c && c.content ? (c.content.parts || []).filter((x) => !x.thought).map((x) => x.text || '').join('') : '';
   }
-  const url = n.provider === 'groq' ? 'https://api.groq.com/openai/v1/chat/completions' : 'https://openrouter.ai/api/v1/chat/completions';
+  const url = p.id === 'groq' ? 'https://api.groq.com/openai/v1/chat/completions' : 'https://openrouter.ai/api/v1/chat/completions';
   const headers = { 'content-type': 'application/json', authorization: 'Bearer ' + key };
-  if (n.provider === 'openrouter') headers['X-Title'] = 'MAGI';
+  if (p.id === 'openrouter') headers['X-Title'] = 'MAGI';
   const r = await fetch(url, {
     method: 'POST',
     headers,
     body: JSON.stringify({
-      model: n.model(), temperature: 0.4, max_tokens: 350,
+      model, temperature: 0.4, max_tokens: 1024,
       messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
     }),
     signal: AbortSignal.timeout(TIMEOUT),
@@ -71,29 +101,35 @@ async function callNode(n, system, user) {
   return (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';
 }
 
-function shape(n, text, started) {
-  return { id: n.id, name: n.name, role: n.role, provider: n.label, model: n.model(), ok: true, verdict: verdictOf(text), text: String(text).trim().slice(0, 1200), ms: Date.now() - started };
+function shape(view, text, started) {
+  return { id: view.node.id, name: view.node.name, role: view.node.role, provider: view.label, model: view.model, ok: true, verdict: verdictOf(text), text: String(text).trim().slice(0, 1200), ms: Date.now() - started };
+}
+
+function failed(view, error, started) {
+  return { id: view.node.id, name: view.node.name, role: view.node.role, provider: view.label, model: view.model, ok: false, error: String(error || 'no answer').slice(0, 200), ms: Date.now() - started };
 }
 
 async function round1(n, question) {
-  const started = Date.now();
-  if (!keyOf(n)) return { id: n.id, name: n.name, role: n.role, provider: n.label, model: n.model(), ok: false, error: 'No API key set for ' + n.label };
+  const v = effective(n), started = Date.now();
+  if (!v.key) return failed(v, 'No API key set for ' + v.label, started);
   try {
-    const text = await callNode(n, n.persona + ' ' + FORMAT, question);
-    return shape(n, text, started);
+    const text = await callProvider(v, n.persona + ' ' + FORMAT, question);
+    if (!String(text).trim()) return failed(v, 'Empty answer from ' + v.label, started);
+    return shape(v, text, started);
   } catch (e) {
-    return { id: n.id, name: n.name, role: n.role, provider: n.label, model: n.model(), ok: false, error: String((e && e.message) || e).slice(0, 200), ms: Date.now() - started };
+    return failed(v, (e && e.message) || e, started);
   }
 }
 
 async function round2(n, question, first, others) {
-  const started = Date.now();
+  const v = effective(n), started = Date.now();
   const lines = others.map((o) => o.name + ' (' + o.role + '): ' + o.verdict + '. ' + o.text).join('\n\n');
   const user = 'Question: ' + question + '\n\nYour first verdict was ' + first.verdict + '.\n\nThe other nodes said:\n\n' + lines +
     '\n\nConsider their reasoning. Keep your position if you still believe it, or change it if they convinced you. ' + FORMAT;
   try {
-    const text = await callNode(n, n.persona + ' This is the second round of deliberation.', user);
-    return { ...shape(n, text, started), initial: first.verdict, revised: verdictOf(text) !== first.verdict };
+    const text = await callProvider(v, n.persona + ' This is the second round of deliberation.', user);
+    if (!String(text).trim()) throw new Error('empty');
+    return { ...shape(v, text, started), initial: first.verdict, revised: verdictOf(text) !== first.verdict };
   } catch (e) {
     // If round 2 fails, keep the round 1 verdict.
     return { ...first, initial: first.verdict, revised: false, ms: Date.now() - started };
@@ -122,15 +158,84 @@ async function deliberate(question) {
   return results;
 }
 
-module.exports = function mount(app, { auth, admin, wrap }) {
-  app.get('/api/admin/magi/status', auth, admin, (req, res) => {
+// What the admin screen shows for one node.
+function nodeView(n) {
+  const v = effective(n);
+  return {
+    id: n.id, name: n.name, role: n.role,
+    provider: v.label, provider_id: v.provider.id,
+    model: v.model, default_model: v.provider.model(),
+    enabled: !!v.key,
+  };
+}
+
+module.exports = function mount(app, { pool, auth, admin, wrap }) {
+  // Load saved node links (provider and model) from the database, if there is one.
+  const ready = (async () => {
+    if (!pool) return;
+    try {
+      await pool.query(`CREATE TABLE IF NOT EXISTS magi_links (node TEXT PRIMARY KEY, provider TEXT NOT NULL, model TEXT NOT NULL DEFAULT '')`);
+      const r = await pool.query('SELECT node, provider, model FROM magi_links');
+      for (const x of r.rows) if (NODE_BY_ID[x.node] && PROVIDERS[x.provider]) links.set(x.node, { provider: x.provider, model: x.model || '' });
+    } catch (e) { console.error('magi links init:', e.message); }
+  })();
+
+  app.get('/api/admin/magi/status', auth, admin, wrap(async (req, res) => {
+    await ready;
     res.json({
-      nodes: NODES.map((n) => ({ id: n.id, name: n.name, role: n.role, provider: n.label, model: n.model(), enabled: !!keyOf(n) })),
+      nodes: NODES.map(nodeView),
+      providers: Object.values(PROVIDERS).map((p) => ({ id: p.id, label: p.label, ready: !!keyOf(p), model: p.model() })),
       quorum: 2,
     });
-  });
+  }));
+
+  // Save a node's provider and model, or reset it to its built-in link.
+  app.post('/api/admin/magi/node', auth, admin, wrap(async (req, res) => {
+    await ready;
+    const body = req.body || {};
+    const n = NODE_BY_ID[String(body.node || '')];
+    if (!n) return res.status(400).json({ error: 'Unknown node.' });
+
+    if (body.reset) {
+      links.delete(n.id);
+      if (pool) await pool.query('DELETE FROM magi_links WHERE node = $1', [n.id]).catch((e) => console.error('magi reset:', e.message));
+      return res.json({ node: nodeView(n) });
+    }
+
+    const pid = String(body.provider || '');
+    const model = String(body.model || '').trim().slice(0, 120);
+    const p = PROVIDERS[pid];
+    if (!p) return res.status(400).json({ error: 'Unknown provider.' });
+    if (!keyOf(p)) return res.status(400).json({ error: 'No API key set on the server for ' + p.label + '.' });
+
+    links.set(n.id, { provider: pid, model });
+    if (pool) {
+      await pool.query(
+        'INSERT INTO magi_links (node, provider, model) VALUES ($1, $2, $3) ON CONFLICT (node) DO UPDATE SET provider = EXCLUDED.provider, model = EXCLUDED.model',
+        [n.id, pid, model]
+      ).catch((e) => console.error('magi save:', e.message));
+    }
+    res.json({ node: nodeView(n) });
+  }));
+
+  // Send one short question to a node to check its link.
+  app.post('/api/admin/magi/test', auth, admin, wrap(async (req, res) => {
+    await ready;
+    const n = NODE_BY_ID[String((req.body || {}).node || '')];
+    if (!n) return res.status(400).json({ error: 'Unknown node.' });
+    const v = effective(n), started = Date.now();
+    if (!v.key) return res.json({ ok: false, error: 'No API key set for ' + v.label, model: v.model });
+    try {
+      const text = await callProvider(v, 'Reply with the single word APPROVED and nothing else.', 'Test.');
+      if (!String(text).trim()) return res.json({ ok: false, error: 'Empty answer', model: v.model, ms: Date.now() - started });
+      res.json({ ok: true, model: v.model, ms: Date.now() - started });
+    } catch (e) {
+      res.json({ ok: false, error: String((e && e.message) || e).slice(0, 200), model: v.model, ms: Date.now() - started });
+    }
+  }));
 
   app.post('/api/admin/magi', auth, admin, wrap(async (req, res) => {
+    await ready;
     const question = String((req.body || {}).question || '').trim();
     if (!question) return res.status(400).json({ error: 'Enter a question first.' });
     if (question.length > QUESTION_MAX) return res.status(400).json({ error: 'Question is too long (max ' + QUESTION_MAX + ' characters).' });
