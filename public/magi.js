@@ -4,7 +4,7 @@
 //  - The LINKS button (top right of the panel) opens the provider / model switches for each node.
 //  - Sound (Web Audio, nothing to download): a mechanical machine-room drone with relay clicks and servo whines while the nodes think,
 //    and a struck bell with echo and hall reverb on the verdict. The SOUND button mutes it (remembered on this device).
-//  - EXPAND uses real browser fullscreen (falls back to a full-window overlay where fullscreen is not supported).
+//  - EXPAND covers the whole page (a fixed full-viewport layer) and also requests real browser fullscreen where the browser allows it.
 // Uses textContent for everything that comes from the server, so an AI answer can never inject HTML.
 // Colours are CSS variables on #magi-dash (--mg-or, --mg-gn, --mg-no, ...).
 (function () {
@@ -166,11 +166,12 @@
     '.mg-chips{grid-column:1/-1;display:flex;gap:8px;flex-wrap:wrap}',
     '#magi-dash .mg-chips .mg-btn{padding:5px 10px;font-size:.6rem;border-width:1px;text-transform:none;letter-spacing:.06em;font-weight:600}',
 
-    // expanded: fills the whole screen
-    '#magi-dash.max{position:fixed;inset:0;z-index:700;margin:0;padding:16px 16px 56px;overflow:auto;background:#000 url("__HEX__")}',
-    '#magi-dash.max .mg-panel{max-width:1180px;margin:0 auto}',
-    '#magi-dash:fullscreen{overflow:auto;background:#000 url("__HEX__")}',
-    '#magi-dash:-webkit-full-screen{overflow:auto;background:#000 url("__HEX__")}',
+    // EXPANDED: a fixed layer covering the whole viewport, above the site's own layout and header
+    '#magi-dash.max{position:fixed!important;top:0!important;left:0!important;right:0!important;bottom:0!important;width:100vw!important;height:100vh!important;max-width:none!important;min-height:0!important;margin:0!important;padding:16px 16px 56px!important;overflow:auto!important;z-index:2147483000!important;transform:none!important;background:#000 url("__HEX__")!important;border:0!important;-webkit-overflow-scrolling:touch}',
+    '#magi-dash.max .mg-panel{max-width:1180px;margin:0 auto;min-height:calc(100vh - 80px)}',
+    '#magi-dash.max .mg-panel{max-width:none!important;margin:0 auto}',
+    '#magi-dash:fullscreen,#magi-dash:-webkit-full-screen{position:fixed;inset:0;width:100vw;height:100vh;max-width:none;padding:16px 16px 56px;overflow:auto;background:#000 url("__HEX__")}',
+    '#magi-dash:fullscreen .mg-panel,#magi-dash:-webkit-full-screen .mg-panel{max-width:1180px;margin:0 auto}',
 
     '@media (max-width:860px){.mg-links{grid-template-columns:1fr}.mg-top{grid-template-columns:1fr}.mg-res{margin-left:0;max-width:none}.mg-map{grid-template-columns:1fr;grid-template-areas:"b" "m" "c" "e"}.mg-mid:before,.mg-mid:after{display:none}.mg-ctls{grid-template-columns:1fr}.mg-form{grid-template-columns:1fr}.mg-run{min-height:48px}}',
     '@media (prefers-reduced-motion:reduce){#magi-dash *{animation:none!important}}',
@@ -473,22 +474,43 @@
     syncToggles();
   });
 
-  // ===== expand: real browser fullscreen, with a full-window overlay as the fallback =====
+  // ===== EXPAND: a full-page layer that scales the console to fill the screen, plus real fullscreen where allowed =====
+  function fit() {
+    if (!root.classList.contains('max')) { panel.style.zoom = ''; panel.style.width = ''; panel.style.maxWidth = ''; panel.style.margin = ''; return; }
+    var W = 1100, H = 720;                       // the design size the layout was built for
+    var z = Math.min(window.innerWidth / W, window.innerHeight / H);
+    panel.style.width = W + 'px';
+    panel.style.maxWidth = 'none';
+    panel.style.zoom = z.toFixed(3);
+    panel.style.margin = '0 auto';
+  }
+  window.addEventListener('resize', fit);
+
   function expand() {
     root.classList.add('max');
     document.body.appendChild(root);
     document.body.style.overflow = 'hidden';
     maxBtn.textContent = 'COLLAPSE';
+    fit();
     var rf = root.requestFullscreen || root.webkitRequestFullscreen;
-    if (rf) { try { var p = rf.call(root); if (p && p.catch) p.catch(function () { }); } catch (e) { } }
+    if (rf) {
+      try {
+        var p = rf.call(root);
+        if (p && p.catch) p.catch(function (e) { console.warn('MAGI fullscreen refused:', e && e.message); });
+      } catch (e) { console.warn('MAGI fullscreen error:', e && e.message); }
+    }
   }
   function collapse() {
     if (!root.classList.contains('max')) return;
     root.classList.remove('max');
     document.body.style.overflow = '';
     maxBtn.textContent = 'EXPAND';
+    fit();
     var fe = document.fullscreenElement || document.webkitFullscreenElement;
-    if (fe) { var ef = document.exitFullscreen || document.webkitExitFullscreen; try { var p = ef.call(document); if (p && p.catch) p.catch(function () { }); } catch (e) { } }
+    if (fe) {
+      var ef = document.exitFullscreen || document.webkitExitFullscreen;
+      try { var p = ef.call(document); if (p && p.catch) p.catch(function () { }); } catch (e) { }
+    }
     place();
   }
   maxBtn.addEventListener('click', function () { if (root.classList.contains('max')) collapse(); else expand(); });
