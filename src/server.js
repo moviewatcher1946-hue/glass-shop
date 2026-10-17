@@ -877,6 +877,10 @@ const createOrder = wrap(async (req, res) => {
     const qtyOf = new Map();
     for (const i of items) if (!i.combo_id) { const id = parseInt(i.product_id); qtyOf.set(id, (qtyOf.get(id) || 0) + Math.min(99, parseInt(i.quantity))); }
     let total = 0;
+    // Flavors (variants): same price and stock as the product, but a sold-out flavor cannot be ordered.
+    const varIds = items.filter((i) => i.variant_id).map((i) => parseInt(i.variant_id)).filter(Number.isInteger);
+    const { rows: vrs } = varIds.length ? await c.query('SELECT id,product_id,name,is_sold_out FROM product_variants WHERE id = ANY($1)', [varIds]) : { rows: [] };
+    const varById = new Map(vrs.map((v) => [v.id, v]));
     const lines = items.flatMap((i) => {
       const q = Math.min(99, parseInt(i.quantity));
       let parts;
@@ -904,7 +908,9 @@ const createOrder = wrap(async (req, res) => {
       } else {
         const p = byId.get(parseInt(i.product_id));
         if (!p || p.is_sold_out) throw bad('An item in your cart is no longer available.');
-        parts = [{ pid: p.id, title: p.title, price: unitFor(p, qtyOf.get(p.id)), q, owner: p.owner_id, cost: costOf.get(p.id) ?? null }];
+        const fl = i.variant_id ? varById.get(parseInt(i.variant_id)) : null;
+        if (i.variant_id && (!fl || fl.product_id !== p.id || fl.is_sold_out)) throw bad(`That flavor of "${p.title}" is sold out. Remove it from your cart.`);
+        parts = [{ pid: p.id, title: fl ? `${p.title} (${fl.name})` : p.title, price: unitFor(p, qtyOf.get(p.id)), q, owner: p.owner_id, cost: costOf.get(p.id) ?? null }];
       }
       parts.forEach((l) => { total += l.price * l.q; });
       return parts;
@@ -938,10 +944,14 @@ const createOrder = wrap(async (req, res) => {
     if (promo && base === 0) throw bad('That promo code only applies to items that are not in your cart.');
     const discount = promo ? Math.round(base * promo.percent) / 100 : 0;
     const note = String(req.body.note || '').trim().slice(0, 300);
+    // Loyalty points: spent inside this same transaction, so a failed order gives them back.
+    const spent = await perks.reserve(c, req.user.id, req.body.redeem_points, total - discount);
+    const finalTotal = Math.max(0, total - discount - spent.peso);
     const { rows: [o] } = await c.query(
       'INSERT INTO orders (user_id, total, note, promo_code, discount, deliver_for) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id,total,status,created_at',
-      [req.user.id, (total - discount).toFixed(2), note, promo ? promo.code : null, discount.toFixed(2), win.date]
+      [req.user.id, finalTotal.toFixed(2), note, promo ? promo.code : null, discount.toFixed(2), win.date]
     );
+    if (spent.points) await perks.record(c, o.id, req.user.id, spent.points, spent.peso);
     if (promo) await c.query('UPDATE promo_codes SET used_count = used_count + 1 WHERE id=$1', [promo.id]);
     for (const l of lines)
       await c.query('INSERT INTO order_items (order_id, product_id, title, unit_price, quantity, owner_id, cost_price) VALUES ($1,$2,$3,$4,$5,$6,$7)',
