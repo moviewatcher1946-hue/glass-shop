@@ -260,28 +260,57 @@
     var out = new Uint8Array(raw.length); for (var i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
     return out;
   }
+  // Asks for permission, subscribes this browser, and saves it on the server. Used by the dashboard button and the prompt.
+  function subscribeAlerts() {
+    return Notification.requestPermission().then(function (p) {
+      if (p !== 'granted') throw new Error('Allow notifications in your browser settings to get order alerts.');
+      return api('/api/push/key');
+    }).then(function (k) {
+      return navigator.serviceWorker.ready.then(function (reg) {
+        return reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(k.key) });
+      });
+    }).then(function (sub) {
+      return api('/api/push/subscribe', 'POST', sub.toJSON());
+    });
+  }
+  function alertsSupported() {
+    return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+  }
   function alertsSetup(btn) {
-    if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
-      btn.textContent = 'Alerts are not supported in this browser'; btn.disabled = true; return;
-    }
+    if (!alertsSupported()) { btn.textContent = 'Alerts are not supported in this browser'; btn.disabled = true; return; }
     btn.onclick = function () {
       btn.disabled = true; btn.textContent = 'Turning on\u2026';
-      Notification.requestPermission().then(function (p) {
-        if (p !== 'granted') throw new Error('Allow notifications in your browser settings to get order alerts.');
-        return api('/api/push/key');
-      }).then(function (k) {
-        return navigator.serviceWorker.ready.then(function (reg) {
-          return reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(k.key) });
-        });
-      }).then(function (sub) {
-        return api('/api/push/subscribe', 'POST', sub.toJSON());
-      }).then(function () {
+      subscribeAlerts().then(function () {
         btn.textContent = 'Order alerts are on';
       }).catch(function (e) {
         btn.disabled = false; btn.textContent = 'Turn on order alerts';
         btn.setAttribute('title', e.message || 'Could not turn on alerts.');
       });
     };
+  }
+
+  // Signed-in customers who have not turned alerts on get a small, dismissible prompt. "Later" hides it for seven days.
+  function maybeAskAlerts() {
+    if (!signedIn() || isAdmin() || !alertsSupported()) return;
+    if (Notification.permission === 'denied') return;
+    var later = parseInt(LS('alerts_later') || '0', 10);
+    if (later && Date.now() - later < 7 * 86400000) return;
+    navigator.serviceWorker.ready.then(function (reg) { return reg.pushManager.getSubscription(); }).then(function (sub) {
+      if (sub || document.getElementById('sp-alert')) return;
+      var box = el('div'); box.id = 'sp-alert';
+      box.style.cssText = 'position:fixed;left:12px;right:12px;bottom:calc(76px + env(safe-area-inset-bottom,0px));max-width:460px;margin:0 auto;z-index:9450;padding:12px 14px;border-radius:16px;background:rgba(20,22,40,.94);color:#fff;font:600 14px system-ui,sans-serif;display:flex;gap:10px;align-items:center;box-shadow:0 12px 30px rgba(0,0,0,.35)';
+      var t = el('span', '', 'Get a notification when your order is packed or delivered.'); t.style.flex = '1';
+      var yes = el('button', '', 'Turn on'); yes.type = 'button'; yes.style.cssText = 'border:0;border-radius:999px;padding:8px 14px;background:#0a84ff;color:#fff;font:600 13px system-ui,sans-serif;cursor:pointer';
+      var no = el('button', '', 'Later'); no.type = 'button'; no.style.cssText = 'border:0;background:none;color:#a3a9c9;font:600 13px system-ui,sans-serif;cursor:pointer';
+      box.appendChild(t); box.appendChild(yes); box.appendChild(no); document.body.appendChild(box);
+      no.onclick = function () { LSET('alerts_later', String(Date.now())); box.remove(); };
+      yes.onclick = function () {
+        yes.disabled = true; t.textContent = 'Turning on\u2026';
+        subscribeAlerts().then(function () { box.remove(); }, function (e) {
+          yes.disabled = false; t.textContent = e.message || 'Could not turn on alerts.';
+        });
+      };
+    }).catch(function () { /* no service worker yet: try again next visit */ });
   }
 
   function renderDash(panel) {
@@ -347,6 +376,51 @@
       dash.appendChild(clear);
     }
   }
+
+  setTimeout(maybeAskAlerts, 4000);
+
+  // Terms and Privacy: every signed-in account accepts once. The server keeps the date.
+  function checkPolicy() {
+    if (!signedIn() || document.getElementById('sp-policy')) return;
+    api('/api/me/policy').then(function (r) { if (!r.accepted) showPolicy(); }).catch(function () {});
+  }
+  function showPolicy() {
+    var over = el('div'); over.id = 'sp-policy';
+    over.style.cssText = 'position:fixed;inset:0;z-index:9900;display:flex;align-items:center;justify-content:center;padding:16px;background:rgba(7,10,28,.72);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);font:15px system-ui,-apple-system,sans-serif;color:#f3f5ff';
+    var card = el('div'); card.setAttribute('role', 'dialog'); card.setAttribute('aria-label', 'Terms and Privacy Policy');
+    card.style.cssText = 'width:min(460px,100%);max-height:90vh;overflow:auto;padding:22px;border-radius:22px;background:#141935;border:1px solid rgba(255,255,255,.2);box-shadow:0 30px 70px rgba(0,0,0,.5)';
+    var h = el('h3', '', 'Before you continue'); h.style.cssText = 'margin:0 0 8px;font-size:19px';
+    var p = el('p', '', 'Please read and accept our Terms of Use and Privacy Policy to keep shopping.'); p.style.margin = '0 0 12px';
+    var links = el('p'); links.style.margin = '0 0 14px';
+    [['Terms of Use', '/terms.html'], ['Privacy Policy', '/privacy.html']].forEach(function (l, i) {
+      var a = el('a', '', l[0]); a.href = l[1]; a.target = '_blank'; a.rel = 'noopener'; a.style.color = '#6cb6ff';
+      if (i) links.appendChild(document.createTextNode('  \u00B7  '));
+      links.appendChild(a);
+    });
+    var label = el('label'); label.style.cssText = 'display:flex;gap:10px;align-items:flex-start;margin:0 0 16px;cursor:pointer';
+    var cb = el('input'); cb.type = 'checkbox'; cb.style.marginTop = '3px';
+    label.appendChild(cb); label.appendChild(el('span', '', 'I have read and agree to the Terms of Use and the Privacy Policy.'));
+    var row = el('div'); row.style.cssText = 'display:flex;gap:10px;flex-wrap:wrap';
+    var ok = el('button', '', 'Accept and continue'); ok.type = 'button'; ok.disabled = true;
+    ok.style.cssText = 'flex:1;min-width:180px;border:0;border-radius:14px;padding:12px 16px;background:#0a84ff;color:#fff;font:700 15px system-ui,sans-serif;cursor:pointer;opacity:.5';
+    var out = el('button', '', 'Log out'); out.type = 'button';
+    out.style.cssText = 'border:0;border-radius:14px;padding:12px 16px;background:rgba(255,255,255,.12);color:#f3f5ff;font:600 15px system-ui,sans-serif;cursor:pointer';
+    cb.onchange = function () { ok.disabled = !cb.checked; ok.style.opacity = cb.checked ? '1' : '.5'; };
+    ok.onclick = function () {
+      ok.disabled = true;
+      api('/api/me/policy', 'POST', {}).then(function () { over.remove(); }).catch(function (e) {
+        ok.disabled = !cb.checked; p.textContent = e.message || 'Could not save. Please try again.';
+      });
+    };
+    out.onclick = function () { try { localStorage.removeItem('token'); localStorage.removeItem('user'); } catch (e) {} location.reload(); };
+    row.appendChild(ok); row.appendChild(out);
+    card.appendChild(h); card.appendChild(p); card.appendChild(links); card.appendChild(label); card.appendChild(row);
+    over.appendChild(card); document.body.appendChild(over);
+  }
+  // Runs after a sign-in too, so a new login is asked straight away.
+  var prevSession = window.__onSession;
+  window.__onSession = function (u) { if (prevSession) prevSession(u); setTimeout(checkPolicy, 300); };
+  setTimeout(checkPolicy, 1500);
 
   // ---------- keyboard: Ctrl/Cmd+K opens, Esc closes
   document.addEventListener('keydown', function (e) {
