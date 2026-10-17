@@ -3,7 +3,7 @@
 //  - Layout follows the MAGI screen: Balthasar top, Casper left, Melchior right, MAGI in the middle.
 //  - The LINKS button (top right of the panel) opens the provider / model switches for each node.
 //  - Sound (Web Audio, nothing to download): a mechanical machine-room drone with relay clicks and servo whines while the nodes think,
-//    and a struck bell with echo and hall reverb on the verdict. The SOUND button mutes it (remembered on this device).
+//    and a deep slam with a hall tail on the verdict. The SOUND button mutes it (remembered on this device).
 //  - EXPAND covers the whole page (a fixed full-viewport layer) and also requests real browser fullscreen where the browser allows it.
 // Uses textContent for everything that comes from the server, so an AI answer can never inject HTML.
 // Colours are CSS variables on #magi-dash (--mg-or, --mg-gn, --mg-no, ...).
@@ -108,8 +108,8 @@
     '.mg-map{position:relative;container-type:inline-size;width:100%;aspect-ratio:1200/685;margin:6px 0 0}',
     '.mg-wires{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}',
     '.mg-wires line{stroke:var(--mg-or);stroke-width:9;stroke-linecap:square}',
-    '.mg-mid{position:absolute;left:50%;top:59%;transform:translate(-50%,-50%);z-index:2}',
-    '.mg-mid span{display:block;padding:0 1.2cqw;background:#000;font:900 4.4cqw/1 "Hiragino Mincho ProN","Yu Mincho",Georgia,serif;letter-spacing:.04em;color:var(--mg-or);text-shadow:0 0 12px #ff8a1f88}',
+    '.mg-mid{position:absolute;left:50%;top:59%;transform:translate(-50%,-50%);z-index:0}',
+    '.mg-mid span{display:block;padding:0 1.2cqw;background:transparent;font:900 4.4cqw/1 "Hiragino Mincho ProN","Yu Mincho",Georgia,serif;letter-spacing:.04em;color:var(--mg-or);text-shadow:0 0 12px #ff8a1f88}',
 
     // screens: flat green shapes, black text
     '.mg-node{position:absolute;margin:0}',
@@ -149,7 +149,7 @@
     '.mg-pips i.ap{background:var(--mg-gn)}.mg-pips i.dn{background:var(--mg-no);border-color:var(--mg-no)}.mg-pips i.off{border-color:var(--mg-dim)}',
 
     // bottom row, like the reference: question: [ input ] EXECUTE
-    '.mg-form{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:center;margin:18px 0 0;padding-top:12px;border-top:1px solid var(--mg-dim)}',
+    '.mg-form{position:relative;z-index:4;display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:center;margin:18px 0 0;padding-top:12px;border-top:1px solid var(--mg-dim)}',
     '.mg-form .mg-ql{font-size:.9rem;letter-spacing:.14em;color:var(--mg-or);white-space:nowrap}',
     '.mg-form textarea{width:100%;margin:0;min-height:38px;padding:8px 10px;color:var(--mg-hi);background:#000;border:1px solid var(--mg-or);font:500 14px/1.3 ui-monospace,Menlo,Consolas,monospace;text-transform:none;resize:vertical;box-shadow:none}',
     '.mg-form textarea:focus{outline:none;box-shadow:0 0 0 2px #ff8a1f66}',
@@ -322,30 +322,30 @@
     Object.keys(cards).forEach(function (id) { cards[id].hx.style.removeProperty('--flick'); });
   }
 
-  function bell(t, base, vol) {
-    var s = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain(), ss = ctx.createGain();
-    s.buffer = noiseBuf; f.type = 'lowpass'; f.frequency.value = base * 4; f.Q.value = 0.5;
-    g.gain.setValueAtTime(vol * 0.25, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.02);
-    ss.gain.value = 0.3;
-    s.connect(f); f.connect(g); g.connect(bus); g.connect(ss); ss.connect(fx);
-    s.start(t, Math.random() * 0.5); s.stop(t + 0.03);
-    [[0.5, 0.35, 2.2], [1, 1, 2.6], [1.2, 0.5, 1.8], [1.5, 0.45, 1.6], [2, 0.55, 1.3], [2.67, 0.25, 0.9], [3, 0.2, 0.7]].forEach(function (p) {
-      var o = ctx.createOscillator(), og = ctx.createGain(), sg = ctx.createGain();
-      o.type = 'sine'; o.frequency.value = base * p[0];
-      og.gain.setValueAtTime(0, t);
-      og.gain.linearRampToValueAtTime(p[1] * vol, t + 0.004);
-      og.gain.setTargetAtTime(0, t + 0.004, p[2] / 4);
-      sg.gain.value = 0.35;
-      o.connect(og); og.connect(bus); og.connect(sg); sg.connect(fx);
-      o.start(t); o.stop(t + p[2] * 1.5 + 0.1);
-    });
+  // a deep mechanical slam with a long hall tail (no tone, no bell partials)
+  function boom(t, vol) {
+    var o = ctx.createOscillator(), g = ctx.createGain(), sg = ctx.createGain();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(110, t);
+    o.frequency.exponentialRampToValueAtTime(35, t + 0.9);
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 1.6);
+    sg.gain.value = 0.5;
+    o.connect(g); g.connect(bus); g.connect(sg); sg.connect(fx);
+    o.start(t); o.stop(t + 1.7);
+    burst(t, 0.06, 'lowpass', 400, vol * 0.8, 0.6);
   }
+  // one node being counted in: a double relay clack
+  function tally(t) { relay(t, 0.7); relay(t + 0.02, 0.4); }
+
   function ding(verdict) {
     if (!soundOn() || !audio()) return;
-    var t = ctx.currentTime;
-    if (verdict === 'APPROVED') bell(t, 880, 0.35);
-    else if (verdict === 'DENIED') { bell(t, 220, 0.4); bell(t + 0.7, 220, 0.3); }
-    else bell(t, 494, 0.3);
+    var t = ctx.currentTime, gap = 0.22;
+    for (var i = 0; i < 3; i++) tally(t + i * gap);   // the three nodes clack in one by one
+    var hit = t + 3 * gap + 0.1;
+    if (verdict === 'APPROVED') boom(hit, 0.8);
+    else if (verdict === 'DENIED') { boom(hit, 0.9); boom(hit + 0.9, 0.9); }
+    else boom(hit, 0.6);
   }
 
   // ===== NERV mode (remembered on this device; on unless it was switched off) =====
@@ -476,14 +476,14 @@
   });
 
   // ===== EXPAND: fixed design height, scaled to fit. Answers scroll inside the panel instead of growing it =====
-  var DESIGN_H = 980;
+  var DESIGN_H = 1080; // raise in steps of 20 if the bottom row is still cut off
   function fit() {
     if (!root.classList.contains('max') || window.innerWidth < 860) { panel.style.zoom = ''; panel.style.width = ''; panel.style.height = ''; panel.style.overflow = ''; return; }
     var pad = 16, vw = window.innerWidth - pad * 2, vh = window.innerHeight - pad * 2;
     var s = Math.min(vw / 1200, vh / DESIGN_H);
     panel.style.width = '1200px';
     panel.style.height = DESIGN_H + 'px';
-    panel.style.overflow = 'hidden';
+    panel.style.overflow = 'visible';
     panel.style.zoom = s.toFixed(3);
   }
   window.addEventListener('resize', fit);
