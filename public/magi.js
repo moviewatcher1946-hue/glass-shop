@@ -34,8 +34,11 @@
     'html.nerv .cat-title:before,html.nerv .tile.on,html.nerv .primary{box-shadow:0 0 16px #ff6a0066}',
     'html.nerv ::selection{background:#ff7a00;color:#120803}',
 
-    // ---- Open button
-    '#magi-fab{position:fixed;top:calc(10px + env(safe-area-inset-top,0px));left:50%;transform:translateX(-50%);z-index:46;min-height:0;padding:7px 26px;font-weight:800;letter-spacing:.3em;color:#000;background:#ff7a00;border:0;border-radius:0!important;clip-path:' + CUT + ';box-shadow:none}',
+    // ---- Open button and NERV on/off switch
+    '#magi-bar{position:fixed;top:calc(10px + env(safe-area-inset-top,0px));left:50%;transform:translateX(-50%);z-index:46;display:flex;gap:8px;align-items:center}',
+    '#magi-fab{min-height:0;padding:7px 26px;font-weight:800;letter-spacing:.3em;color:#000;background:#ff7a00;border:0;border-radius:0!important;clip-path:' + CUT + ';box-shadow:none}',
+    '#nerv-tgl{min-height:0;padding:6px 12px;font:800 .72rem/1 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.14em;white-space:nowrap;color:#fff;background:rgba(20,20,40,.82);border:1px solid rgba(255,255,255,.45);border-radius:999px;box-shadow:none}',
+    'html.nerv #nerv-tgl{color:#ff7a00;background:#000;border:2px solid #ff7a00;border-radius:0!important}',
 
     // ---- MAGI display
     '#magi{--mg-or:#ff7a00;--mg-hi:#ffb347;--mg-no:#e5231b;--mg-dim:#8a4300;--mg-bk:#000;position:fixed;inset:0;z-index:700;display:none;overflow:auto;padding:16px 16px 56px;color:var(--mg-or);background:#000 url("' + HEX + '");font:700 14px/1.35 "Hiragino Mincho ProN","Yu Mincho","Noto Serif JP","MS PMincho",Georgia,"Times New Roman",serif;text-transform:uppercase}',
@@ -100,14 +103,27 @@
   style.id = 'magi-css';
   style.textContent = css;
   document.head.appendChild(style);
-  document.documentElement.classList.add('nerv');
+  var PREF = 'magi_nerv';
+  function nervOn() { try { return localStorage.getItem(PREF) !== '0'; } catch (e) { return true; } }
+  function applyNerv(on) { document.documentElement.classList.toggle('nerv', on); try { localStorage.setItem(PREF, on ? '1' : '0'); } catch (e) {} }
+  document.documentElement.classList.toggle('nerv', nervOn());
 
   // ---- Open button and overlay
+  var bar = el('div');
+  bar.id = 'magi-bar';
   var fab = el('button', null, 'MAGI');
   fab.id = 'magi-fab';
   fab.type = 'button';
   fab.setAttribute('aria-label', 'Open MAGI system');
-  document.body.appendChild(fab);
+  var tgl = el('button');
+  tgl.id = 'nerv-tgl';
+  tgl.type = 'button';
+  function label() { var on = document.documentElement.classList.contains('nerv'); tgl.textContent = on ? 'NERV: ON' : 'NERV: OFF'; tgl.setAttribute('aria-pressed', on ? 'true' : 'false'); tgl.setAttribute('aria-label', 'NERV colours ' + (on ? 'on, switch to the normal theme' : 'off, switch to NERV')); }
+  label();
+  tgl.addEventListener('click', function () { applyNerv(!document.documentElement.classList.contains('nerv')); label(); });
+  bar.appendChild(fab);
+  bar.appendChild(tgl);
+  document.body.appendChild(bar);
 
   var box = el('div');
   box.id = 'magi';
