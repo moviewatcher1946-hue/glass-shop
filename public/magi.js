@@ -1,6 +1,6 @@
 // MAGI console (admin only), loaded by index.html for the admin role.
 //  - Lives INSIDE the admin Dashboard (above the numbers) and appears only while NERV mode is on.
-//  - Layout copies the MAGI screen: Balthasar on top, Casper left, Melchior right, MAGI in the middle.
+//  - Layout follows the MAGI screen: Balthasar top, Caspar left, Melchior right, MAGI in the middle.
 //  - The LINKS button (top right of the panel) opens the provider / model switches for each node.
 //  - Sound (Web Audio, nothing to download): a mechanical machine-room drone with relay clicks and servo whines while the nodes think,
 //    and a struck bell with echo and hall reverb on the verdict. The SOUND button mutes it (remembered on this device).
@@ -24,7 +24,6 @@
 
   var DISPLAY = { melchior: 'MELCHIOR\u20221', balthasar: 'BALTHASAR\u20222', caspar: 'CASPER\u20223' };
   var KATA = { melchior: '\u30e1\u30eb\u30ad\u30aa\u30fc\u30eb', balthasar: '\u30d0\u30eb\u30bf\u30b6\u30fc\u30eb', caspar: '\u30ab\u30b9\u30d1\u30fc' };
-  var AREA = { balthasar: 'b', caspar: 'c', melchior: 'e' };
   var ORDER = { caspar: 1, balthasar: 2, melchior: 3 };
   var KANJI = { APPROVED: '\u627f\u8a8d', DENIED: '\u5426\u6c7a', UNCLEAR: '\u4e0d\u660e', 'NO CONSENSUS': '\u6c7a\u8b70\u4e0d\u80fd' };
   var K_WAIT = '\u5be9\u8b70\u4e2d', K_IDLE = '\u5f85\u6a5f', K_OFF = '\u672a\u63a5\u7d9a', K_NONE = '\u5fdc\u7b54\u306a\u3057';
@@ -32,11 +31,17 @@
 
   var HEX = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='100'%3E%3Cpath d='M28 66L0 50L0 16L28 0L56 16L56 50L28 66L28 100' fill='none' stroke='%23ff7a00' stroke-opacity='.16' stroke-width='1.5'/%3E%3Cpath d='M28 0L28 34L0 50L0 84L28 100L56 84L56 50L28 34' fill='none' stroke='%23ff7a00' stroke-opacity='.16' stroke-width='1.5'/%3E%3C/svg%3E";
 
-  // the three screen shapes from the picture
+  // the three screen shapes, as percentages of each screen's box (matches the reference)
   var SHAPE = {
-    balthasar: 'polygon(0 0,100% 0,100% 64%,90% 100%,10% 100%,0 64%)',
-    caspar: 'polygon(0 0,66% 0,100% 60%,100% 100%,0 100%)',
-    melchior: 'polygon(34% 0,100% 0,100% 100%,0 100%,0 40%)'
+    balthasar: 'polygon(0 0,100% 0,100% 84%,72% 100%,27% 100%,0 67%)',
+    caspar: 'polygon(0 0,67% 0,100% 60%,100% 100%,0 83%)',
+    melchior: 'polygon(44% 0,100% 0,100% 100%,0 100%,0 30%)'
+  };
+  // where each screen sits on the 1200 x 685 stage, in percent (left, top, width, height)
+  var POS = {
+    balthasar: { l: 39.2, t: 2.2, w: 33.75, h: 59.9 },
+    caspar: { l: 0.8, t: 35.8, w: 47.5, h: 52.6 },
+    melchior: { l: 62.1, t: 57.7, w: 36.7, h: 40.9 }
   };
 
   var css = [
@@ -86,7 +91,8 @@
 
     // header, like the screen: code block on the left, result box on the right
     '.mg-top{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:22px;margin:0 0 14px;align-items:start}',
-    '.mg-kj{font-size:clamp(1.5rem,4vw,3.1rem);line-height:1.1;font-weight:900;letter-spacing:.1em;color:var(--mg-or);padding:20px 0;background:linear-gradient(#19e3ff,#19e3ff) 0 0/100% 4px no-repeat,linear-gradient(#19e3ff,#19e3ff) 0 9px/100% 3px no-repeat,linear-gradient(#19e3ff,#19e3ff) 0 calc(100% - 9px)/100% 3px no-repeat,linear-gradient(#19e3ff,#19e3ff) 0 100%/100% 4px no-repeat;text-shadow:0 0 10px #ff6a1a66}',    '.mg-code{margin-top:8px;font:900 clamp(1.3rem,3.4vw,2.4rem)/1 Arial,Helvetica,sans-serif;letter-spacing:.2em;color:var(--mg-or)}',
+    '.mg-kj{font-size:clamp(1.5rem,4vw,3.1rem);line-height:1.1;font-weight:900;letter-spacing:.1em;color:var(--mg-or);padding:20px 0;background:linear-gradient(#19e3ff,#19e3ff) 0 0/100% 4px no-repeat,linear-gradient(#19e3ff,#19e3ff) 0 9px/100% 3px no-repeat,linear-gradient(#19e3ff,#19e3ff) 0 calc(100% - 9px)/100% 3px no-repeat,linear-gradient(#19e3ff,#19e3ff) 0 100%/100% 4px no-repeat;text-shadow:0 0 10px #ff6a1a66}',
+    '.mg-code{margin-top:8px;font:900 clamp(1.3rem,3.4vw,2.4rem)/1 Arial,Helvetica,sans-serif;letter-spacing:.2em;color:var(--mg-or)}',
     '.mg-data{margin-top:6px;font:700 .72rem/1.25 Arial,Helvetica,sans-serif;letter-spacing:.2em;color:var(--mg-or)}',
 
     // result box (the ALL GREEN box)
@@ -98,34 +104,6 @@
     '.mg-res.dn{color:var(--mg-no);border-color:var(--mg-no);box-shadow:0 0 14px #e5231b44}',
     '.mg-res.busy .mg-st{animation:mgBlink .7s steps(2) infinite}',
     '@keyframes mgBlink{50%{opacity:.15}}',
-
-    // the map: Balthasar top, Casper left, Melchior right, MAGI in the middle
-    '.mg-map{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));grid-template-areas:". b ." "c m e";gap:14px 22px;align-items:stretch;margin:6px 0 0}',
-    '.mg-node{min-width:0}',
-    '.mg-mid{grid-area:m;position:relative;display:flex;align-items:center;justify-content:center;min-height:96px}',
-    '.mg-mid:before{content:"";position:absolute;left:-22px;right:-22px;bottom:4px;height:7px;background:var(--mg-or)}',
-    '.mg-mid:after{content:none}',
-    '.mg-dl,.mg-dr{position:absolute;top:2px;width:52px;height:7px;background:var(--mg-or)}',
-    '.mg-dl{left:-6px;transform:rotate(-38deg)}',
-    '.mg-dr{right:-6px;transform:rotate(38deg)}',
-    '.mg-mid span{position:relative;z-index:1;padding:4px 12px;background:#000;font:900 1.7rem/1 "Hiragino Mincho ProN","Yu Mincho",Georgia,serif;letter-spacing:.06em;color:var(--mg-or);text-shadow:0 0 12px #ff6a1a88}',
-
-    // green screens (outer element = orange frame, .mg-in = the screen)
-    '.mg-hx{position:relative;display:flex;background:var(--mg-or);padding:3px;clip-path:var(--shape)}',
-    '.mg-hx>.mg-in{position:relative;flex:1;min-width:0;min-height:170px;background:var(--mg-gn);color:#000;clip-path:var(--shape);padding:18px 12%;display:flex;flex-direction:column;justify-content:center;gap:3px;text-transform:uppercase}',
-    '.mg-hx.dn{background:var(--mg-no)}',
-    '.mg-hx.dn>.mg-in{background:var(--mg-no)}',
-    '.mg-hx.off{background:var(--mg-dim)}',
-    '.mg-hx.off>.mg-in{background:#0c1a12;color:var(--mg-gd)}',
-    '.mg-hx.busy>.mg-in{background:var(--flick,#2dbd77)}',
-    '.mg-nm{font:900 clamp(1rem,2.1vw,1.7rem)/1.1 Arial,Helvetica,sans-serif;letter-spacing:.06em;text-align:center}',
-    '.mg-kt{font-size:.58rem;letter-spacing:.34em;text-align:center;opacity:.65}',
-    '.mg-node .mg-st{font-size:clamp(1.6rem,4vw,2.6rem);line-height:1.05;text-align:center;font-weight:900;letter-spacing:.08em}',
-    '.mg-node .mg-st.small{font-size:clamp(1.1rem,2.6vw,1.6rem)}',
-    '.mg-node .mg-en{font:800 .68rem/1.2 Arial,Helvetica,sans-serif;letter-spacing:.26em;text-align:center}',
-    '.mg-node .mg-sub{display:none}',
-    '.mg-meter{height:4px;background:rgba(0,0,0,.25);margin-top:6px}',
-    '.mg-meter b{display:block;height:100%;width:var(--w,0%);background:#000;transition:width .6s steps(8)}',
 
     // per-node answers and provider switches (own row under the map)
     '.mg-ctls{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin:20px 0 0}',
@@ -162,13 +140,12 @@
     '#magi-dash .mg-chips .mg-btn{padding:5px 10px;font-size:.6rem;border-width:1px;text-transform:none;letter-spacing:.06em;font-weight:600}',
 
     // EXPANDED: a fixed layer covering the whole viewport, above the site's own layout and header
-
     '#magi-dash.max{position:fixed!important;top:0!important;left:0!important;right:0!important;bottom:0!important;width:100vw!important;height:100vh!important;max-width:none!important;margin:0!important;padding:0!important;overflow:hidden!important;z-index:2147483000!important;transform:none!important;background:#000!important;border:0!important;display:flex!important;align-items:center!important;justify-content:center!important}',
     '#magi-dash.max .mg-panel{max-width:none!important;margin:0!important;min-height:0!important;border:0!important;box-shadow:none!important}',
     '#magi-dash:fullscreen,#magi-dash:-webkit-full-screen{background:#000;overflow:hidden;display:flex;align-items:center;justify-content:center}',
     '#magi-dash:fullscreen .mg-panel,#magi-dash:-webkit-full-screen .mg-panel{max-width:none;margin:0}',
+
     // ===== extra UI effects =====
-    '.mg-panel:after{animation:mgFlick 5s linear infinite}',
     '@keyframes mgFlick{0%,100%{opacity:1}92%{opacity:1}93%{opacity:.55}94%{opacity:1}97%{opacity:.8}98%{opacity:1}}',
     '#magi-dash.boot .mg-panel{animation:mgBoot 1.2s steps(12) 1}',
     '@keyframes mgBoot{0%{opacity:0;filter:brightness(3)}20%{opacity:.6}35%{opacity:.1}50%{opacity:1}65%{opacity:.4}100%{opacity:1;filter:none}}',
@@ -179,27 +156,41 @@
     '.mg-log{animation:mgFade .35s ease-out both}',
     '@keyframes mgFade{from{opacity:0;transform:translateY(4px)}}',
     '#magi-dash .mg-btn:hover{text-shadow:0 0 8px currentColor}',
-    '@media (max-width:860px){.mg-top{grid-template-columns:1fr}.mg-res{margin-left:0;max-width:none}.mg-map{gap:10px 6px}.mg-mid:before{left:-10px;right:-10px}.mg-mid span{font-size:1rem}.mg-hx>.mg-in{min-height:120px;padding:10px 6%}.mg-nm{font-size:.72rem;letter-spacing:.02em}.mg-kt{font-size:.5rem;letter-spacing:.12em}.mg-node .mg-st{font-size:1.25rem}.mg-node .mg-en{font-size:.5rem;letter-spacing:.14em}.mg-ctls{grid-template-columns:1fr}.mg-form{grid-template-columns:1fr}.mg-run{min-height:48px}.mg-links{grid-template-columns:1fr}}',
+    '@media (max-width:860px){.mg-top{grid-template-columns:1fr}.mg-res{margin-left:0;max-width:none}.mg-ctls{grid-template-columns:1fr}.mg-form{grid-template-columns:1fr}.mg-run{min-height:48px}.mg-links{grid-template-columns:1fr}}',
+
     // ===== CRT look: curved glass, scanlines, RGB phosphor mask, vignette, glow, colour fringing, flicker =====
     '#magi-dash .mg-panel{border-radius:28px!important;box-shadow:0 0 34px #ff6a0050,inset 0 0 70px #000,inset 0 0 22px #ff6a001f}',
-    // scanlines + RGB stripe mask, drawn over the content
-    '.mg-panel:after{z-index:3;background:repeating-linear-gradient(0deg,rgba(0,0,0,.38) 0 1px,transparent 1px 3px),repeating-linear-gradient(90deg,rgba(255,0,0,.07) 0 1px,rgba(0,255,0,.06) 1px 2px,rgba(0,0,255,.07) 2px 3px)}',
-    // vignette (dark corners) + faint glass reflection, with a slow brightness flicker
+    '.mg-panel:after{z-index:3;background:repeating-linear-gradient(0deg,rgba(0,0,0,.38) 0 1px,transparent 1px 3px),repeating-linear-gradient(90deg,rgba(255,0,0,.07) 0 1px,rgba(0,255,0,.06) 1px 2px,rgba(0,0,255,.07) 2px 3px);animation:mgFlick 5s linear infinite}',
     '.mg-panel:before{content:"";position:absolute;inset:0;z-index:2;pointer-events:none;border-radius:28px;background:radial-gradient(ellipse at 50% 45%,transparent 55%,rgba(0,0,0,.55) 100%),linear-gradient(160deg,rgba(255,255,255,.05),transparent 28%);animation:mgCrt 3.4s linear infinite}',
     '@keyframes mgCrt{0%,100%{opacity:1}45%{opacity:.92}47%{opacity:1}78%{opacity:.88}80%{opacity:1}}',
-    // a wider, brighter rolling bar
     '.mg-sweep{height:90px;background:linear-gradient(to bottom,transparent,rgba(98,247,162,.13),transparent)}',
-    // phosphor glow and red/cyan fringing on the orange and green text
-    '.mg-kj,.mg-code,.mg-data,.mg-mid span{text-shadow:-1.5px 0 rgba(255,0,60,.55),1.5px 0 rgba(0,220,255,.45),0 0 12px #ff6a1acc}',
+    '.mg-kj,.mg-code,.mg-data{text-shadow:-1.5px 0 rgba(255,0,60,.55),1.5px 0 rgba(0,220,255,.45),0 0 12px #ff6a1acc}',
     '.mg-res,.mg-log,.mg-out.ok{text-shadow:-1px 0 rgba(255,0,60,.4),1px 0 rgba(0,220,255,.35),0 0 8px currentColor}',
     '.mg-res{box-shadow:0 0 18px #62f7a244,inset 0 0 14px #62f7a222}',
     '.mg-res.dn{box-shadow:0 0 18px #e5231b66,inset 0 0 14px #e5231b33}',
-    // glowing green screens with their own finer scanlines
-    '.mg-node{filter:drop-shadow(0 0 8px rgba(98,247,162,.4))}',
-    '.mg-hx.dn{filter:none}',
-    '.mg-hx>.mg-in:after{content:"";position:absolute;inset:0;pointer-events:none;background:repeating-linear-gradient(0deg,rgba(0,0,0,.3) 0 2px,transparent 2px 4px),radial-gradient(ellipse at 50% 50%,transparent 50%,rgba(0,0,0,.35) 100%)}',
-    '.mg-hx>.mg-in{text-shadow:1px 0 rgba(255,0,60,.35),-1px 0 rgba(0,160,255,.3)}',
     '@media (prefers-reduced-motion:reduce){#magi-dash *{animation:none!important}}',
+
+    // ===== MAP: fixed stage, same proportions as the reference screen (1200 x 685) =====
+    '.mg-map{position:relative;container-type:inline-size;width:100%;aspect-ratio:1200/685;margin:8px 0 0}',
+    '.mg-wires{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}',
+    '.mg-wires line{stroke:var(--mg-or);stroke-width:9;stroke-linecap:square}',
+    '.mg-mid{position:absolute;left:55.7%;top:67%;transform:translate(-50%,-50%);z-index:2}',
+    '.mg-mid span{display:block;padding:0 1cqw;background:#000;font:900 4.2cqw/1 "Hiragino Mincho ProN","Yu Mincho",Georgia,serif;letter-spacing:.04em;color:var(--mg-or);text-shadow:0 0 12px #ff6a1a88}',
+
+    // ===== SCREENS: green shapes with no frame, text in black =====
+    '.mg-node{position:absolute;margin:0;filter:drop-shadow(0 0 6px rgba(98,247,162,.35))}',
+    '.mg-hx{position:absolute;inset:0;display:block;background:none;padding:0}',
+    '.mg-hx>.mg-in{position:absolute;inset:0;min-height:0;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:0;padding:4% 8%;background:var(--mg-gn);color:#000;clip-path:var(--shape);text-transform:uppercase}',
+    '.mg-hx.dn>.mg-in{background:var(--mg-no);color:#000}',
+    '.mg-hx.off>.mg-in{background:#0c1a12;color:var(--mg-gd)}',
+    '.mg-hx.busy>.mg-in{background:var(--flick,#2dbd77)}',
+    '.mg-node .mg-nm{font:900 4cqw/1.05 Arial,Helvetica,sans-serif;letter-spacing:.03em;text-align:center}',
+    '.mg-node .mg-st{font:900 3.2cqw/1 Arial,Helvetica,sans-serif;letter-spacing:.06em;text-align:center;margin-top:1.4cqw}',
+    '.mg-node .mg-st.small{font-size:2.8cqw}',
+    '.mg-node .mg-en{font:800 1.5cqw/1.2 Arial,Helvetica,sans-serif;letter-spacing:.2em;text-align:center}',
+    '.mg-node .mg-kt,.mg-node .mg-sub,.mg-node .mg-meter{display:none}',
+    '.mg-hx>.mg-in:after{content:"";position:absolute;inset:0;pointer-events:none;background:repeating-linear-gradient(0deg,rgba(0,0,0,.18) 0 2px,transparent 2px 4px)}',
+    '@media (max-width:860px){.mg-node .mg-nm{font-size:3.4cqw}}',
   ].join('\n').split('__HEX__').join(HEX);
   var style = document.createElement('style');
   style.id = 'magi-css';
@@ -616,15 +607,33 @@
     ctlWrap.textContent = '';
     linkWrap.textContent = '';
     cards = {};
+
+    // connector lines, drawn in the same 1200 x 685 space as the stage
+    var NS = 'http://www.w3.org/2000/svg';
+    var wires = document.createElementNS(NS, 'svg');
+    wires.setAttribute('class', 'mg-wires');
+    wires.setAttribute('viewBox', '0 0 1200 685');
+    wires.setAttribute('aria-hidden', 'true');
+    [[480, 385, 535, 352], [800, 405, 848, 440], [580, 510, 745, 510]].forEach(function (p) {
+      var ln = document.createElementNS(NS, 'line');
+      ln.setAttribute('x1', p[0]); ln.setAttribute('y1', p[1]);
+      ln.setAttribute('x2', p[2]); ln.setAttribute('y2', p[3]);
+      wires.appendChild(ln);
+    });
+    nodesWrap.appendChild(wires);
+
     var mid = el('div', 'mg-mid');
-    mid.appendChild(el('div', 'mg-dl'));
-    mid.appendChild(el('div', 'mg-dr'));
     mid.appendChild(el('span', null, 'MAGI'));
     nodesWrap.appendChild(mid);
+
     list.forEach(function (n) {
       // the green screen, placed on the map
+      var P = POS[n.id] || POS.balthasar;
       var wrap = el('div', 'mg-node');
-      wrap.style.gridArea = AREA[n.id] || 'auto';
+      wrap.style.left = P.l + '%';
+      wrap.style.top = P.t + '%';
+      wrap.style.width = P.w + '%';
+      wrap.style.height = P.h + '%';
       var hx = el('div', 'mg-hx');
       hx.style.setProperty('--shape', SHAPE[n.id] || SHAPE.balthasar);
       var inn = el('div', 'mg-in');
