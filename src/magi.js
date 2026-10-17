@@ -38,7 +38,7 @@ const PROVIDERS = {
   nvidia: {
     id: 'nvidia', label: 'NVIDIA', keys: ['NVIDIA_API_KEY'],
     url: () => 'https://integrate.api.nvidia.com/v1/chat/completions',
-    model: () => process.env.MAGI_NVIDIA_MODEL || 'nvidia/llama-3.3-nemotron-super-49b-v1.5',
+    model: () => process.env.MAGI_NVIDIA_MODEL || 'nvidia/nemotron-3.5-lightning-30b-a3b',
   },
   // Cloudflare Workers AI (OpenAI-compatible). Needs an API token and your account id. Free allowance resets daily.
   cloudflare: {
