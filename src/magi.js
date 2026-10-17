@@ -6,6 +6,10 @@
 // Melchior = Google Gemini, Balthasar = Groq, Caspar = OpenRouter. Admin only. Keys come from environment variables only.
 // Optional models: MAGI_GEMINI_MODEL, MAGI_GROQ_MODEL, MAGI_OPENROUTER_MODEL.
 // The admin can link any node to any provider that has a key (saved in the magi_links table).
+// Providers: Gemini, Groq, OpenRouter, NVIDIA (build.nvidia.com, free key) and Cloudflare Workers AI (free daily allowance).
+// When one runs out of credit, open LINKS on the panel and switch that node to another provider.
+// Env vars: GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY, NVIDIA_API_KEY, CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID.
+// Optional models: MAGI_NVIDIA_MODEL, MAGI_CLOUDFLARE_MODEL.
 const TIMEOUT = 25000;
 const QUESTION_MAX = 1000;
 // Reasoning models (Qwen on Groq, Nemotron, Gemini 3.5) spend output tokens on thinking before the visible answer.
@@ -22,11 +26,25 @@ const PROVIDERS = {
   },
   groq: {
     id: 'groq', label: 'Groq', keys: ['GROQ_API_KEY'],
+    url: () => 'https://api.groq.com/openai/v1/chat/completions',
     model: () => process.env.MAGI_GROQ_MODEL || 'qwen/qwen3.8-27b',
   },
   openrouter: {
     id: 'openrouter', label: 'OpenRouter', keys: ['OPENROUTER_API_KEY'],
+    url: () => 'https://openrouter.ai/api/v1/chat/completions',
     model: () => process.env.MAGI_OPENROUTER_MODEL || 'nvidia/nemotron-3.5-lightning:free',
+  },
+  // NVIDIA NIM (OpenAI-compatible). Free key at build.nvidia.com, about 40 requests a minute.
+  nvidia: {
+    id: 'nvidia', label: 'NVIDIA', keys: ['NVIDIA_API_KEY'],
+    url: () => 'https://integrate.api.nvidia.com/v1/chat/completions',
+    model: () => process.env.MAGI_NVIDIA_MODEL || 'nvidia/llama-3.3-nemotron-super-49b-v1.5',
+  },
+  // Cloudflare Workers AI (OpenAI-compatible). Needs an API token and your account id. Free allowance resets daily.
+  cloudflare: {
+    id: 'cloudflare', label: 'Cloudflare', keys: ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_API_KEY'], need: 'CLOUDFLARE_ACCOUNT_ID',
+    url: () => 'https://api.cloudflare.com/client/v4/accounts/' + encodeURIComponent((process.env.CLOUDFLARE_ACCOUNT_ID || '').trim()) + '/ai/v1/chat/completions',
+    model: () => process.env.MAGI_CLOUDFLARE_MODEL || '@cf/meta/llama-3.1-8b-instruct',
   },
 };
 
@@ -50,7 +68,9 @@ const NODE_BY_ID = Object.fromEntries(NODES.map((n) => [n.id, n]));
 // node id -> { provider, model } saved by the admin. Empty model means "the provider's default".
 const links = new Map();
 
-const keyOf = (p) => { for (const k of p.keys) { const v = (process.env[k] || '').trim(); if (v) return v; } return ''; };
+// A provider is ready only when its key (and, for Cloudflare, the account id) is set.
+const hintOf = (p) => p.keys[0] + (p.need ? ' and ' + p.need : '');
+const keyOf = (p) => { if (p.need && !(process.env[p.need] || '').trim()) return ''; for (const k of p.keys) { const v = (process.env[k] || '').trim(); if (v) return v; } return ''; };
 
 // The provider and model a node is actually using right now.
 function effective(n) {
@@ -83,6 +103,7 @@ const verdictOf = (t) => {
 
 // A readable message from an API error body (the body can be a string, an object with message, or an object without one).
 const errText = (d, status) => {
+  if (d && Array.isArray(d.errors) && d.errors.length) return String(d.errors[0].message || JSON.stringify(d.errors[0])).slice(0, 200); // Cloudflare
   const e = d && d.error;
   if (e && typeof e === 'object') return String(e.message || (e.metadata && e.metadata.raw) || JSON.stringify(e)).slice(0, 200);
   return String(e || 'HTTP ' + status).slice(0, 200);
@@ -122,7 +143,7 @@ async function callProvider(view, system, user) {
     if (!text.trim() && c && c.finishReason === 'MAX_TOKENS') throw new Error('Ran out of tokens while thinking');
     return stripThink(text);
   }
-  const url = p.id === 'groq' ? 'https://api.groq.com/openai/v1/chat/completions' : 'https://openrouter.ai/api/v1/chat/completions';
+  const url = p.url();
   const headers = { 'content-type': 'application/json', authorization: 'Bearer ' + key };
   if (p.id === 'openrouter') headers['X-Title'] = 'MAGI';
   const { r, d } = await postJson(url, headers, {
@@ -147,7 +168,7 @@ function failed(view, error, started) {
 
 async function round1(n, question) {
   const v = effective(n), started = Date.now();
-  if (!v.key) return failed(v, 'No API key set for ' + v.label, started);
+  if (!v.key) return failed(v, 'Not set up: add ' + hintOf(v.provider) + ' on the server', started);
   try {
     const text = await callProvider(v, n.persona + ' ' + FORMAT, question);
     if (!String(text).trim()) return failed(v, 'Empty answer from ' + v.label, started);
@@ -243,7 +264,7 @@ module.exports = function mount(app, { pool, auth, admin, wrap }) {
     const model = String(body.model || '').trim().slice(0, 120);
     const p = PROVIDERS[pid];
     if (!p) return res.status(400).json({ error: 'Unknown provider.' });
-    if (!keyOf(p)) return res.status(400).json({ error: 'No API key set on the server for ' + p.label + '.' });
+    if (!keyOf(p)) return res.status(400).json({ error: 'Not set up: add ' + hintOf(p) + ' on the server for ' + p.label + '.' });
 
     links.set(n.id, { provider: pid, model });
     if (pool) {
@@ -261,7 +282,7 @@ module.exports = function mount(app, { pool, auth, admin, wrap }) {
     const n = NODE_BY_ID[String((req.body || {}).node || '')];
     if (!n) return res.status(400).json({ error: 'Unknown node.' });
     const v = effective(n), started = Date.now();
-    if (!v.key) return res.json({ ok: false, error: 'No API key set for ' + v.label, model: v.model });
+    if (!v.key) return res.json({ ok: false, error: 'Not set up: add ' + hintOf(v.provider) + ' on the server', model: v.model });
     try {
       const text = await callProvider(v, 'Reply with the single word APPROVED and nothing else.', 'Test.');
       if (!String(text).trim()) return res.json({ ok: false, error: 'Empty answer', model: v.model, ms: Date.now() - started });
