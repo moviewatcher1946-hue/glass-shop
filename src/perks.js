@@ -69,6 +69,23 @@ module.exports = function mount(app, { pool, auth, wrap }) {
     res.json({ ok: true });
   }));
 
+  // Terms and Privacy: each account accepts the current version once. The date is kept as a record.
+  const POLICY_VERSION = '2026-10-17';
+  q(`CREATE TABLE IF NOT EXISTS policy_acceptance (
+       user_id INT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+       version TEXT NOT NULL,
+       accepted_at TIMESTAMPTZ NOT NULL DEFAULT now())`).catch((e) => console.error('[perks] policy table:', e.message));
+  app.get('/api/me/policy', auth, wrap(async (req, res) => {
+    const { rows: [r] } = await q('SELECT version FROM policy_acceptance WHERE user_id = $1', [req.user.id]);
+    res.set('Cache-Control', 'no-store');
+    res.json({ accepted: !!r && r.version === POLICY_VERSION, version: POLICY_VERSION });
+  }));
+  app.post('/api/me/policy', auth, wrap(async (req, res) => {
+    await q(`INSERT INTO policy_acceptance (user_id, version, accepted_at) VALUES ($1,$2,now())
+             ON CONFLICT (user_id) DO UPDATE SET version = EXCLUDED.version, accepted_at = now()`, [req.user.id, POLICY_VERSION]);
+    res.json({ ok: true, version: POLICY_VERSION });
+  }));
+
   async function notifyUser(uid, body) {
     if (!pushOn) return;
     const { rows } = await q('SELECT id, endpoint, p256dh, auth FROM push_subs WHERE user_id = $1', [uid]);
