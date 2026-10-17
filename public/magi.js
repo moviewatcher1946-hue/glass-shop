@@ -124,11 +124,6 @@
     '.mg-node .mg-st.small{font-size:clamp(1.1rem,2.6vw,1.6rem)}',
     '.mg-node .mg-en{font:800 .68rem/1.2 Arial,Helvetica,sans-serif;letter-spacing:.26em;text-align:center}',
     '.mg-node .mg-sub{display:none}',
-    '.mg-wave{display:none;gap:3px;height:14px;align-items:flex-end;justify-content:center;margin-top:2px}',
-    '.mg-hx.busy .mg-wave{display:flex}',
-    '.mg-wave i{width:4px;height:100%;background:#000;transform-origin:bottom;animation:mgWave .9s ease-in-out infinite}',
-    '.mg-wave i:nth-child(2){animation-delay:.1s}.mg-wave i:nth-child(3){animation-delay:.2s}.mg-wave i:nth-child(4){animation-delay:.3s}.mg-wave i:nth-child(5){animation-delay:.4s}.mg-wave i:nth-child(6){animation-delay:.5s}',
-    '@keyframes mgWave{0%,100%{transform:scaleY(.2)}50%{transform:scaleY(1)}}',
     '.mg-meter{height:4px;background:rgba(0,0,0,.25);margin-top:6px}',
     '.mg-meter b{display:block;height:100%;width:var(--w,0%);background:#000;transition:width .6s steps(8)}',
 
@@ -195,6 +190,25 @@
     '@keyframes mgFade{from{opacity:0;transform:translateY(4px)}}',
     '#magi-dash .mg-btn:hover{text-shadow:0 0 8px currentColor}',
     '@media (max-width:860px){.mg-top{grid-template-columns:1fr}.mg-res{margin-left:0;max-width:none}.mg-map{gap:10px 6px}.mg-mid:before{left:-10px;right:-10px}.mg-mid span{font-size:1rem}.mg-hx>.mg-in{min-height:120px;padding:10px 6%}.mg-nm{font-size:.72rem;letter-spacing:.02em}.mg-kt{font-size:.5rem;letter-spacing:.12em}.mg-node .mg-st{font-size:1.25rem}.mg-node .mg-en{font-size:.5rem;letter-spacing:.14em}.mg-ctls{grid-template-columns:1fr}.mg-form{grid-template-columns:1fr}.mg-run{min-height:48px}.mg-links{grid-template-columns:1fr}}',
+    // ===== CRT look: curved glass, scanlines, RGB phosphor mask, vignette, glow, colour fringing, flicker =====
+    '#magi-dash .mg-panel{border-radius:28px!important;box-shadow:0 0 34px #ff6a0050,inset 0 0 70px #000,inset 0 0 22px #ff6a001f}',
+    // scanlines + RGB stripe mask, drawn over the content
+    '.mg-panel:after{z-index:3;background:repeating-linear-gradient(0deg,rgba(0,0,0,.38) 0 1px,transparent 1px 3px),repeating-linear-gradient(90deg,rgba(255,0,0,.07) 0 1px,rgba(0,255,0,.06) 1px 2px,rgba(0,0,255,.07) 2px 3px)}',
+    // vignette (dark corners) + faint glass reflection, with a slow brightness flicker
+    '.mg-panel:before{content:"";position:absolute;inset:0;z-index:2;pointer-events:none;border-radius:28px;background:radial-gradient(ellipse at 50% 45%,transparent 55%,rgba(0,0,0,.55) 100%),linear-gradient(160deg,rgba(255,255,255,.05),transparent 28%);animation:mgCrt 3.4s linear infinite}',
+    '@keyframes mgCrt{0%,100%{opacity:1}45%{opacity:.92}47%{opacity:1}78%{opacity:.88}80%{opacity:1}}',
+    // a wider, brighter rolling bar
+    '.mg-sweep{height:90px;background:linear-gradient(to bottom,transparent,rgba(98,247,162,.13),transparent)}',
+    // phosphor glow and red/cyan fringing on the orange and green text
+    '.mg-kj,.mg-code,.mg-data,.mg-mid span{text-shadow:-1.5px 0 rgba(255,0,60,.55),1.5px 0 rgba(0,220,255,.45),0 0 12px #ff6a1acc}',
+    '.mg-res,.mg-log,.mg-out.ok{text-shadow:-1px 0 rgba(255,0,60,.4),1px 0 rgba(0,220,255,.35),0 0 8px currentColor}',
+    '.mg-res{box-shadow:0 0 18px #62f7a244,inset 0 0 14px #62f7a222}',
+    '.mg-res.dn{box-shadow:0 0 18px #e5231b66,inset 0 0 14px #e5231b33}',
+    // glowing green screens with their own finer scanlines
+    '.mg-node{filter:drop-shadow(0 0 8px rgba(98,247,162,.4))}',
+    '.mg-hx.dn{filter:none}',
+    '.mg-hx>.mg-in:after{content:"";position:absolute;inset:0;pointer-events:none;background:repeating-linear-gradient(0deg,rgba(0,0,0,.3) 0 2px,transparent 2px 4px),radial-gradient(ellipse at 50% 50%,transparent 50%,rgba(0,0,0,.35) 100%)}',
+    '.mg-hx>.mg-in{text-shadow:1px 0 rgba(255,0,60,.35),-1px 0 rgba(0,160,255,.3)}',
     '@media (prefers-reduced-motion:reduce){#magi-dash *{animation:none!important}}',
   ].join('\n').split('__HEX__').join(HEX);
   var style = document.createElement('style');
@@ -627,12 +641,10 @@
       var st = el('div', 'mg-st');
       var en = el('div', 'mg-en');
       var sub = el('div', 'mg-sub');
-      var wave = el('div', 'mg-wave');
-      for (var k = 0; k < 6; k++) wave.appendChild(el('i'));
       var meter = el('div', 'mg-meter');
       var mb = el('b');
       meter.appendChild(mb);
-      [nm, kt, st, en, sub, wave, meter].forEach(function (x) { inn.appendChild(x); });
+      [nm, kt, st, en, sub, meter].forEach(function (x) { inn.appendChild(x); });
       hx.appendChild(inn);
       wrap.appendChild(hx);
       nodesWrap.appendChild(wrap);
