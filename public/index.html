@@ -35,6 +35,7 @@
   </script>
   <link rel="stylesheet" href="style.min.css">
   <link rel="stylesheet" href="boost.min.css">
+  <link rel="stylesheet" href="perf.css">
   <link rel="preload" href="app.min.js" as="script">
   <link rel="preload" href="tour.js" as="script">
   <link rel="icon" href="/favicon.ico?v=3" sizes="any">
@@ -151,7 +152,7 @@
         load('app.min.js', function () {
           var u = null; try { u = JSON.parse(localStorage.getItem('user') || 'null'); } catch (e) {}
           loadAdmin(u);
-          idle(function () { ['tour.js', 'boost.js', 'site-guard.js', 'messages.js', 'spotlight.js'].forEach(function (f) { load(f); }); });
+          idle(function () { ['perf.js', 'tour.js', 'boost.js', 'site-guard.js', 'messages.js', 'spotlight.js'].forEach(function (f) { load(f); }); });
         });
       }
       if (document.getElementById('gw')) setTimeout(start, 300); else start();
