@@ -172,6 +172,28 @@
     '#magi-dash.max .mg-panel{max-width:none!important;margin:0!important;min-height:0!important;border:0!important;box-shadow:none!important}',
     '#magi-dash:fullscreen,#magi-dash:-webkit-full-screen{background:#000;overflow:hidden;display:flex;align-items:center;justify-content:center}',
     '#magi-dash:fullscreen .mg-panel,#magi-dash:-webkit-full-screen .mg-panel{max-width:none;margin:0}',
+    // ===== extra UI effects =====
+    '.mg-panel:after{animation:mgFlick 5s linear infinite}',
+    '@keyframes mgFlick{0%,100%{opacity:1}92%{opacity:1}93%{opacity:.55}94%{opacity:1}97%{opacity:.8}98%{opacity:1}}',
+    '#magi-dash.boot .mg-panel{animation:mgBoot 1.2s steps(12) 1}',
+    '@keyframes mgBoot{0%{opacity:0;filter:brightness(3)}20%{opacity:.6}35%{opacity:.1}50%{opacity:1}65%{opacity:.4}100%{opacity:1;filter:none}}',
+    '#magi-dash.boot .mg-node{animation:mgPower .6s ease-out both}',
+    '#magi-dash.boot .mg-node:nth-child(2){animation-delay:.2s}#magi-dash.boot .mg-node:nth-child(3){animation-delay:.35s}#magi-dash.boot .mg-node:nth-child(4){animation-delay:.5s}',
+    '@keyframes mgPower{0%{opacity:0;transform:scaleY(.05)}40%{opacity:1;transform:scaleY(1.04)}100%{transform:none}}',
+    '#magi-dash.busy .mg-node{animation:mgGlow .9s ease-in-out infinite}',
+    '@keyframes mgGlow{50%{filter:drop-shadow(0 0 12px #62f7a2cc)}}',
+    '.mg-hx.ap>.mg-in,.mg-hx.dn>.mg-in{animation:mgReveal .5s steps(8) 1}',
+    '@keyframes mgReveal{0%{transform:translateX(-6px);filter:hue-rotate(40deg)}30%{transform:translateX(4px)}60%{transform:translateX(-2px);filter:none}100%{transform:none}}',
+    '.mg-res.glitch .mg-st{animation:mgGlitch .5s steps(2) 1}',
+    '@keyframes mgGlitch{0%{text-shadow:3px 0 #ff3d00,-3px 0 #62f7a2;transform:translateX(3px)}50%{text-shadow:-4px 0 #ff3d00,4px 0 #62f7a2;transform:translateX(-3px)}100%{text-shadow:none;transform:none}}',
+    '.mg-pips i{animation:mgPop .4s cubic-bezier(.2,1.6,.4,1) both}',
+    '.mg-pips i:nth-child(2){animation-delay:.1s}.mg-pips i:nth-child(3){animation-delay:.2s}',
+    '@keyframes mgPop{from{transform:rotate(45deg) scale(0)}}',
+    '.mg-mid span{animation:mgPulse 2.4s ease-in-out infinite}',
+    '@keyframes mgPulse{50%{text-shadow:0 0 22px #ff6a1aee}}',
+    '.mg-log{animation:mgFade .35s ease-out both}',
+    '@keyframes mgFade{from{opacity:0;transform:translateY(4px)}}',
+    '#magi-dash .mg-btn:hover{text-shadow:0 0 8px currentColor}',
     '@media (max-width:860px){.mg-top{grid-template-columns:1fr}.mg-res{margin-left:0;max-width:none}.mg-map{gap:10px 6px}.mg-mid:before{left:-10px;right:-10px}.mg-mid span{font-size:1rem}.mg-hx>.mg-in{min-height:120px;padding:10px 6%}.mg-nm{font-size:.72rem;letter-spacing:.02em}.mg-kt{font-size:.5rem;letter-spacing:.12em}.mg-node .mg-st{font-size:1.25rem}.mg-node .mg-en{font-size:.5rem;letter-spacing:.14em}.mg-ctls{grid-template-columns:1fr}.mg-form{grid-template-columns:1fr}.mg-run{min-height:48px}.mg-links{grid-template-columns:1fr}}',
     '@media (prefers-reduced-motion:reduce){#magi-dash *{animation:none!important}}',
   ].join('\n').split('__HEX__').join(HEX);
@@ -324,30 +346,33 @@
     Object.keys(cards).forEach(function (id) { cards[id].hx.style.removeProperty('--flick'); });
   }
 
-  // verdict: a real struck bell (inharmonic partials, beating pairs, strike noise) into the echo and hall
+  // verdict: a clean struck bell. Partials use a real bell's ratios, each with its own decay, plus a soft strike and no hiss.
   function bell(t, base, vol) {
-    burst(t, 0.03, 'bandpass', base * 3.2, vol * 0.5, 0.5);
-    // ratio, level, decay seconds
-    [[0.5, 0.5, 3.4], [1, 1, 3.0], [1.183, 0.55, 2.4], [1.506, 0.5, 2.0], [2, 0.7, 1.8], [2.514, 0.3, 1.3], [2.662, 0.35, 1.1], [3.011, 0.2, 0.9], [4.166, 0.15, 0.6]].forEach(function (p) {
-      [0, 1.3].forEach(function (beat, k) {       // a twin partial slightly off-pitch makes the bell shimmer
-        var o = ctx.createOscillator(), g = ctx.createGain(), s = ctx.createGain();
-        o.type = 'sine'; o.frequency.value = base * p[0] + beat * p[0];
-        var lv = p[1] * vol * (k ? 0.55 : 1);
-        g.gain.setValueAtTime(0, t);
-        g.gain.linearRampToValueAtTime(lv, t + 0.003);
-        g.gain.exponentialRampToValueAtTime(0.0001, t + p[2]);
-        s.gain.value = 0.7;
-        o.connect(g); g.connect(bus); g.connect(s); s.connect(fx);
-        o.start(t); o.stop(t + p[2] + 0.05);
-      });
+    // soft strike: a short low knock
+    var s = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain(), ss = ctx.createGain();
+    s.buffer = noiseBuf; f.type = 'lowpass'; f.frequency.value = base * 4; f.Q.value = 0.5;
+    g.gain.setValueAtTime(vol * 0.25, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.02);
+    ss.gain.value = 0.3;
+    s.connect(f); f.connect(g); g.connect(bus); g.connect(ss); ss.connect(fx);
+    s.start(t, Math.random() * 0.5); s.stop(t + 0.03);
+    // partials: [ratio, level, decay seconds]
+    [[0.5, 0.35, 2.2], [1, 1, 2.6], [1.2, 0.5, 1.8], [1.5, 0.45, 1.6], [2, 0.55, 1.3], [2.67, 0.25, 0.9], [3, 0.2, 0.7]].forEach(function (p) {
+      var o = ctx.createOscillator(), og = ctx.createGain(), sg = ctx.createGain();
+      o.type = 'sine'; o.frequency.value = base * p[0];
+      og.gain.setValueAtTime(0, t);
+      og.gain.linearRampToValueAtTime(p[1] * vol, t + 0.004);
+      og.gain.setTargetAtTime(0, t + 0.004, p[2] / 4);   // smooth exponential decay
+      sg.gain.value = 0.35;
+      o.connect(og); og.connect(bus); og.connect(sg); sg.connect(fx);
+      o.start(t); o.stop(t + p[2] * 1.5 + 0.1);
     });
   }
   function ding(verdict) {
     if (!soundOn() || !audio()) return;
     var t = ctx.currentTime;
-    if (verdict === 'APPROVED') bell(t, 740, 0.5);
-    else if (verdict === 'DENIED') { bell(t, 196, 0.55); bell(t + 0.42, 185, 0.45); }
-    else bell(t, 494, 0.5);
+    if (verdict === 'APPROVED') bell(t, 880, 0.35);                                   // bright, single strike
+    else if (verdict === 'DENIED') { bell(t, 220, 0.4); bell(t + 0.7, 220, 0.3); }    // low toll, two strikes at one pitch
+    else bell(t, 494, 0.3);                                                           // neutral
   }
 
   // ===== NERV mode (remembered on this device; on unless it was switched off) =====
@@ -448,6 +473,7 @@
     var admin = isAdminNow(), on = admin && nervOn();
     document.documentElement.classList.toggle('nerv', on);
     root.classList.toggle('on', on);
+    if (on && !root.classList.contains('boot')) { root.classList.add('boot'); setTimeout(function () { root.classList.remove('boot'); }, 1400); }
     hdrTgl.style.display = admin ? '' : 'none';
     if (!admin || !on) { collapse(); stopHum(); stopFlicker(); }
     syncToggles();
@@ -476,11 +502,18 @@
   // ===== EXPAND: a full-page layer that scales the console to fill the screen, plus real fullscreen where allowed =====
   function fit() {
     if (!root.classList.contains('max') || window.innerWidth < 860) { panel.style.zoom = ''; panel.style.width = ''; panel.style.margin = ''; return; }
-    var W = 1100, pad = 16;                      // design width; measure the real height at that width
-    panel.style.width = W + 'px';
-    panel.style.zoom = '1';
-    var h = panel.offsetHeight;
-    var z = Math.min((window.innerWidth - pad * 2) / W, (window.innerHeight - pad * 2) / h);
+    var pad = 16, vw = window.innerWidth - pad * 2, vh = window.innerHeight - pad * 2;
+    // scale to the screen height first, then stretch the layout sideways to use the full width
+    var z = 1, w = 1100;
+    for (var i = 0; i < 3; i++) {                // a few passes: the height depends on the width
+      panel.style.zoom = '1';
+      panel.style.width = w + 'px';
+      var h = panel.offsetHeight;
+      z = vh / h;
+      if (vw / z < 1100) { z = vw / 1100; w = 1100; }   // narrow screen: never shrink the design below 1100
+      else w = vw / z;
+    }
+    panel.style.width = w + 'px';
     panel.style.zoom = z.toFixed(3);
   }
   window.addEventListener('resize', fit);
@@ -720,6 +753,8 @@
     resBig.className = 'mg-st' + ((KANJI[d.decision] || '').length > 2 ? ' small' : '');
     resEn.textContent = d.decision === 'APPROVED' ? 'ALL GREEN' : d.decision === 'DENIED' ? 'ALL RED' : d.decision;
     resSub.textContent = d.approved + ' APPROVED / ' + d.denied + ' DENIED \u00b7 ' + d.responded + ' RESPONDED';
+    res.classList.add('glitch');
+    setTimeout(function () { res.classList.remove('glitch'); }, 500);
     if (d.decision === 'DENIED') {
       root.classList.add('alert');
       setTimeout(function () { root.classList.remove('alert'); }, 2400);
