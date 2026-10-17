@@ -325,6 +325,19 @@
         (s.ordering === 'on' ? ' \u00B7 Ordering in chat is on' : '');
     }).catch(function () { status.textContent = 'Status unavailable right now.'; });
 
+    // Anyone signed in: link a Google account to this shop account (only offered when Google sign-in is set up).
+    if (signedIn()) {
+      var lbtn = el('button', 'sp-card', 'Link my Google account'); lbtn.type = 'button'; lbtn.style.alignSelf = 'flex-start'; lbtn.style.display = 'none';
+      lbtn.onclick = function () {
+        lbtn.disabled = true; lbtn.textContent = 'Opening Google\u2026';
+        api('/api/auth/google/link').then(function (r) { location.href = r.url; }).catch(function (e) {
+          lbtn.disabled = false; lbtn.textContent = 'Link my Google account'; lbtn.setAttribute('title', e.message || 'Could not link.');
+        });
+      };
+      dash.appendChild(lbtn);
+      api('/api/auth/providers').then(function (p) { lbtn.style.display = p.google ? '' : 'none'; }).catch(function () {});
+    }
+
     // Customers: loyalty points and order alerts.
     if (signedIn() && !isAdmin()) {
       var pcard = el('div', 'sp-card'); pcard.style.cursor = 'default';
