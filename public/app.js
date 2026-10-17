@@ -1262,7 +1262,7 @@ function authDialog() {
     .au-hint{margin:0 0 8px;font-size:.95em;opacity:.85}.au-note{display:block;margin:6px 0 12px;opacity:.7}
     .au-pw{position:relative}.au-pw input{width:100%;box-sizing:border-box;padding-right:64px}
     .au-eye{position:absolute;right:6px;top:50%;transform:translateY(-50%);margin:0;padding:6px 10px;border:0;border-radius:8px;background:rgba(128,128,128,.2);cursor:pointer;font-size:.85em;color:inherit}
-    .au-go{width:100%;margin-top:4px;padding:12px}.au-x{width:100%;margin-top:6px}.au-legal{font-size:.8rem;color:var(--muted);margin:8px 0 0;line-height:1.5}.au-legal a{color:var(--a1)}
+    .au-go{width:100%;margin-top:4px;padding:12px}.au-x{width:100%;margin-top:6px}.au-legal{font-size:.8rem;color:var(--muted);margin:8px 0 0;line-height:1.5}.au-google{width:100%;margin-top:10px;background:#fff;color:#1d1d1f;border-color:rgba(0,0,0,.15)}.au-legal a{color:var(--a1)}
   </style>
   <h2>Welcome to the shop</h2>
   <div class="au-tabs" role="tablist"><button type="button" class="on" data-t="login" role="tab">Log in</button><button type="button" data-t="signup" role="tab">New here? Sign up</button></div>
@@ -1273,6 +1273,7 @@ function authDialog() {
     <small class="au-note" id="au-note"></small>
     <p class="au-legal">By creating an account or logging in you agree to our <a href="/terms.html" target="_blank" rel="noopener">Terms of Use</a> and <a href="/privacy.html" target="_blank" rel="noopener">Privacy Policy</a>.</p>
     <button class="primary au-go" data-mode="login" id="au-go">Log in</button>
+    <button type="button" class="au-google" id="au-google" hidden>Continue with Google</button>
     <button type="button" class="au-x" data-act="close">Cancel</button></form>`;
   const dlg = $('#dlg'), tabs = dlg.querySelectorAll('.au-tabs button'), go = dlg.querySelector('#au-go'), pass = dlg.querySelector('#au-pass'), user = dlg.querySelector('#au-user');
   const setMode = (m) => {
@@ -1287,6 +1288,9 @@ function authDialog() {
   };
   tabs.forEach((t) => { t.onclick = () => { setMode(t.dataset.t); user.focus(); }; });
   dlg.querySelector('.au-eye').onclick = (e) => { const show = pass.type === 'password'; pass.type = show ? 'text' : 'password'; e.currentTarget.textContent = show ? 'Hide' : 'Show'; };
+  const gbtn = dlg.querySelector('#au-google');
+  gbtn.onclick = () => { location.href = '/auth/google'; };
+  api('/api/auth/providers').then((p) => { gbtn.hidden = !p.google; }).catch(() => {});
   setMode('login');
   try { const last = localStorage.getItem('shop_last_user'); if (last) user.value = last; } catch (e) { /* storage blocked */ }
   if (navigator.credentials && window.PasswordCredential) navigator.credentials.get({ password: true, mediation: 'optional' }).then((c) => { if (c && c.type === 'password') { user.value = c.id; pass.value = c.password; } }).catch(() => {});
@@ -2694,3 +2698,22 @@ setInterval(tickCutoff, 20000);
 function stockCtl(pr, mine) {
   return mine && pr.stock != null ? `<span class="stk" data-id="${pr.id}"><button type="button" data-act="stock" data-id="${pr.id}" data-d="-1" aria-label="One less in stock">-</button><b>${pr.stock}</b><button type="button" data-act="stock" data-id="${pr.id}" data-d="1" aria-label="One more in stock">+</button></span>` : '';
 }
+
+// Back from Google sign-in: the server puts the session in the address after #. Read it, then remove it from the address.
+(function googleReturn() {
+  const q = new URLSearchParams(location.search);
+  if (q.get('google_error')) {
+    history.replaceState(null, '', location.pathname);
+    setTimeout(() => toast('Google sign-in: ' + q.get('google_error') + '.'), 400);
+    return;
+  }
+  const m = location.hash.match(/^#google=([^&]+)&u=(.+)$/);
+  if (!m) return;
+  history.replaceState(null, '', location.pathname);
+  try {
+    const user = JSON.parse(atob(decodeURIComponent(m[2])));
+    setSession(decodeURIComponent(m[1]), user);
+    render();
+    toast('Signed in with Google.');
+  } catch (e) { toast('Google sign-in did not work. Please try again.'); }
+})();
