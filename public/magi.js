@@ -37,7 +37,7 @@
   };
   // where each screen sits on the stage, in percent (left, top, width, height)
   var POS = {
-    balthasar: { l: 34.75, t: 7, w: 30.6, h: 48.6 },
+    balthasar: { l: 33.5, t: 5, w: 33, h: 50.5 },
     caspar: { l: 4.1, t: 45.8, w: 38.4, h: 38.8 },
     melchior: { l: 57.75, t: 45.8, w: 38.5, h: 38.8 }
   };
@@ -65,7 +65,7 @@
     '#magi-dash{--mg-or:#ff8a1f;--mg-hi:#ffb347;--mg-no:#e5231b;--mg-dim:#8a4300;--mg-gn:#5ef0a0;--mg-gd:#1f6b46;margin:0 0 18px;color:var(--mg-or);font:700 14px/1.35 "Hiragino Mincho ProN","Yu Mincho","Noto Serif JP","MS PMincho",Georgia,"Times New Roman",serif;text-transform:uppercase}',
     '#magi-dash *{box-sizing:border-box;border-radius:0!important}',
     '#magi-dash button,#magi-dash select,#magi-dash input,#magi-dash textarea{font-family:inherit}',
-    '#magi-dash .mg-btn{min-height:0;padding:8px 14px;color:var(--mg-or);background:#000;border:2px solid var(--mg-or);font-weight:800;font-size:.72rem;letter-spacing:.18em;cursor:pointer;box-shadow:none;text-transform:uppercase}',
+    '#magi-dash .mg-btn{min-height:0;padding:8px 14px;color:var(--mg-or);background:#000;border:2px solid var(--mg-or);font-weight:800;font-size:.9rem;letter-spacing:.18em;cursor:pointer;box-shadow:none;text-transform:uppercase}',
     '#magi-dash .mg-btn:hover{background:var(--mg-or);color:#000}',
     '#magi-dash .mg-btn.solid{background:var(--mg-or);color:#000}',
     '#magi-dash .mg-btn:disabled{opacity:.45;cursor:default}',
@@ -88,16 +88,16 @@
 
     // header: 質問 on the left, 解決 on the right, each with green rules above and below
     '.mg-top{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:22px;margin:0 0 14px;align-items:start}',
-    '.mg-kj{font-size:clamp(1.6rem,4.4vw,3.2rem);line-height:1.1;font-weight:900;letter-spacing:.3em;color:var(--mg-or);padding:14px 0;text-align:center;background:linear-gradient(var(--mg-gn),var(--mg-gn)) 0 0/100% 3px no-repeat,linear-gradient(var(--mg-gn),var(--mg-gn)) 0 7px/100% 2px no-repeat,linear-gradient(var(--mg-gn),var(--mg-gn)) 0 calc(100% - 7px)/100% 2px no-repeat,linear-gradient(var(--mg-gn),var(--mg-gn)) 0 100%/100% 3px no-repeat;text-shadow:0 0 10px #ff8a1f66}',
-    '.mg-code{margin-top:10px;font:400 clamp(1.3rem,3vw,2.1rem)/1 Arial,Helvetica,sans-serif;letter-spacing:.06em;color:var(--mg-or)}',
-    '.mg-data{margin-top:8px;font:500 .66rem/1.5 Arial,Helvetica,sans-serif;letter-spacing:.14em;color:var(--mg-or)}',
+    '.mg-kj{font-size:3.4rem;line-height:1.1;font-weight:900;letter-spacing:.3em;color:var(--mg-or);padding:14px 0;text-align:center;background:linear-gradient(var(--mg-gn),var(--mg-gn)) 0 0/100% 3px no-repeat,linear-gradient(var(--mg-gn),var(--mg-gn)) 0 7px/100% 2px no-repeat,linear-gradient(var(--mg-gn),var(--mg-gn)) 0 calc(100% - 7px)/100% 2px no-repeat,linear-gradient(var(--mg-gn),var(--mg-gn)) 0 100%/100% 3px no-repeat;text-shadow:0 0 10px #ff8a1f66}',
+    '.mg-code{margin-top:10px;font:400 2.2rem/1 Arial,Helvetica,sans-serif;letter-spacing:.06em;color:var(--mg-or)}',
+    '.mg-data{margin-top:8px;font:500 .8rem/1.5 Arial,Helvetica,sans-serif;letter-spacing:.14em;color:var(--mg-or)}',
 
     // the 情報 box (also shows the verdict): green frame, cyan-style corner tag
     '.mg-res{position:relative;margin:14px 0 0 auto;max-width:200px;padding:26px 14px 10px;background:#000;border:2px solid var(--mg-gn);color:var(--mg-gn);text-align:center}',
     '.mg-tag{position:absolute;top:6px;right:6px;font-size:1.1rem;font-weight:900;letter-spacing:.1em;color:var(--mg-gn)}',
     '.mg-res .mg-en{font:700 .6rem/1 Arial,Helvetica,sans-serif;letter-spacing:.14em;text-align:left}',
-    '.mg-res .mg-st{font-size:clamp(1.6rem,4.4vw,2.4rem);line-height:1.1;font-weight:900;letter-spacing:.08em}',
-    '.mg-res .mg-st.small{font-size:clamp(1.1rem,3vw,1.6rem)}',
+    '.mg-res .mg-st{font-size:2.6rem;line-height:1.1;font-weight:900;letter-spacing:.08em}',
+    '.mg-res .mg-st.small{font-size:1.8rem}',
     '.mg-res .mg-sub{font:600 .56rem/1.3 Arial,Helvetica,sans-serif;letter-spacing:.12em;opacity:.8}',
     '.mg-res.dn{color:var(--mg-no);border-color:var(--mg-no)}',
     '.mg-res.dn .mg-tag{color:var(--mg-no)}',
@@ -118,27 +118,27 @@
     '.mg-hx.dn>.mg-in{background:var(--mg-no);color:#000}',
     '.mg-hx.off>.mg-in{background:#0c1a12;color:var(--mg-gd)}',
     '.mg-hx.busy>.mg-in{background:var(--flick,#2dbd77)}',
-    '.mg-node .mg-nm{font:900 4.2cqw/1.05 Arial,Helvetica,sans-serif;letter-spacing:.02em;text-align:center}',
-    '.mg-node .mg-st{font:900 3.4cqw/1 Arial,Helvetica,sans-serif;letter-spacing:.06em;text-align:center;margin-top:1.4cqw}',
-    '.mg-node .mg-st.small{font-size:2.9cqw}',
-    '.mg-node .mg-en{font:800 1.5cqw/1.2 Arial,Helvetica,sans-serif;letter-spacing:.16em;text-align:center}',
+    '.mg-node .mg-nm{font:900 3.1cqw/1.05 Arial,Helvetica,sans-serif;letter-spacing:.02em;text-align:center;white-space:nowrap}',
+    '.mg-node .mg-st{font:900 2.8cqw/1 Arial,Helvetica,sans-serif;letter-spacing:.06em;text-align:center;margin-top:1.4cqw}',
+    '.mg-node .mg-st.small{font-size:2.3cqw}',
+    '.mg-node .mg-en{font:800 2cqw/1.2 Arial,Helvetica,sans-serif;letter-spacing:.16em;text-align:center}',
     '.mg-node .mg-kt,.mg-node .mg-sub,.mg-node .mg-meter{display:none}',
 
     // per-node answers and provider switches
     '.mg-ctls{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin:20px 0 0}',
     '.mg-col{display:flex;flex-direction:column;gap:8px;min-width:0}',
     '.mg-col>.mg-kt{color:var(--mg-hi);opacity:1;letter-spacing:.22em;font-size:.62rem}',
-    '.mg-log{max-height:150px;overflow:auto;padding:8px 10px;border-left:3px solid var(--mg-gn);background:#000;color:var(--mg-gn);font:500 12px/1.45 ui-monospace,Menlo,Consolas,monospace;text-transform:none;white-space:pre-wrap;word-break:break-word}',
+    '.mg-log{max-height:150px;overflow:auto;padding:8px 10px;border-left:3px solid var(--mg-gn);background:#000;color:var(--mg-gn);font:500 14px/1.45 ui-monospace,Menlo,Consolas,monospace;text-transform:none;white-space:pre-wrap;word-break:break-word}',
     '.mg-log:empty{display:none}',
     '.mg-log.err{color:#ff6a4d;border-color:var(--mg-no)}',
     '.mg-ctl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px 8px;align-items:center;padding:8px;border:1px solid var(--mg-dim);background:#050200}',
-    '.mg-ctl label{font-size:.58rem;letter-spacing:.22em;color:var(--mg-hi)}',
+    '.mg-ctl label{font-size:.7rem;letter-spacing:.22em;color:var(--mg-hi)}',
     '.mg-ctl select,.mg-ctl input{width:100%;min-height:0;margin:0;padding:6px 8px;color:var(--mg-hi);background:#000;border:1px solid var(--mg-or);font:500 12px/1.3 ui-monospace,Menlo,Consolas,monospace;text-transform:none;box-shadow:none}',
     '.mg-ctl select option{background:#000;color:var(--mg-hi)}',
     '.mg-ctl select:focus,.mg-ctl input:focus{outline:none;box-shadow:0 0 0 2px #ff8a1f66}',
     '.mg-acts{grid-column:1/-1;display:flex;gap:6px;flex-wrap:wrap}',
-    '#magi-dash .mg-acts .mg-btn{padding:6px 10px;font-size:.64rem}',
-    '.mg-out{grid-column:1/-1;font:500 11px/1.4 ui-monospace,Menlo,Consolas,monospace;text-transform:none;color:var(--mg-hi);min-height:1.4em;word-break:break-word}',
+    '#magi-dash .mg-acts .mg-btn{padding:6px 10px;font-size:.8rem}',
+    '.mg-out{grid-column:1/-1;font:500 13px/1.4 ui-monospace,Menlo,Consolas,monospace;text-transform:none;color:var(--mg-hi);min-height:1.4em;word-break:break-word}',
     '.mg-out.err{color:#ff6a4d}.mg-out.ok{color:var(--mg-gn)}',
     '.mg-lcol:has(.mg-log:empty)>.mg-kt{display:none}',
     '.mg-ctls:not(:has(.mg-log:not(:empty))){display:none}',
@@ -150,13 +150,13 @@
 
     // bottom row, like the reference: question: [ input ] EXECUTE
     '.mg-form{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:center;margin:18px 0 0;padding-top:12px;border-top:1px solid var(--mg-dim)}',
-    '.mg-form .mg-ql{font-size:.7rem;letter-spacing:.14em;color:var(--mg-or);white-space:nowrap}',
+    '.mg-form .mg-ql{font-size:.9rem;letter-spacing:.14em;color:var(--mg-or);white-space:nowrap}',
     '.mg-form textarea{width:100%;margin:0;min-height:38px;padding:8px 10px;color:var(--mg-hi);background:#000;border:1px solid var(--mg-or);font:500 14px/1.3 ui-monospace,Menlo,Consolas,monospace;text-transform:none;resize:vertical;box-shadow:none}',
     '.mg-form textarea:focus{outline:none;box-shadow:0 0 0 2px #ff8a1f66}',
     '.mg-run{min-height:38px;padding:0 22px;color:#000;background:var(--mg-or);border:0;font:900 .9rem/1 inherit;letter-spacing:.2em;cursor:pointer}',
     '.mg-run:disabled{opacity:.5}',
     '.mg-chips{grid-column:1/-1;display:flex;gap:8px;flex-wrap:wrap}',
-    '#magi-dash .mg-chips .mg-btn{padding:5px 10px;font-size:.6rem;border-width:1px;text-transform:none;letter-spacing:.06em;font-weight:600}',
+    '#magi-dash .mg-chips .mg-btn{padding:5px 10px;font-size:.75rem;border-width:1px;text-transform:none;letter-spacing:.06em;font-weight:600}',
 
     // EXPANDED: a fixed layer covering the whole viewport
     '#magi-dash.max{position:fixed!important;top:0!important;left:0!important;right:0!important;bottom:0!important;width:100vw!important;height:100vh!important;max-width:none!important;margin:0!important;padding:0!important;overflow:hidden!important;z-index:2147483000!important;transform:none!important;background:#000!important;border:0!important;display:flex!important;align-items:center!important;justify-content:center!important}',
@@ -475,21 +475,14 @@
     syncToggles();
   });
 
-  // ===== EXPAND =====
+  // ===== EXPAND: the console is a fixed 1200px design, scaled to fit the screen =====
   function fit() {
-    if (!root.classList.contains('max') || window.innerWidth < 860) { panel.style.zoom = ''; panel.style.width = ''; panel.style.margin = ''; return; }
-    var pad = 16, vw = window.innerWidth - pad * 2, vh = window.innerHeight - pad * 2;
-    var z = 1, w = 1100;
-    for (var i = 0; i < 3; i++) {
-      panel.style.zoom = '1';
-      panel.style.width = w + 'px';
-      var h = panel.offsetHeight;
-      z = vh / h;
-      if (vw / z < 1100) { z = vw / 1100; w = 1100; }
-      else w = vw / z;
-    }
-    panel.style.width = w + 'px';
-    panel.style.zoom = z.toFixed(3);
+    if (!root.classList.contains('max') || window.innerWidth < 860) { panel.style.zoom = ''; panel.style.width = ''; return; }
+    panel.style.zoom = '1';
+    panel.style.width = '1200px';
+    var h = panel.offsetHeight;
+    var s = Math.min((window.innerWidth - 32) / 1200, (window.innerHeight - 32) / h);
+    panel.style.zoom = s.toFixed(3);
   }
   window.addEventListener('resize', fit);
 
