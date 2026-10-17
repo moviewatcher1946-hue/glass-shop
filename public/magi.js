@@ -285,7 +285,6 @@
     chips.appendChild(c);
   });
   form.appendChild(chips);
-  form.appendChild(el('div', 'mg-hint', 'CTRL+ENTER TO EXECUTE \u00b7 ESC TO COLLAPSE'));
   panel.appendChild(form);
 
   // ===== header switch =====
