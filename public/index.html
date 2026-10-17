@@ -142,7 +142,7 @@
     (function () {
       // app.js loads first. Admin tools load only for admins (also right after an admin signs in). Everything else waits until the page is idle.
       var adminLoaded = false;
-      function loadAdmin(u) { if (adminLoaded || !u || u.role !== 'admin') return; adminLoaded = true; load('admin-plus.js'); }
+      function loadAdmin(u) { if (adminLoaded || !u || u.role !== 'admin') return; adminLoaded = true; load('admin-plus.js'); load('magi.js'); }
       window.__onSession = loadAdmin;
       function idle(f) { if ('requestIdleCallback' in window) requestIdleCallback(f, { timeout: 2000 }); else setTimeout(f, 1200); }
       // Scripts download in parallel but run in the order they were added (async = false), so nothing waits on the one before it.
