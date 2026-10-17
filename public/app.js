@@ -873,6 +873,35 @@ async function refreshBackup() {
 // Cash page: cash still to collect per seller, what each collected, and who owes whom.
 let cashData = null;
 async function refreshCash() { cashData = await api('/api/admin/cash'); drawCash(); }
+// Walk-in sales: record a face-to-face sale and see today's walk-in total.
+async function refreshWalkin() {
+  const box = $('#walkbox'); if (!box) return;
+  const [sum, prods] = await Promise.all([api('/api/admin/walkin/summary'), api('/api/products')]);
+  const rowStyle = 'display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--edge2)';
+  box.innerHTML = `
+    <p><b>Today:</b> ${sum.today.orders} sale(s), ₱${Number(sum.today.total).toFixed(2)} &nbsp;·&nbsp; <b>All time:</b> ${sum.all_time.orders} sale(s), ₱${Number(sum.all_time.total).toFixed(2)}</p>
+    <div>${prods.map((p) => `<label style="${rowStyle}"><span style="flex:1">${esc(p.title)}</span><small class="muted">${p.is_sold_out ? 'sold out' : (p.stock != null ? p.stock + ' left' : '')}</small><input type="number" min="0" value="0" style="width:80px" data-walk="${p.id}" data-price="${Number(p.price)}"${p.stock != null ? ` max="${p.stock}"` : ''}${p.is_sold_out ? ' disabled' : ''} aria-label="Quantity of ${esc(p.title)}"></label>`).join('')}</div>
+    <p style="display:flex;justify-content:space-between;margin-top:12px"><span>Total</span><b id="walk-total">₱0.00</b></p>
+    <label>Paid by <select id="walk-pay"><option value="cash">Cash</option><option value="gcash">GCash</option></select></label>
+    <p><button class="primary" type="button" id="walk-save">Save sale</button></p>
+    <p id="walk-msg" class="muted"></p>`;
+  const recalc = () => {
+    let t = 0;
+    box.querySelectorAll('[data-walk]').forEach((i) => { t += (parseInt(i.value, 10) || 0) * Number(i.dataset.price); });
+    $('#walk-total').textContent = '₱' + t.toFixed(2);
+  };
+  box.querySelectorAll('[data-walk]').forEach((i) => { i.oninput = recalc; });
+  $('#walk-save').onclick = async () => {
+    const items = [...box.querySelectorAll('[data-walk]')].map((i) => ({ product_id: Number(i.dataset.walk), quantity: parseInt(i.value, 10) || 0 })).filter((i) => i.quantity > 0);
+    if (!items.length) { $('#walk-msg').textContent = 'Choose at least one product and a quantity.'; return; }
+    $('#walk-save').disabled = true;
+    try {
+      const r = await api('/api/admin/walkin', { method: 'POST', json: { items, paid_by: $('#walk-pay').value } });
+      toast('Walk-in sale saved: ₱' + Number(r.total).toFixed(2));
+      refreshWalkin().catch(() => {});
+    } catch (e) { $('#walk-msg').textContent = e.message || 'Could not save the sale.'; $('#walk-save').disabled = false; }
+  };
+}
 const tname = (id) => (team.find((x) => x.id === id) || {}).username || '?';
 function drawCash() {
   const el = $('#cashbox'); if (!el || !cashData) return;
@@ -903,7 +932,7 @@ function renderAdmin() {
     `<button id="tab-${id}" class="${adminTab === id ? 'primary' : ''}" data-act="admintab" data-tab="${id}">${label}${extra}</button>`;
   const GROUPS = [
     ['dashboard', 'Dashboard', [['dashboard', 'Overview'], ['report', 'Report']]],
-    ['orders', 'Orders', [['orders', 'Orders', pendingCount ? ` (${pendingCount})` : ''], ['custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : ''], ['prep', 'Prep list'], ['cash', 'Cash']]],
+    ['orders', 'Orders', [['orders', 'Orders', pendingCount ? ` (${pendingCount})` : ''], ['custom', 'Custom orders', pendingCustom ? ` (${pendingCustom})` : ''], ['prep', 'Prep list'], ['cash', 'Cash'], ['walkin', 'Walk-in sales']]],
     ['products', 'Catalog', [['products', 'Products'], ['combos', 'Combos'], ['promos', 'Promos'], ...(isRaven() ? [['popups', 'Pop-ups']] : [])]],
     ['customers', 'People', isRaven() ? [['customers', 'Customers'], ['sellers', 'Sellers']] : [['customers', 'Customers'], ['alerts', 'Alerts']]],
     ...(isRaven() ? [['backup', 'System', [['backup', 'Backup'], ['audit', 'Activity'], ['security', 'Security']]]] : []),
@@ -963,6 +992,7 @@ function renderAdmin() {
     <div id="olist">${SKEL}</div>
     <div id="omore" style="text-align:center;margin:14px 0"></div>`;
   const cashView = '<section class="panel glass"><h2>Cash</h2><div id="cashbox"><p>Loading...</p></div></section>';
+  const walkinView = '<section class="panel glass"><h2>Walk-in sales</h2><p class="muted">Face-to-face sales. They count in every total, and stock goes down.</p><div id="walkbox"><p>Loading...</p></div></section>';
   const reportView = `<section class="panel glass">
       <h2>Export sales (CSV)</h2>
       <p class="muted">One row per item sold, for Excel or Google Sheets. ${isRaven() ? 'Includes every seller.' : 'Includes only your items.'}</p>
@@ -1066,7 +1096,7 @@ function renderAdmin() {
   const customersView = `<h2>Customers</h2>
     <p class="muted">Block people who abuse the shop (fake orders, not showing up). ${isRaven() ? 'Your block covers the whole shop.' : 'Your block stops them ordering your items only.'} The list shows the most cancelled orders first.</p>
     <div id="custlist"><p>Loading...</p></div>`;
-  $('#app').innerHTML = tabs + subtabs + '<div id="attn"></div><div id="adminnotes"></div>' + (adminTab === 'dashboard' ? '<section class="dash" id="dashbox"><p class="panel glass muted">Loading your numbers...</p></section>' : adminTab === 'report' ? reportView : adminTab === 'cash' ? cashView : adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'audit' && isRaven() ? auditView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'alerts' && !isRaven() ? alertsView : adminTab === 'combos' ? combosView : adminTab === 'popups' && isRaven() ? popupsView : adminTab === 'security' && isRaven() ? '<div id="secbox"><section class="panel glass"><h2>Security</h2><p class="muted">Loading...</p></section></div>' : adminTab === 'prep' ? '<div id="prepbox"></div>' : adminTab === 'promos' ? promosView : adminTab === 'customers' ? customersView : productsView);
+  $('#app').innerHTML = tabs + subtabs + '<div id="attn"></div><div id="adminnotes"></div>' + (adminTab === 'dashboard' ? '<section class="dash" id="dashbox"><p class="panel glass muted">Loading your numbers...</p></section>' : adminTab === 'report' ? reportView : adminTab === 'walkin' ? walkinView : adminTab === 'cash' ? cashView : adminTab === 'orders' ? ordersView : adminTab === 'custom' ? customView : adminTab === 'backup' && isRaven() ? backupView : adminTab === 'audit' && isRaven() ? auditView : adminTab === 'sellers' && isRaven() ? sellersView : adminTab === 'alerts' && !isRaven() ? alertsView : adminTab === 'combos' ? combosView : adminTab === 'popups' && isRaven() ? popupsView : adminTab === 'security' && isRaven() ? '<div id="secbox"><section class="panel glass"><h2>Security</h2><p class="muted">Loading...</p></section></div>' : adminTab === 'prep' ? '<div id="prepbox"></div>' : adminTab === 'promos' ? promosView : adminTab === 'customers' ? customersView : productsView);
   fillProducts();
   comboAdminHtml = ''; refreshAdminCombos().catch(() => {});
   promoAdminHtml = ''; refreshAdminPromos().catch(() => {});
@@ -1076,6 +1106,7 @@ function renderAdmin() {
   refreshCustom().catch(() => {});
   refreshTeam().catch(() => {});
   if (adminTab === 'cash') refreshCash().catch(() => {});
+  if (adminTab === 'walkin') refreshWalkin().catch(() => {});
   if (adminTab === 'report' || adminTab === 'dashboard') refreshReport().catch(() => {});
   refreshCosts().catch(() => {});
   refreshAttention().catch(() => {});
