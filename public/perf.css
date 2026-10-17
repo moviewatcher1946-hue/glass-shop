@@ -1,0 +1,10 @@
+/* Speed fixes that change nothing you can see. */
+
+/* 1. On desktop every product card is completely covered by its photo, so the card's own glass blur is never visible.
+      Switching it off saves the browser one extra blur per card on every frame. Cards without a photo and the mobile layout keep it. */
+@media (min-width: 901px) {
+  .card:has(.img img) { -webkit-backdrop-filter: none; backdrop-filter: none; }
+}
+
+/* 2. Looping animations are paused while they are off screen (perf.js adds this class) and continue from the same point when you scroll back. */
+.pf-off, .pf-off:before, .pf-off:after { animation-play-state: paused !important; }
