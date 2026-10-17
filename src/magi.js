@@ -10,7 +10,7 @@
 // When one runs out of credit, open LINKS on the panel and switch that node to another provider.
 // Env vars: GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY, NVIDIA_API_KEY, CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID.
 // Optional models: MAGI_NVIDIA_MODEL, MAGI_CLOUDFLARE_MODEL.
-const TIMEOUT = 25000;
+const TIMEOUT = 30000;
 const QUESTION_MAX = 1000;
 // Reasoning models (Qwen on Groq, Nemotron, Gemini 3.5) spend output tokens on thinking before the visible answer.
 // 1024 was often used up by the thinking alone, which left an empty or cut-off answer.
@@ -38,7 +38,7 @@ const PROVIDERS = {
   nvidia: {
     id: 'nvidia', label: 'NVIDIA', keys: ['NVIDIA_API_KEY'],
     url: () => 'https://integrate.api.nvidia.com/v1/chat/completions',
-    model: () => process.env.MAGI_NVIDIA_MODEL || 'nvidia/nemotron-3.5-lightning-30b-a3b',
+    model: () => process.env.MAGI_NVIDIA_MODEL || 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning',
   },
   // Cloudflare Workers AI (OpenAI-compatible). Needs an API token and your account id. Free allowance resets daily.
   cloudflare: {
@@ -52,7 +52,7 @@ const PROVIDERS = {
 const NODES = [
   {
     id: 'melchior', name: 'MELCHIOR-1', role: 'SCIENCE', home: 'gemini',
-    persona: 'You are MELCHIOR-1, the rational, scientific node. You decide on evidence, logic and measurable outcomes. You distrust sentiment and want proof. You are sceptical of anything you cannot verify.',
+    persona: 'You are MELCHIOR-1, the rational, scientific node. You decide on evidence, logic and measurable outcomes. You distrust sennt and want proof. You are sceptical of anything you cannot verify.',
   },
   {
     id: 'balthasar', name: 'BALTHASAR-2', role: 'MATERNAL', home: 'groq',
