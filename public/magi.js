@@ -476,7 +476,7 @@
   });
 
   // ===== EXPAND: fixed design height, scaled to fit. Answers scroll inside the panel instead of growing it =====
-  var DESIGN_H = 1080; // raise in steps of 20 if the bottom row is still cut off
+  var DESIGN_H = 1280; // raise in steps of 20 if the bottom row is still cut off, lower if there is empty space
   function fit() {
     if (!root.classList.contains('max') || window.innerWidth < 860) { panel.style.zoom = ''; panel.style.width = ''; panel.style.height = ''; panel.style.overflow = ''; return; }
     var pad = 16, vw = window.innerWidth - pad * 2, vh = window.innerHeight - pad * 2;
