@@ -1262,7 +1262,7 @@ function authDialog() {
     .au-hint{margin:0 0 8px;font-size:.95em;opacity:.85}.au-note{display:block;margin:6px 0 12px;opacity:.7}
     .au-pw{position:relative}.au-pw input{width:100%;box-sizing:border-box;padding-right:64px}
     .au-eye{position:absolute;right:6px;top:50%;transform:translateY(-50%);margin:0;padding:6px 10px;border:0;border-radius:8px;background:rgba(128,128,128,.2);cursor:pointer;font-size:.85em;color:inherit}
-    .au-go{width:100%;margin-top:4px;padding:12px}.au-x{width:100%;margin-top:6px}
+    .au-go{width:100%;margin-top:4px;padding:12px}.au-x{width:100%;margin-top:6px}.au-legal{font-size:.8rem;color:var(--muted);margin:8px 0 0;line-height:1.5}.au-legal a{color:var(--a1)}
   </style>
   <h2>Welcome to the shop</h2>
   <div class="au-tabs" role="tablist"><button type="button" class="on" data-t="login" role="tab">Log in</button><button type="button" data-t="signup" role="tab">New here? Sign up</button></div>
@@ -1271,6 +1271,7 @@ function authDialog() {
     <label for="au-user">Username</label><input id="au-user" name="username" required maxlength="30" autocomplete="username" autocapitalize="none" spellcheck="false">
     <label for="au-pass">Password</label><div class="au-pw"><input id="au-pass" name="password" type="password" required autocomplete="current-password"><button type="button" class="au-eye" aria-label="Show or hide password">Show</button></div>
     <small class="au-note" id="au-note"></small>
+    <p class="au-legal">By creating an account or logging in you agree to our <a href="/terms.html" target="_blank" rel="noopener">Terms of Use</a> and <a href="/privacy.html" target="_blank" rel="noopener">Privacy Policy</a>.</p>
     <button class="primary au-go" data-mode="login" id="au-go">Log in</button>
     <button type="button" class="au-x" data-act="close">Cancel</button></form>`;
   const dlg = $('#dlg'), tabs = dlg.querySelectorAll('.au-tabs button'), go = dlg.querySelector('#au-go'), pass = dlg.querySelector('#au-pass'), user = dlg.querySelector('#au-user');
