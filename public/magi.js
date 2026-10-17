@@ -128,7 +128,7 @@
     '.mg-ctls{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin:20px 0 0}',
     '.mg-col{display:flex;flex-direction:column;gap:8px;min-width:0}',
     '.mg-col>.mg-kt{color:var(--mg-hi);opacity:1;letter-spacing:.22em;font-size:.62rem}',
-    '.mg-log{max-height:150px;overflow:auto;padding:8px 10px;border-left:3px solid var(--mg-gn);background:#000;color:var(--mg-gn);font:500 14px/1.45 ui-monospace,Menlo,Consolas,monospace;text-transform:none;white-space:pre-wrap;word-break:break-word}',
+    '.mg-log{max-height:110px;overflow:auto;padding:8px 10px;border-left:3px solid var(--mg-gn);background:#000;color:var(--mg-gn);font:500 14px/1.45 ui-monospace,Menlo,Consolas,monospace;text-transform:none;white-space:pre-wrap;word-break:break-word}',
     '.mg-log:empty{display:none}',
     '.mg-log.err{color:#ff6a4d;border-color:var(--mg-no)}',
     '.mg-ctl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px 8px;align-items:center;padding:8px;border:1px solid var(--mg-dim);background:#050200}',
@@ -475,13 +475,15 @@
     syncToggles();
   });
 
-  // ===== EXPAND: the console is a fixed 1200px design, scaled to fit the screen =====
+  // ===== EXPAND: fixed design height, scaled to fit. Answers scroll inside the panel instead of growing it =====
+  var DESIGN_H = 980;
   function fit() {
-    if (!root.classList.contains('max') || window.innerWidth < 860) { panel.style.zoom = ''; panel.style.width = ''; return; }
-    panel.style.zoom = '1';
+    if (!root.classList.contains('max') || window.innerWidth < 860) { panel.style.zoom = ''; panel.style.width = ''; panel.style.height = ''; panel.style.overflow = ''; return; }
+    var pad = 16, vw = window.innerWidth - pad * 2, vh = window.innerHeight - pad * 2;
+    var s = Math.min(vw / 1200, vh / DESIGN_H);
     panel.style.width = '1200px';
-    var h = panel.offsetHeight;
-    var s = Math.min((window.innerWidth - 32) / 1200, (window.innerHeight - 32) / h);
+    panel.style.height = DESIGN_H + 'px';
+    panel.style.overflow = 'hidden';
     panel.style.zoom = s.toFixed(3);
   }
   window.addEventListener('resize', fit);
