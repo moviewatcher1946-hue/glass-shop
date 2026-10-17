@@ -86,8 +86,7 @@
 
     // header, like the screen: code block on the left, result box on the right
     '.mg-top{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:22px;margin:0 0 14px;align-items:start}',
-    '.mg-kj{font-size:clamp(1.5rem,4vw,3.1rem);line-height:1.1;font-weight:900;letter-spacing:.1em;color:var(--mg-or);padding:6px 0;border-top:4px double var(--mg-tl);border-bottom:4px double var(--mg-tl);text-shadow:0 0 10px #ff6a1a66}',
-    '.mg-code{margin-top:8px;font:900 clamp(1.3rem,3.4vw,2.4rem)/1 Arial,Helvetica,sans-serif;letter-spacing:.2em;color:var(--mg-or)}',
+    '.mg-kj{font-size:clamp(1.5rem,4vw,3.1rem);line-height:1.1;font-weight:900;letter-spacing:.1em;color:var(--mg-or);padding:20px 0;background:linear-gradient(#19e3ff,#19e3ff) 0 0/100% 4px no-repeat,linear-gradient(#19e3ff,#19e3ff) 0 9px/100% 3px no-repeat,linear-gradient(#19e3ff,#19e3ff) 0 calc(100% - 9px)/100% 3px no-repeat,linear-gradient(#19e3ff,#19e3ff) 0 100%/100% 4px no-repeat;text-shadow:0 0 10px #ff6a1a66}',    '.mg-code{margin-top:8px;font:900 clamp(1.3rem,3.4vw,2.4rem)/1 Arial,Helvetica,sans-serif;letter-spacing:.2em;color:var(--mg-or)}',
     '.mg-data{margin-top:6px;font:700 .72rem/1.25 Arial,Helvetica,sans-serif;letter-spacing:.2em;color:var(--mg-or)}',
 
     // result box (the ALL GREEN box)
@@ -103,9 +102,12 @@
     // the map: Balthasar top, Casper left, Melchior right, MAGI in the middle
     '.mg-map{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));grid-template-areas:". b ." "c m e";gap:14px 22px;align-items:stretch;margin:6px 0 0}',
     '.mg-node{min-width:0}',
-    '.mg-mid{grid-area:m;position:relative;display:flex;align-items:center;justify-content:center;min-height:56px}',
-    '.mg-mid:before{content:"";position:absolute;left:-22px;right:-22px;top:50%;height:7px;margin-top:-3px;background:var(--mg-or)}',
-    '.mg-mid:after{content:"";position:absolute;left:50%;top:-14px;height:calc(50% + 14px);width:7px;margin-left:-3px;background:var(--mg-or)}',
+    '.mg-mid{grid-area:m;position:relative;display:flex;align-items:center;justify-content:center;min-height:96px}',
+    '.mg-mid:before{content:"";position:absolute;left:-22px;right:-22px;bottom:4px;height:7px;background:var(--mg-or)}',
+    '.mg-mid:after{content:none}',
+    '.mg-dl,.mg-dr{position:absolute;top:2px;width:52px;height:7px;background:var(--mg-or)}',
+    '.mg-dl{left:-6px;transform:rotate(-38deg)}',
+    '.mg-dr{right:-6px;transform:rotate(38deg)}',
     '.mg-mid span{position:relative;z-index:1;padding:4px 12px;background:#000;font:900 1.7rem/1 "Hiragino Mincho ProN","Yu Mincho",Georgia,serif;letter-spacing:.06em;color:var(--mg-or);text-shadow:0 0 12px #ff6a1a88}',
 
     // green screens (outer element = orange frame, .mg-in = the screen)
@@ -615,6 +617,8 @@
     linkWrap.textContent = '';
     cards = {};
     var mid = el('div', 'mg-mid');
+    mid.appendChild(el('div', 'mg-dl'));
+    mid.appendChild(el('div', 'mg-dr'));
     mid.appendChild(el('span', null, 'MAGI'));
     nodesWrap.appendChild(mid);
     list.forEach(function (n) {
