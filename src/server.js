@@ -750,6 +750,7 @@ require('./agent')(app, { pool, auth, admin, wrap, notify }); // AI helper in Sh
 require('./messages')(app, { pool, auth, admin, wrap }); // Messages: send and receive between everyone
 const perks = require('./perks')(app, { pool, auth, wrap }); // Your usual, loyalty points, order alerts
 require('./google')(app, { pool, wrap, auth }); // Sign in with Google (only when GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are set)
+require('./walkin')(app, { pool, auth, admin, wrap }); // Walk-in sales: face-to-face sales counted in the totals
 // Memory tools for the admin: see what the server uses and drop the in-memory picture cache on demand.
 app.get('/api/plus/p/mem-now', auth, admin, (req, res) => { const m = process.memoryUsage(), mb = (n) => Math.round(n / 1048576); res.json([{ rss_mb: mb(m.rss), heap_mb: mb(m.heapUsed), external_mb: mb(m.external), picture_cache_mb: mb(thumbBytes), pictures_cached: thumbs.size, uptime_min: Math.round(process.uptime() / 60) }]); });
 app.post('/api/plus/p/act-clear-pictures', auth, admin, (req, res) => { const n = thumbs.size; thumbs.clear(); thumbBytes = 0; if (global.gc) global.gc(); res.json({ message: `Cleared ${n} cached pictures. They are rebuilt on demand.` }); });
