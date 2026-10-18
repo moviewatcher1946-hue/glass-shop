@@ -22,7 +22,7 @@
 // Optional models: MAGI_GEMINI_MODEL, MAGI_GROQ_MODEL, MAGI_OPENROUTER_MODEL, MAGI_NVIDIA_MODEL, MAGI_CLOUDFLARE_MODEL.
 // Without a database (pool is null) the settings and links only last until the server restarts.
 const TIMEOUT = 25000;
-const QUESTION_MAX = 1000;
+const QUESTION_MAX = 5000;
 // Reasoning models (Qwen on Groq, Nemotron, Gemini 3.5) spend output tokens on thinking before the visible answer.
 // 1024 was often used up by the thinking alone, which left an empty or cut-off answer.
 const MAX_OUT = 2048;
