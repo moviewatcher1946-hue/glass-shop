@@ -208,18 +208,31 @@ async function callProvider(view, system, user, temp) {
   const temperature = temp == null ? settings.temperature : temp;
   const ms = Math.max(MIN_CALL_MS, Math.min(TIMEOUT, runDeadline - Date.now()));
   if (p.id === 'gemini') {
-    const generationConfig = { temperature, maxOutputTokens: MAX_OUT };
-    if (NO_THINK) generationConfig.thinkingConfig = { thinkingBudget: 0 };
-    const { r, d } = await postJson(
-      'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent',
-      { 'x-goog-api-key': key, 'content-type': 'application/json' },
-      {
-        systemInstruction: { parts: [{ text: system }] },
-        contents: [{ role: 'user', parts: [{ text: user }] }],
-        generationConfig,
-      },
-      ms
-    );
+    // Gemini 3-series uses thinkingLevel. Older models do not accept thinkingBudget here,
+    // so the setting is only sent to Gemini 3 models.
+    const thinking = NO_THINK && /gemini-3/i.test(model) ? { thinkingLevel: 'minimal' } : null;
+
+    const geminiCall = (thinkingConfig) => {
+      const generationConfig = { temperature, maxOutputTokens: MAX_OUT };
+      if (thinkingConfig) generationConfig.thinkingConfig = thinkingConfig;
+      return postJson(
+        'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent',
+        { 'x-goog-api-key': key, 'content-type': 'application/json' },
+        {
+          systemInstruction: { parts: [{ text: system }] },
+          contents: [{ role: 'user', parts: [{ text: user }] }],
+          generationConfig,
+        },
+        ms
+      );
+    };
+
+    let res = await geminiCall(thinking);
+    if (!res.r.ok && thinking && /thinking/i.test(errText(res.d, res.r.status))) {
+      console.error('magi gemini: thinkingLevel rejected, retrying without it:', errText(res.d, res.r.status));
+      res = await geminiCall(null);
+    }
+    const { r, d } = res;
     if (!r.ok) throw new Error(errText(d, r.status));
     const c = (d.candidates || [])[0];
     const text = c && c.content ? (c.content.parts || []).filter((x) => !x.thought).map((x) => x.text || '').join('') : '';
