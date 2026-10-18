@@ -248,7 +248,7 @@ async function callProvider(view, system, user, temp) {
     messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
   };
   if (NO_THINK) {
-    if (p.id === 'groq') body.reasoning_effort = 'none';
+    if (p.id === 'groq') body.reasoning_effort = 'low';
     if (p.id === 'openrouter') body.reasoning = { enabled: false };
   }
   const { r, d } = await postJson(url, headers, body, ms);
