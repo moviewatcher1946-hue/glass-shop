@@ -22,10 +22,10 @@
 // Optional models: MAGI_GEMINI_MODEL, MAGI_GROQ_MODEL, MAGI_OPENROUTER_MODEL, MAGI_NVIDIA_MODEL, MAGI_CLOUDFLARE_MODEL.
 // Without a database (pool is null) the settings and links only last until the server restarts.
 const TIMEOUT = 25000;
-const QUESTION_MAX = 5000;
+const QUESTION_MAX = 2048;
 // Reasoning models (Qwen on Groq, Nemotron, Gemini 3.5) spend output tokens on thinking before the visible answer.
 // 1024 was often used up by the thinking alone, which left an empty or cut-off answer.
-const MAX_OUT = 2048;
+const MAX_OUT = 2042;
 
 const FORMAT_VERDICT = 'On the first line write exactly APPROVED or DENIED. Then give your reasoning in at most three sentences. Plain text only.';
 const FORMAT_DISCUSS = 'Do not answer yes or no, and never use the words APPROVED or DENIED. On the first line write a headline of at most eight words that sums up your position. Then give your analysis in at most four sentences. Plain text only.';
