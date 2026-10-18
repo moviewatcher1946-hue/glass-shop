@@ -2,12 +2,16 @@
 //  - Lives INSIDE the admin Dashboard (above the numbers) and appears only while NERV mode is on.
 //  - Layout follows the MAGI screen: Balthasar top, Casper left, Melchior right, MAGI in the middle.
 //  - The CONTROL button (top right of the panel) is where you change how the nodes act:
-//      * MODE: VERDICT (approved / denied, majority wins) or DISCUSS (no yes or no, they talk it through),
-//      * 3-ROUND MODE (optional, off by default): round 2 = the convincing round, round 3 = the final ruling,
+//      * MODE: VERDICT (approved / denied, majority wins), DISCUSS (no yes or no, they talk it through),
+//              or LINK (the nodes assist each other in a chain: Melchior drafts, Balthasar reviews, Casper finishes),
+//      * 3-ROUND MODE (optional, off by default): round 2 = the convincing round, round 3 = the final ruling.
+//        3-ROUND MODE and CONVINCING ROUND are hidden in LINK mode, because the chain has no rounds.
 //      * STANDING ORDERS that every node must follow, a personality box per node, MUTE per node, and CREATIVITY.
 //    The DECREE box next to EXECUTE lets you force APPROVED or DENIED for one run, whatever the nodes vote.
+//    The decree is only shown in VERDICT mode.
 //  - The LINKS button opens the provider / model switches for each node.
 //  - Hover a node screen to read its answer; with more than one round you see every round it spoke.
+//    In LINK mode each screen shows its link (DRAFT, REVIEW, FINAL) and the full chain answer appears under the board.
 //  - Sound (Web Audio, nothing to download):
 //      * an eerie ambient drone plays while the console is idle (starts on your first tap / click, because browsers block audio before that),
 //      * a mechanical machine-room drone with relay clicks and servo whines while the nodes think,
@@ -34,13 +38,17 @@
   var DISPLAY = { melchior: 'MELCHIOR\u20221', balthasar: 'BALTHASAR\u20222', caspar: 'CASPER\u20223' };
   var KATA = { melchior: '\u30e1\u30eb\u30ad\u30aa\u30fc\u30eb', balthasar: '\u30d0\u30eb\u30bf\u30b6\u30fc\u30eb', caspar: '\u30ab\u30b9\u30d1\u30fc' };
   var ORDER = { caspar: 1, balthasar: 2, melchior: 3 };
-  var KANJI = { APPROVED: '\u627f\u8a8d', DENIED: '\u5426\u6c7a', UNCLEAR: '\u4e0d\u660e', 'NO CONSENSUS': '\u6c7a\u8b70\u4e0d\u80fd', OPEN: '\u898b\u89e3', DISCUSSED: '\u5354\u8b70' };
+  var KANJI = { APPROVED: '\u627f\u8a8d', DENIED: '\u5426\u6c7a', UNCLEAR: '\u4e0d\u660e', 'NO CONSENSUS': '\u6c7a\u8b70\u4e0d\u80fd', OPEN: '\u898b\u89e3', DISCUSSED: '\u5354\u8b70', LINKED: '\u9023\u643a', 'NO ANSWER': '\u7121\u56de\u7b54' };
   var K_WAIT = '\u5be9\u8b70\u4e2d', K_IDLE = '\u5f85\u6a5f', K_OFF = '\u672a\u63a5\u7d9a', K_NONE = '\u5fdc\u7b54\u306a\u3057';
-  var K_Q = '\u8cea\u554f', K_A = '\u89e3\u6c7a', K_INFO = '\u60c5\u5831';
+  var K_Q = '\u8cea\u554f', K_A = '\u89e3\u6c7a';
+  // link mode: the kanji and name for each link in the chain (draft, review, final)
+  var CHAIN_KANJI = ['\u8349\u6848', '\u518d\u8003', '\u7d50\u8ad6'];
+  var CHAIN_NAME = ['DRAFT', 'REVIEW', 'FINAL'];
 
   // the admin's settings (the server is the source of truth; this is the copy the screen uses)
   var cfg = { mode: 'verdict', rounds: 1, convince: true, temperature: 0.4, directive: '' };
   var lastNodes = [], pCols = {};
+  var lastMode = 'verdict';
 
   // the three screen shapes (from the reference stylesheet)
   var SHAPE = {
@@ -172,6 +180,10 @@
     '.mg-pips{display:flex;gap:10px;justify-content:center;margin:14px 0 0}',
     '.mg-pips i{width:11px;height:11px;border:2px solid var(--mg-gn);transform:rotate(45deg)}',
     '.mg-pips i.ap{background:var(--mg-gn)}.mg-pips i.dn{background:var(--mg-no);border-color:var(--mg-no)}.mg-pips i.off{border-color:var(--mg-dim)}',
+
+    // the final answer of a link-mode run (shown under the board, hidden until there is one)
+    '.mg-final-lbl{display:none;margin:14px 0 0;font-size:.72rem;letter-spacing:.2em;color:var(--mg-hi)}',
+    '.mg-final{display:none;margin:6px 0 0;padding:10px 12px;background:#000;border:1px solid var(--mg-gn);color:var(--mg-hi);font:500 14px/1.45 ui-monospace,Menlo,Consolas,monospace;text-transform:none;white-space:pre-wrap;word-break:break-word;max-height:30vh;overflow:auto}',
 
     // the CONTROL panel: how the nodes act
     '.mg-panel>.mg-ctrl{display:none;position:absolute;z-index:8;top:64px;right:20px;width:min(900px,calc(100% - 40px));max-height:calc(100% - 84px);overflow:auto;margin:0;padding:0;background:#000;border:2px solid var(--mg-or);color:var(--mg-or);font-family:"Lucida Console",Menlo,Consolas,monospace}',
@@ -375,7 +387,7 @@
     tr.connect(tg); tg.connect(hg.gain); hi.connect(hg); hg.connect(out);
     hi.start(t); tr.start(t); oscs.push(hi, tr);
 
-    var a = { out: out, oscs: oscs, alive: true, timer: null }, notes = [1318.51, 987.77, 1244.51, 739.99];
+    var a = { out: out, oscs: oscs, alive: true, timer: null };
     // now and then: a far-off relay click (no pings, so nothing in the music sounds like the verdict ding)
     a.timer = setInterval(function () {
       if (!a.alive || !ctx) return;
@@ -512,6 +524,15 @@
     beep(hit + 0.85, 880, 0.14, v, 'square');
     beep(hit + 1.05, 220, 0.6, v * 0.7, 'sawtooth', 110);
   }
+  // linked: a rising data run, then three even confirm tones that climb (a chain completing, neither yes nor no)
+  function linkedSound(hit) {
+    var v = DING_VOL * 0.6;
+    relay(hit, 0.8);
+    chatter(hit, [900, 1100, 1300, 1500, 1700], v * 0.6);
+    beep(hit + 0.4, 1319, 0.12, v, 'square');
+    beep(hit + 0.55, 1568, 0.12, v, 'square');
+    beep(hit + 0.7, 2093, 0.4, v, 'square');
+  }
   // no consensus / test / discussion: two flat mid beeps
   function unclearSound(hit) {
     var v = DING_VOL * 0.6;
@@ -526,6 +547,7 @@
     var hit = t + 3 * gap + 0.1;
     if (verdict === 'APPROVED') approvedSound(hit);
     else if (verdict === 'DENIED') deniedSound(hit);
+    else if (verdict === 'LINKED') linkedSound(hit);
     else unclearSound(hit);
   }
   // each AI has its own pitch so the three votes can be told apart by ear
@@ -573,7 +595,7 @@
     th.connect(tg); tg.connect(bus); th.start(t); th.stop(t + 0.65);
     burst(t, 0.08, 'lowpass', 300, 0.25, 0.4);
   }
-  // one AI has spoken in discuss mode (no yes or no): a relay click and one soft tone, each AI at its own pitch
+  // one AI has spoken in discuss or link mode (no yes or no): a relay click and one soft tone, each AI at its own pitch
   function openPing(id) {
     var t = ctx.currentTime;
     relay(t, 0.5);
@@ -656,6 +678,19 @@
   var pips = el('div', 'mg-pips');
   panel.appendChild(pips);
 
+  // the full answer of a link-mode run (hidden in the other modes)
+  var finalLbl = el('div', 'mg-final-lbl', 'FINAL ANSWER \u00b7 MELCHIOR \u2192 BALTHASAR \u2192 CASPAR');
+  var finalBox = el('div', 'mg-final');
+  panel.appendChild(finalLbl);
+  panel.appendChild(finalBox);
+  function showFinal(text) {
+    var on = !!text;
+    finalBox.textContent = text || '';
+    finalLbl.style.display = on ? 'block' : 'none';
+    finalBox.style.display = on ? 'block' : 'none';
+  }
+  showFinal('');
+
   // bottom row: question: [ input ] EXECUTE, then the example chips and the decree box
   var form = el('div', 'mg-form');
   var ql = el('span', 'mg-ql', 'QUESTION:');
@@ -732,10 +767,18 @@
       mark: function (v) { Object.keys(btns).forEach(function (k) { btns[k].classList.toggle('sel', String(k) === String(v)); }); }
     };
   }
-  var segMode = seg('MODE', [['verdict', 'VERDICT \u00b7 APPROVE / DENY'], ['discuss', 'DISCUSS \u00b7 NO YES OR NO']], function (v) { quick({ mode: v }); });
+  var segMode = seg('MODE', [
+    ['verdict', 'VERDICT \u00b7 APPROVE / DENY'],
+    ['discuss', 'DISCUSS \u00b7 NO YES OR NO'],
+    ['link', 'LINK \u00b7 THEY ASSIST EACH OTHER']
+  ], function (v) { quick({ mode: v }); });
   var segRounds = seg('3-ROUND MODE', [[1, 'OFF \u00b7 ONE QUICK ROUND'], [3, 'ON \u00b7 THREE ROUNDS']], function (v) { quick({ rounds: v }); });
   var segConv = seg('CONVINCING ROUND', [['1', 'ON'], ['0', 'OFF']], function (v) { quick({ convince: v === '1' }); });
-  ctrlBody.appendChild(el('div', 'mg-note', '3-ROUND MODE OFF: each node answers once, alone (fast). ON: Round 1: each node answers alone. Round 2: the convincing round, where each node reads the others and argues to win them over (switch it off and round 2 is a plain debate). Round 3: the final ruling, after every node has heard every appeal. These buttons save at once.'));
+  var roundNote = el('div', 'mg-note', '3-ROUND MODE OFF: each node answers once, alone (fast). ON: Round 1: each node answers alone. Round 2: the convincing round, where each node reads the others and argues to win them over (switch it off and round 2 is a plain debate). Round 3: the final ruling, after every node has heard every appeal. These buttons save at once.');
+  ctrlBody.appendChild(roundNote);
+  var linkNote = el('div', 'mg-note', 'LINK MODE: the nodes assist each other in a chain. Melchior drafts an answer, Balthasar reviews and improves it, and Casper writes the final answer. There is no vote and no rounds. Each node shows its link when you hover it, and the final answer appears under the board.');
+  linkNote.style.display = 'none';
+  ctrlBody.appendChild(linkNote);
 
   var tRow = el('div', 'mg-row'), tLab = el('label', null, 'CREATIVITY 0.4'), tr = el('input');
   tr.type = 'range'; tr.min = '0'; tr.max = '1.5'; tr.step = '0.1'; tr.value = '0.4';
@@ -756,7 +799,7 @@
 
   var pGrid = el('div', 'mg-pgrid');
   ctrlBody.appendChild(pGrid);
-  ctrlBody.appendChild(el('div', 'mg-note', 'Each box is that node\u2019s personality. Rewrite it however you like, then press SAVE. MUTE silences a node (it stops voting) and saves at once. DEFAULT puts the built-in personality back in the box.'));
+  ctrlBody.appendChild(el('div', 'mg-note', 'Each box is that node\u2019s personality. Rewrite it however you like, then press SAVE. MUTE silences a node (it stops voting, or drops out of the chain) and saves at once. DEFAULT puts the built-in personality back in the box.'));
 
   var cAct = el('div', 'mg-acts');
   var bSaveCtrl = el('button', 'mg-btn solid', 'SAVE ORDERS + PERSONALITIES');
@@ -800,15 +843,21 @@
   }
   // reflect the mode, rounds and creativity everywhere they show
   function syncMode() {
+    var isLink = cfg.mode === 'link';
     segMode.mark(cfg.mode);
     segRounds.mark(cfg.rounds > 1 ? 3 : 1);
     segConv.mark(cfg.convince ? '1' : '0');
-    segConv.row.style.opacity = cfg.rounds < 2 ? '.4' : '1';   // only matters when the 3-round mode is on
+    // the round controls mean nothing in link mode, so they are hidden there
+    segRounds.row.style.display = isLink ? 'none' : '';
+    segConv.row.style.display = isLink ? 'none' : '';
+    roundNote.style.display = isLink ? 'none' : '';
+    linkNote.style.display = isLink ? '' : 'none';
     tr.value = String(cfg.temperature);
     tLab.textContent = 'CREATIVITY ' + Number(cfg.temperature).toFixed(1);
-    exModeEl.textContent = 'EX_MODE:' + (cfg.mode === 'discuss' ? 'DISCUSS' : 'VERDICT') + '/R' + cfg.rounds;
+    exModeEl.textContent = 'EX_MODE:' + (isLink ? 'LINK/3' : (cfg.mode === 'discuss' ? 'DISCUSS' : 'VERDICT') + '/R' + cfg.rounds);
     dec.style.display = cfg.mode === 'verdict' ? '' : 'none';
-    ta.placeholder = cfg.mode === 'discuss' ? 'Ask anything. The nodes will talk it through without a yes or no.' : 'Ask a yes or no question.';
+    if (isLink) ta.placeholder = 'Ask a question. Melchior drafts, Balthasar reviews, Casper finishes.';
+    else ta.placeholder = cfg.mode === 'discuss' ? 'Ask anything. The nodes will talk it through without a yes or no.' : 'Ask a yes or no question.';
   }
   function takeSettings(d, text) {
     if (d.settings) cfg = d.settings;
@@ -1155,12 +1204,20 @@
     if (!c) return;
     c.shown = true;
     if (r.ok) {
+      if (lastMode === 'link') {
+        // link mode: each screen is one link of the chain
+        var idx = Math.max(0, Math.min(2, (r.round || 1) - 1));
+        var sub = (r.ms / 1000).toFixed(1) + 'S \u00b7 ' + (r.provider || '') + ' \u00b7 ' + (r.model || '');
+        paint(c, '', CHAIN_KANJI[idx], CHAIN_NAME[idx], sub, r.text || '');
+        c.mb.style.setProperty('--w', Math.max(6, Math.min(100, Math.round(100 - r.ms / 250))) + '%');
+        return;
+      }
       var mode = r.verdict === 'DENIED' ? 'dn' : r.verdict === 'APPROVED' ? 'ap' : '';
-      var sub = (r.revised ? 'REVISED FROM ' + r.initial + ' \u00b7 ' : '') + (r.ms / 1000).toFixed(1) + 'S \u00b7 ' + (r.provider || '') + ' \u00b7 ' + (r.model || '');
-      paint(c, mode, KANJI[r.verdict] || KANJI.UNCLEAR, r.verdict === 'OPEN' ? 'ANALYSIS' : r.verdict, sub, logOf(r));
+      var sub2 = (r.revised ? 'REVISED FROM ' + r.initial + ' \u00b7 ' : '') + (r.ms / 1000).toFixed(1) + 'S \u00b7 ' + (r.provider || '') + ' \u00b7 ' + (r.model || '');
+      paint(c, mode, KANJI[r.verdict] || KANJI.UNCLEAR, r.verdict === 'OPEN' ? 'ANALYSIS' : r.verdict, sub2, logOf(r));
       c.mb.style.setProperty('--w', Math.max(6, Math.min(100, Math.round(100 - r.ms / 250))) + '%');
     } else {
-      paint(c, 'off', K_NONE, 'NO RESPONSE', c.tag, r.error || 'Node did not respond.', true);
+      paint(c, 'off', K_NONE, lastMode === 'link' ? 'LINK SKIPPED' : 'NO RESPONSE', c.tag, r.error || 'Node did not respond.', true);
     }
   }
 
@@ -1169,7 +1226,10 @@
     res.className = 'mg-res' + (mode ? ' ' + mode : '');
     resBig.textContent = KANJI[d.decision] || d.decision;
     resBig.className = 'mg-st' + ((KANJI[d.decision] || '').length > 2 ? ' small' : '');
-    if (d.overridden) {
+    if (d.mode === 'link') {
+      resEn.textContent = d.decision === 'LINKED' ? 'CHAIN COMPLETE' : 'NO ANSWER';
+      resSub.textContent = d.responded + ' OF ' + (d.rounds || 3) + ' LINKS \u00b7 NO VOTE';
+    } else if (d.overridden) {
       resEn.textContent = 'ADMIN DECREE';
       resSub.textContent = 'FORCED BY ADMIN \u00b7 NODES VOTED ' + d.approved + ' APPROVED / ' + d.denied + ' DENIED';
     } else if (d.decision === 'DISCUSSED') {
@@ -1193,14 +1253,16 @@
     if (!q || busy || !built) return;
     busy = true;
     hasResult = true;
+    lastMode = cfg.mode;
     run.disabled = true;
     run.textContent = 'RUNNING';
     root.classList.add('busy');
     pips.textContent = '';
+    showFinal('');
     res.className = 'mg-res busy';
     resBig.textContent = K_WAIT;
     resBig.className = 'mg-st small';
-    resEn.textContent = 'DELIBERATING \u00b7 ' + cfg.rounds + ' ROUND' + (cfg.rounds > 1 ? 'S' : '');
+    resEn.textContent = lastMode === 'link' ? 'CHAIN \u00b7 3 LINKS' : 'DELIBERATING \u00b7 ' + cfg.rounds + ' ROUND' + (cfg.rounds > 1 ? 'S' : '');
     resSub.textContent = '';
     Object.keys(cards).forEach(function (id) { if (cards[id].enabled) setBusy(cards[id]); });
     startAmbient();   // in case the first tap never started it
@@ -1208,7 +1270,10 @@
     startFlicker();
     var decree = cfg.mode === 'verdict' ? dec.value : '';
     api('/api/admin/magi', 'POST', { question: q, override: decree }).then(function (d) {
-      var list = (d.results || []).slice().sort(function (a, b) { return (a.ms || 0) - (b.ms || 0); });
+      // link mode reveals the chain in order (Melchior, Balthasar, Casper); the other modes go by speed
+      var list = d.mode === 'link'
+        ? (d.results || []).slice()
+        : (d.results || []).slice().sort(function (a, b) { return (a.ms || 0) - (b.ms || 0); });
       var GAP = 900;   // time between one AI showing its colour and the next
       list.forEach(function (r, i) {
         setTimeout(function () { showResult(r); nodePing(r.ok ? r.verdict : 'DENIED', r.id); }, i * GAP);
@@ -1219,6 +1284,7 @@
           stopFlicker();
           setPips(d.results);
           setResolution(d);
+          if (d.mode === 'link') showFinal(d.final || 'No final answer was produced.');
           ding(d.decision);
           resolve();
         }, list.length * GAP + 300);
