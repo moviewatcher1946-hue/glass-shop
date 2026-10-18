@@ -221,6 +221,9 @@
     '.mg-panel:after{content:"";position:absolute;inset:0;z-index:3;pointer-events:none;background:repeating-linear-gradient(0deg,rgba(0,0,0,.3) 0 1px,transparent 1px 3px);animation:mgFlick 5s linear infinite}',
     '@keyframes mgFlick{0%,100%{opacity:1}92%{opacity:1}93%{opacity:.6}94%{opacity:1}97%{opacity:.85}98%{opacity:1}}',
     '.mg-hx.dn{filter:none}',
+    '.mg-panel>.mg-links,.mg-panel>.mg-ctrl{overflow:auto;overscroll-behavior:contain}',
+    '.mg-panel>.mg-links .mg-lh,.mg-panel>.mg-ctrl .mg-lh{position:sticky;top:0;z-index:2;background:#000}',
+    '#magi-dash .mg-lx{min-width:46px;min-height:34px;font-size:1rem}',
     '@media (max-width:860px){.mg-ctls{grid-template-columns:1fr}.mg-form{grid-template-columns:1fr}.mg-run{min-height:44px}.mg-lb{grid-template-columns:1fr}.mg-pgrid{grid-template-columns:1fr}.mg-row{grid-template-columns:1fr}.mg-dec{margin-left:0}}',
     '@media (prefers-reduced-motion:reduce){#magi-dash *{animation:none!important}}',
   ].join('\n');
@@ -857,7 +860,7 @@
     root.classList.toggle('on', on);
     if (on && !root.classList.contains('boot')) { root.classList.add('boot'); setTimeout(function () { root.classList.remove('boot'); }, 1400); }
     hdrTgl.style.display = admin ? '' : 'none';
-    if (!admin || !on) { collapse(); stopHum(); stopAmbient(); stopFlicker(); }
+    if (!admin || !on) { closePanels(); collapse(); stopHum(); stopAmbient(); stopFlicker(); }
     syncToggles();
     place();
   }
@@ -872,17 +875,34 @@
   function setLinks(open) {
     root.classList.toggle('links', open);
     linksBtn.textContent = open ? 'LINKS \u25b4' : 'LINKS';
-    if (open) setCtrl(false);
+    if (open) { setCtrl(false); placePanels(); }
   }
   function setCtrl(open) {
     root.classList.toggle('ctrl', open);
     ctrlBtn.textContent = open ? 'CONTROL \u25b4' : 'CONTROL';
-    if (open) { root.classList.remove('links'); linksBtn.textContent = 'LINKS'; }
+    if (open) { root.classList.remove('links'); linksBtn.textContent = 'LINKS'; placePanels(); }
   }
   linksBtn.addEventListener('click', function () { setLinks(!root.classList.contains('links')); });
   linkX.addEventListener('click', function () { setLinks(false); });
   ctrlBtn.addEventListener('click', function () { setCtrl(!root.classList.contains('ctrl')); });
   ctrlX.addEventListener('click', function () { setCtrl(false); });
+  // the two pop-up panels sit just under the button bar (never over it) and scroll inside if they are taller than the console
+  function placePanels() {
+    var top = (bar.offsetTop || 0) + (bar.offsetHeight || 0) + 6;
+    [linkWrap, ctrlWrap].forEach(function (w) {
+      w.style.top = top + 'px';
+      w.style.maxHeight = Math.max(200, (panel.clientHeight || 600) - top - 10) + 'px';
+    });
+  }
+  function closePanels() { setLinks(false); setCtrl(false); }
+  // several ways out: the X, the same button again, a click anywhere outside the panel, or the Escape key
+  root.addEventListener('click', function (e) {
+    if (!root.classList.contains('links') && !root.classList.contains('ctrl')) return;
+    var t = e.target;
+    if (linkWrap.contains(t) || ctrlWrap.contains(t) || bar.contains(t)) return;
+    closePanels();
+  });
+  window.addEventListener('resize', function () { if (root.classList.contains('links') || root.classList.contains('ctrl')) placePanels(); });
   sndBtn.addEventListener('click', function () {
     var next = !soundOn();
     try { localStorage.setItem(SND, next ? '1' : '0'); } catch (e) { }
@@ -932,7 +952,11 @@
     place();
   }
   maxBtn.addEventListener('click', function () { if (root.classList.contains('max')) collapse(); else expand(); });
-  document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && root.classList.contains('max')) collapse(); });
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape') return;
+    if (root.classList.contains('links') || root.classList.contains('ctrl')) { closePanels(); return; }
+    if (root.classList.contains('max')) collapse();
+  });
   function fsChange() {
     if (!(document.fullscreenElement || document.webkitFullscreenElement) && root.classList.contains('max')) collapse();
   }
