@@ -4,6 +4,9 @@
 // ADMIN CONTROL (all saved in the magi_settings table, so it survives a restart):
 //   mode      "verdict" = each node answers APPROVED or DENIED and the majority decides.
 //             "discuss" = no yes or no at all. Each node gives an analysis and they talk it through.
+//             "link"    = the three nodes assist each other in a chain. MELCHIOR drafts an answer,
+//                         BALTHASAR reviews and improves it, CASPAR writes the final answer.
+//                         In link mode "rounds" is ignored and there is no vote.
 //   rounds    1, 2 or 3. The default is 1 (a quick single answer). The 3-round mode is switched on from the CONTROL panel.
 //               Round 1: every node answers alone.
 //               Round 2: the CONVINCING round (each node reads the others and argues to win them over),
@@ -22,10 +25,10 @@
 // Optional models: MAGI_GEMINI_MODEL, MAGI_GROQ_MODEL, MAGI_OPENROUTER_MODEL, MAGI_NVIDIA_MODEL, MAGI_CLOUDFLARE_MODEL.
 // Optional: MAGI_THINKING=on keeps the providers' reasoning enabled (the default turns it off for speed).
 // Without a database (pool is null) the settings and links only last until the server restarts.
-const TIMEOUT = 45000;       // longest wait for a single provider call
-const RUN_BUDGET = 60000;    // longest total time for one whole run; keep below the browser/proxy limit
-const MIN_CALL_MS = 5000;    // never start a call with less time than this
-const ROUND_MIN_MS = 20000;  // do not start another round with less time than this
+const TIMEOUT = 30000;       // longest wait for a single provider request
+const RUN_BUDGET = 40000;    // hard limit for one whole run. Nodes still waiting at this point are reported as timed out.
+const MIN_CALL_MS = 3000;    // never start a request with less time than this
+const ROUND_MIN_MS = 15000;  // do not start another round or link with less time than this
 const QUESTION_MAX = 4096;
 // Reasoning models (Qwen on Groq, Nemotron, Gemini 3.5) spend output tokens on thinking before the visible answer.
 // 1024 was often used up by the thinking alone, which left an empty or cut-off answer.
@@ -36,7 +39,8 @@ let runDeadline = 0; // set at the start of each run
 
 const FORMAT_VERDICT = 'On the first line write exactly APPROVED or DENIED. Then give your reasoning in at most three sentences. Plain text only.';
 const FORMAT_DISCUSS = 'Do not answer yes or no, and never use the words APPROVED or DENIED. On the first line write a headline of at most eight words that sums up your position. Then give your analysis in at most four sentences. Plain text only.';
-const formatOf = (mode) => (mode === 'discuss' ? FORMAT_DISCUSS : FORMAT_VERDICT);
+const FORMAT_LINK = 'Do not answer yes or no, and never use the words APPROVED or DENIED. Write your answer in at most six sentences. Plain text only.';
+const formatOf = (mode) => (mode === 'discuss' ? FORMAT_DISCUSS : mode === 'link' ? FORMAT_LINK : FORMAT_VERDICT);
 
 // What each node is asked to do in rounds 2 and 3.
 const INSTR = {
@@ -53,6 +57,13 @@ const INSTR = {
     discuss: 'This is the final round. Weigh the arguments made to you and state your closing position.',
   },
 };
+
+// What each node does in the link chain, by its position in the chain.
+const LINK_TASK = [
+  'You are the first link. Write a first draft answer to the question.',
+  'You are the second link. Review the draft you were given. Check it for errors, harm and missing human considerations, then write an improved answer.',
+  'You are the last link. Using the draft and the review you were given, write the final answer the question deserves. Make it clear and decisive.',
+];
 
 // Providers: one entry per AI service. "model" is the built-in default, overridable with the env var.
 const PROVIDERS = {
@@ -121,7 +132,7 @@ const snapshot = () => JSON.parse(JSON.stringify(settings));
 // Take any of the fields from an object (a request body or a saved copy), checking each one.
 function applySettings(b) {
   if (!b || typeof b !== 'object') return;
-  if (b.mode === 'verdict' || b.mode === 'discuss') settings.mode = b.mode;
+  if (b.mode === 'verdict' || b.mode === 'discuss' || b.mode === 'link') settings.mode = b.mode;
   if (b.rounds != null) { const r = parseInt(b.rounds, 10); if (r >= 1 && r <= 3) settings.rounds = r; }
   if (b.convince != null) settings.convince = !!b.convince;
   if (b.temperature != null) { const t = Number(b.temperature); if (Number.isFinite(t)) settings.temperature = Math.min(1.5, Math.max(0, Math.round(t * 10) / 10)); }
@@ -186,15 +197,19 @@ const errText = (d, status) => {
   return String(e || 'HTTP ' + status).slice(0, 200);
 };
 
-// POST JSON. A rate limit (429) or a briefly unavailable server (503) is tried once more, since the free tiers hit those often.
-// ms is the longest this one request may wait.
-async function postJson(url, headers, body, ms = TIMEOUT) {
+// Time left in the current run, never less than the minimum for a request.
+const requestMs = () => Math.max(MIN_CALL_MS, Math.min(TIMEOUT, runDeadline - Date.now()));
+
+// POST JSON. A rate limit (429) or a briefly unavailable server (503) is tried once more, but only if the run still has time.
+async function postJson(url, headers, body) {
   for (let attempt = 0; ; attempt++) {
-    const r = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(ms) });
+    const r = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(requestMs()) });
     if ((r.status === 429 || r.status === 503) && attempt === 0) {
       const wait = Math.min(4000, (Number(r.headers.get('retry-after')) || 1.5) * 1000);
-      await new Promise((ok) => setTimeout(ok, wait));
-      continue;
+      if (runDeadline - Date.now() > wait + MIN_CALL_MS) {
+        await new Promise((ok) => setTimeout(ok, wait));
+        continue;
+      }
     }
     const d = await r.json().catch(() => ({}));
     return { r, d };
@@ -202,11 +217,10 @@ async function postJson(url, headers, body, ms = TIMEOUT) {
 }
 
 // One call to one provider. system and user are plain strings. temp is optional (the saved creativity is used when it is left out).
-// Each call is capped by what is left of the run's time budget.
+// Every request is capped by what is left of the run's time budget.
 async function callProvider(view, system, user, temp) {
   const { provider: p, key, model } = view;
   const temperature = temp == null ? settings.temperature : temp;
-  const ms = Math.max(MIN_CALL_MS, Math.min(TIMEOUT, runDeadline - Date.now()));
   if (p.id === 'gemini') {
     // Gemini 3-series uses thinkingLevel. Older models do not accept thinkingBudget here,
     // so the setting is only sent to Gemini 3 models.
@@ -222,8 +236,7 @@ async function callProvider(view, system, user, temp) {
           systemInstruction: { parts: [{ text: system }] },
           contents: [{ role: 'user', parts: [{ text: user }] }],
           generationConfig,
-        },
-        ms
+        }
       );
     };
 
@@ -251,7 +264,7 @@ async function callProvider(view, system, user, temp) {
     if (p.id === 'groq') body.reasoning_effort = 'none';
     if (p.id === 'openrouter') body.reasoning = { enabled: false };
   }
-  const { r, d } = await postJson(url, headers, body, ms);
+  const { r, d } = await postJson(url, headers, body);
   if (!r.ok) throw new Error(errText(d, r.status));
   const ch = d.choices && d.choices[0];
   if (d.error) throw new Error(errText(d, r.status)); // OpenRouter can answer 200 with an error body
@@ -260,17 +273,27 @@ async function callProvider(view, system, user, temp) {
   return text;
 }
 
-// In discuss mode nobody votes, so the "verdict" is the neutral word OPEN.
+// In discuss and link modes nobody votes, so the "verdict" is the neutral word OPEN.
 function shape(view, text, started, mode, round, kind) {
   return {
     id: view.node.id, name: view.node.name, role: view.node.role, provider: view.label, model: view.model, ok: true,
-    verdict: mode === 'discuss' ? 'OPEN' : verdictOf(text),
+    verdict: mode === 'verdict' ? verdictOf(text) : 'OPEN',
     text: String(text).trim().slice(0, 1500), ms: Date.now() - started, round, kind,
   };
 }
 
 function failed(view, error, started) {
   return { id: view.node.id, name: view.node.name, role: view.node.role, provider: view.label, model: view.model, ok: false, error: String(error || 'no answer').slice(0, 200), ms: Date.now() - started };
+}
+
+// Stop waiting for a step at the run's deadline. The fallback is used for any node still pending then,
+// so the whole run always returns within RUN_BUDGET, whatever a provider does.
+function untilDeadline(work, fallback) {
+  let timer;
+  const limit = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(fallback()), Math.max(0, runDeadline - Date.now()));
+  });
+  return Promise.race([work, limit]).finally(() => clearTimeout(timer));
 }
 
 // Round 1: the node answers alone.
@@ -283,7 +306,9 @@ async function round1(n, question, cfg) {
     if (!String(text).trim()) return failed(v, 'Empty answer from ' + v.label, started);
     return shape(v, text, started, cfg.mode, 1, 'independent');
   } catch (e) {
-    return failed(v, (e && e.message) || e, started);
+    const msg = (e && e.message) || e;
+    console.error('magi round 1', n.id, msg);
+    return failed(v, msg, started);
   }
 }
 
@@ -305,10 +330,53 @@ async function step(n, question, mine, others, kind, round, total, cfg) {
   }
 }
 
+// Link mode: the three nodes run in a chain. Each one reads the work so far and builds on it.
+// Returns the per-node results and the full text of the final answer.
+async function linkStep(n, question, prior, index, cfg) {
+  const v = effective(n), started = Date.now();
+  if (cfg.nodes[n.id].muted) return { result: failed(v, 'Muted by the administrator', started), raw: '' };
+  if (!v.key) return { result: failed(v, 'Not set up: add ' + hintOf(v.provider) + ' on the server', started), raw: '' };
+  const user = 'Question: ' + question +
+    (prior ? '\n\nWork so far from the previous link:\n' + prior : '') +
+    '\n\n' + LINK_TASK[index];
+  try {
+    const text = await callProvider(v, systemFor(n, cfg, 'You are link ' + (index + 1) + ' of 3 in a chain where the AIs assist each other.'), user, cfg.temperature);
+    if (!String(text).trim()) throw new Error('Empty answer from ' + v.label);
+    return { result: shape(v, text, started, cfg.mode, index + 1, 'chain'), raw: String(text).trim() };
+  } catch (e) {
+    const msg = (e && e.message) || e;
+    console.error('magi link', index + 1, n.id, msg);
+    return { result: failed(v, msg, started), raw: '' };
+  }
+}
+
+async function deliberateLink(question, cfg) {
+  runDeadline = Date.now() + RUN_BUDGET;
+  const results = [];
+  let prior = '';
+  for (let i = 0; i < NODES.length; i++) {
+    const n = NODES[i];
+    if (i > 0 && runDeadline - Date.now() < ROUND_MIN_MS) {
+      results.push(failed(effective(n), 'Skipped: time limit reached', Date.now()));
+      continue;
+    }
+    const { result, raw } = await untilDeadline(
+      linkStep(n, question, prior, i, cfg),
+      () => { console.error('magi link', i + 1, n.id, 'no answer before the time limit'); return { result: failed(effective(n), 'No answer before the time limit', Date.now()), raw: '' }; }
+    );
+    results.push(result);
+    if (raw) prior = raw; // a failed link passes on the last good work unchanged
+  }
+  return { results, finalText: prior };
+}
+
 async function deliberate(question, cfg) {
   runDeadline = Date.now() + RUN_BUDGET;
   const total = cfg.rounds;
-  let cur = await Promise.all(NODES.map((n) => round1(n, question, cfg)));
+  let cur = await Promise.all(NODES.map((n) => untilDeadline(
+    round1(n, question, cfg),
+    () => { console.error('magi round 1', n.id, 'no answer before the time limit'); return failed(effective(n), 'No answer before the time limit', runDeadline - RUN_BUDGET); }
+  )));
   const spent = cur.map((r) => r.ms || 0);
   const hist = cur.map((r) => (r.ok ? [{ round: 1, kind: r.kind, verdict: r.verdict, text: r.text }] : []));
 
@@ -321,7 +389,10 @@ async function deliberate(question, cfg) {
       if (!mine.ok) return Promise.resolve(mine);
       const others = prev.filter((o, j) => j !== i && o.ok);
       if (!others.length) return Promise.resolve(mine);
-      return step(n, question, mine, others, kind, rd, total, cfg);
+      return untilDeadline(
+        step(n, question, mine, others, kind, rd, total, cfg),
+        () => ({ ...mine })
+      );
     }));
     cur.forEach((r, i) => {
       if (!r.ok) return;
@@ -340,9 +411,13 @@ async function deliberate(question, cfg) {
   });
 }
 
-// The vote. In discuss mode there is no vote. A decree from the admin replaces the vote (verdict mode only).
+// The vote. In discuss mode there is no vote. In link mode the result is the chain's final answer.
+// A decree from the admin replaces the vote (verdict mode only).
 function tally(results, cfg, override) {
   const ok = results.filter((r) => r.ok);
+  if (cfg.mode === 'link') {
+    return { decision: ok.length ? 'LINKED' : 'NO ANSWER', approved: 0, denied: 0, responded: ok.length, mode: 'link', rounds: NODES.length };
+  }
   if (cfg.mode === 'discuss') {
     return { decision: ok.length ? 'DISCUSSED' : 'NO CONSENSUS', approved: 0, denied: 0, responded: ok.length, mode: 'discuss', rounds: cfg.rounds };
   }
@@ -456,6 +531,7 @@ module.exports = function mount(app, { pool, auth, admin, wrap }) {
   }));
 
   // Run the MAGI. Optional "override": "APPROVED" or "DENIED" is the admin's decree and replaces the vote (verdict mode only).
+  // In link mode the response also carries "final", the full text of the chain's final answer.
   app.post('/api/admin/magi', auth, admin, wrap(async (req, res) => {
     await ready;
     const body = req.body || {};
@@ -463,6 +539,12 @@ module.exports = function mount(app, { pool, auth, admin, wrap }) {
     if (!question) return res.status(400).json({ error: 'Enter a question first.' });
     if (question.length > QUESTION_MAX) return res.status(400).json({ error: 'Question is too long (max ' + QUESTION_MAX + ' characters).' });
     const cfg = snapshot(); // settings are frozen for the whole run, so a change mid-run cannot mix two setups
+
+    if (cfg.mode === 'link') {
+      const { results, finalText } = await deliberateLink(question, cfg);
+      return res.json({ question, results, final: finalText, ...tally(results, cfg, '') });
+    }
+
     const override = cfg.mode === 'verdict' ? String(body.override || '').toUpperCase() : '';
     const results = await deliberate(question, cfg);
     res.json({ question, results, ...tally(results, cfg, override) });
