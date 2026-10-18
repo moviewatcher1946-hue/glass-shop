@@ -162,6 +162,9 @@
     // EXPANDED: a fixed layer covering the whole viewport
     '#magi-dash.max{position:fixed!important;top:0!important;left:0!important;right:0!important;bottom:0!important;width:100vw!important;height:100vh!important;max-width:none!important;margin:0!important;padding:0!important;overflow:hidden!important;z-index:2147483000!important;transform:none!important;background:#000!important;border:0!important;display:flex!important;align-items:center!important;justify-content:center!important}',
     '#magi-dash.max .mg-panel{max-width:none!important;margin:0!important;min-height:0!important;border:0!important;outline:0!important;box-shadow:none!important}',
+    '#magi-dash.max .mg-map{width:1148px;max-width:100%;margin:0 auto}',
+    '#magi-dash.max .mg-ctls{margin-top:-90px}',
+    '#magi-dash.max .mg-form{margin-top:10px}',
     '#magi-dash:fullscreen,#magi-dash:-webkit-full-screen{background:#000;overflow:hidden;display:flex;align-items:center;justify-content:center}',
     '#magi-dash:fullscreen .mg-panel,#magi-dash:-webkit-full-screen .mg-panel{max-width:none;margin:0}',
 
@@ -487,12 +490,12 @@
   });
 
   // ===== EXPAND: fixed design height, scaled to fit. Answers scroll inside the panel instead of growing it =====
-  var DESIGN_H = 1280; // raise in steps of 20 if the bottom row is still cut off, lower if there is empty space
+  var DESIGN_H = 1130; // raise in steps of 20 if the bottom row is still cut off, lower if there is empty space
   function fit() {
     if (!root.classList.contains('max') || window.innerWidth < 860) { panel.style.zoom = ''; panel.style.width = ''; panel.style.height = ''; panel.style.overflow = ''; return; }
     var pad = 16, vw = window.innerWidth - pad * 2, vh = window.innerHeight - pad * 2;
     var s = Math.min(vw / 1200, vh / DESIGN_H);
-    panel.style.width = '1200px';
+    panel.style.width = Math.round(vw / s) + 'px'; // stretch sideways to use the full screen width
     panel.style.height = DESIGN_H + 'px';
     panel.style.overflow = 'visible';
     panel.style.zoom = s.toFixed(3);
