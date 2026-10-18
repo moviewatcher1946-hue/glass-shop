@@ -4,7 +4,12 @@
 // ADMIN CONTROL (all saved in the magi_settings table, so it survives a restart):
 //   mode      "verdict" = each node answers APPROVED or DENIED and the majority decides.
 //             "discuss" = no yes or no at all. Each node gives an analysis and they talk it through.
+//             "link"    = the nodes work as a chain: Melchior drafts, Balthasar reviews, Casper writes the final answer.
+//   linkOut   only used in link mode. How the chain ends:
+//               "verdict" = every link answers APPROVED or DENIED and the LAST link's verdict is the decision (no majority vote).
+//               "discuss" = no yes or no, the chain builds one analysis.
 //   rounds    1, 2 or 3. The default is 1 (a quick single answer). The 3-round mode is switched on from the CONTROL panel.
+//             Rounds do not apply in link mode (the chain has its own three links).
 //               Round 1: every node answers alone.
 //               Round 2: the CONVINCING round (each node reads the others and argues to win them over),
 //                        or a plain debate when "convince" is switched off.
@@ -12,9 +17,11 @@
 //   directive standing orders added to every node's instructions.
 //   personas  the admin can rewrite any node's personality, or mute a node.
 //   temperature  how creative the nodes are (0 to 1.5).
-//   decree    on any single run the admin can force APPROVED or DENIED whatever the nodes voted (verdict mode).
+//   decree    on any single run the admin can force APPROVED or DENIED whatever the nodes said
+//             (verdict mode, and link mode when it ends with a verdict).
 //
-// Majority rule: two matching verdicts decide. A node that fails, is muted or answers unclearly does not vote.
+// Majority rule (verdict mode): two matching verdicts decide. A node that fails, is muted or answers unclearly does not vote.
+// Link mode: nodes run one after another. A muted, unready or failed node is skipped and the chain carries on.
 // Melchior = Google Gemini, Balthasar = Groq, Caspar = OpenRouter (any node can be linked to any provider). Admin only.
 // Keys come from environment variables only.
 // Providers: Gemini, Groq, OpenRouter, NVIDIA (build.nvidia.com, free key) and Cloudflare Workers AI (free daily allowance).
@@ -54,6 +61,18 @@ const INSTR = {
   },
 };
 
+// What each link of the chain is asked to do in link mode (the first link just answers the question).
+const LINK_INSTR = {
+  review: {
+    verdict: 'You are a middle link in a chain. Check the reasoning above, fix mistakes and add what is missing. Keep the verdict or change it.',
+    discuss: 'You are a middle link in a chain. Check the analysis above, fix mistakes and add what is missing, then give your improved analysis.',
+  },
+  final: {
+    verdict: 'You are the last link in the chain. Weigh everything above and give the final ruling. The decision is taken on what you write now.',
+    discuss: 'You are the last link in the chain. Pull everything above together into one closing analysis.',
+  },
+};
+
 // Providers: one entry per AI service. "model" is the built-in default, overridable with the env var.
 const PROVIDERS = {
   gemini: {
@@ -85,6 +104,7 @@ const PROVIDERS = {
 };
 
 // Nodes: fixed id and role. "persona" is the built-in personality, which the admin can overwrite. "home" is the provider a node starts on.
+// The order of this list is also the order of the chain in link mode.
 const NODES = [
   {
     id: 'melchior', name: 'MELCHIOR-1', role: 'SCIENCE', home: 'gemini',
@@ -107,6 +127,7 @@ const links = new Map();
 // ===== admin settings =====
 const fresh = () => ({
   mode: 'verdict',
+  linkOut: 'verdict',   // link mode ends with: 'verdict' or 'discuss'
   rounds: 1,
   convince: true,
   temperature: 0.4,
@@ -115,13 +136,14 @@ const fresh = () => ({
 });
 let settings = fresh();
 
-const publicSettings = () => ({ mode: settings.mode, rounds: settings.rounds, convince: settings.convince, temperature: settings.temperature, directive: settings.directive });
+const publicSettings = () => ({ mode: settings.mode, linkOut: settings.linkOut, rounds: settings.rounds, convince: settings.convince, temperature: settings.temperature, directive: settings.directive });
 const snapshot = () => JSON.parse(JSON.stringify(settings));
 
 // Take any of the fields from an object (a request body or a saved copy), checking each one.
 function applySettings(b) {
   if (!b || typeof b !== 'object') return;
-  if (b.mode === 'verdict' || b.mode === 'discuss') settings.mode = b.mode;
+  if (b.mode === 'verdict' || b.mode === 'discuss' || b.mode === 'link') settings.mode = b.mode;
+  if (b.linkOut === 'verdict' || b.linkOut === 'discuss') settings.linkOut = b.linkOut;
   if (b.rounds != null) { const r = parseInt(b.rounds, 10); if (r >= 1 && r <= 3) settings.rounds = r; }
   if (b.convince != null) settings.convince = !!b.convince;
   if (b.temperature != null) { const t = Number(b.temperature); if (Number.isFinite(t)) settings.temperature = Math.min(1.5, Math.max(0, Math.round(t * 10) / 10)); }
@@ -148,13 +170,16 @@ function effective(n) {
   return { node: n, provider: p, label: p.label, model: (link && link.model) || p.model(), key: keyOf(p) };
 }
 
+// The answer style a run uses: in link mode it follows linkOut (verdict or discuss), otherwise it is the mode itself.
+const outModeOf = (cfg) => (cfg.mode === 'link' ? cfg.linkOut : cfg.mode);
+
 // The full instructions for one node: personality, then the admin's standing orders, then the round text, then the answer format.
 const personaOf = (n, cfg) => (cfg.nodes[n.id] && cfg.nodes[n.id].persona) || n.persona;
 function systemFor(n, cfg, extra) {
   let s = personaOf(n, cfg);
   if (cfg.directive) s += ' STANDING ORDERS FROM THE ADMINISTRATOR. Follow them in everything you write: ' + cfg.directive;
   if (extra) s += ' ' + extra;
-  return s + ' ' + formatOf(cfg.mode);
+  return s + ' ' + formatOf(outModeOf(cfg));
 }
 
 // Remove a reasoning model's visible "thinking" (<think>...</think>), which would otherwise be read as the verdict line.
@@ -340,9 +365,59 @@ async function deliberate(question, cfg) {
   });
 }
 
+// Link mode: the nodes run one after another (Melchior, Balthasar, Casper), each building on the one before.
+// The first link drafts, the middle link reviews, the last usable link gives the final answer.
+// Muted, unready or failed nodes are skipped and the chain carries on.
+async function linkChain(question, cfg) {
+  runDeadline = Date.now() + RUN_BUDGET;
+  const out = outModeOf(cfg);
+  const usable = NODES.filter((n) => !cfg.nodes[n.id].muted && effective(n).key);
+  const lastId = usable.length ? usable[usable.length - 1].id : '';
+  const chain = [], results = [];
+
+  for (const n of NODES) {
+    const v = effective(n), started = Date.now();
+    if (cfg.nodes[n.id].muted) { results.push(failed(v, 'Muted by the administrator', started)); continue; }
+    if (!v.key) { results.push(failed(v, 'Not set up: add ' + hintOf(v.provider) + ' on the server', started)); continue; }
+    if (runDeadline - Date.now() < MIN_CALL_MS) { results.push(failed(v, 'Out of time', started)); continue; }
+
+    const kind = !chain.length ? 'draft' : n.id === lastId ? 'final' : 'review';
+    let user = question;
+    if (chain.length) {
+      const said = (o) => (out === 'verdict' ? o.verdict + '. ' : '') + o.text;
+      user = 'Question: ' + question + '\n\nThe chain so far:\n\n' +
+        chain.map((o) => o.name + ' (' + o.role + '): ' + said(o)).join('\n\n') +
+        '\n\n' + LINK_INSTR[kind][out] + ' ' + formatOf(out);
+    }
+    try {
+      const text = await callProvider(v, systemFor(n, cfg, 'You are link ' + (chain.length + 1) + ' of a chain of ' + usable.length + ' nodes.'), user, cfg.temperature);
+      if (!String(text).trim()) throw new Error('Empty answer from ' + v.label);
+      const r = shape(v, text, started, out, chain.length + 1, kind);
+      chain.push(r);
+      results.push({ ...r, initial: r.verdict, revised: false, history: [] });
+    } catch (e) {
+      console.error('magi link', n.id, (e && e.message) || e);
+      results.push(failed(v, (e && e.message) || e, started));
+    }
+  }
+  return results;
+}
+
 // The vote. In discuss mode there is no vote. A decree from the admin replaces the vote (verdict mode only).
+// In link mode there is no majority: the last link that answered decides (or, when the chain ends in a discussion, nobody decides).
 function tally(results, cfg, override) {
   const ok = results.filter((r) => r.ok);
+  if (cfg.mode === 'link') {
+    const fin = ok[ok.length - 1];
+    const approved = ok.filter((r) => r.verdict === 'APPROVED').length;
+    const denied = ok.filter((r) => r.verdict === 'DENIED').length;
+    const base = { mode: 'link', linkOut: cfg.linkOut, rounds: 3, responded: ok.length, approved, denied, final: fin ? fin.text : '' };
+    if (!fin) return { ...base, decision: 'NO ANSWER' };
+    if (cfg.linkOut === 'discuss') return { ...base, decision: 'LINKED' };
+    const forced = override === 'APPROVED' || override === 'DENIED' ? override : '';
+    const vote = fin.verdict === 'APPROVED' || fin.verdict === 'DENIED' ? fin.verdict : 'NO CONSENSUS';
+    return { ...base, decision: forced || vote, vote, overridden: !!forced };
+  }
   if (cfg.mode === 'discuss') {
     return { decision: ok.length ? 'DISCUSSED' : 'NO CONSENSUS', approved: 0, denied: 0, responded: ok.length, mode: 'discuss', rounds: cfg.rounds };
   }
@@ -398,7 +473,7 @@ module.exports = function mount(app, { pool, auth, admin, wrap }) {
     });
   }));
 
-  // Change how the nodes act: mode, rounds, convincing round, creativity, standing orders, personalities, muting.
+  // Change how the nodes act: mode, link ending, rounds, convincing round, creativity, standing orders, personalities, muting.
   // Send only the fields that change, or { reset: true } to put everything back to the defaults.
   app.post('/api/admin/magi/settings', auth, admin, wrap(async (req, res) => {
     await ready;
@@ -455,7 +530,8 @@ module.exports = function mount(app, { pool, auth, admin, wrap }) {
     }
   }));
 
-  // Run the MAGI. Optional "override": "APPROVED" or "DENIED" is the admin's decree and replaces the vote (verdict mode only).
+  // Run the MAGI. Optional "override": "APPROVED" or "DENIED" is the admin's decree and replaces the vote
+  // (verdict mode, and link mode when the chain ends with a verdict).
   app.post('/api/admin/magi', auth, admin, wrap(async (req, res) => {
     await ready;
     const body = req.body || {};
@@ -463,8 +539,9 @@ module.exports = function mount(app, { pool, auth, admin, wrap }) {
     if (!question) return res.status(400).json({ error: 'Enter a question first.' });
     if (question.length > QUESTION_MAX) return res.status(400).json({ error: 'Question is too long (max ' + QUESTION_MAX + ' characters).' });
     const cfg = snapshot(); // settings are frozen for the whole run, so a change mid-run cannot mix two setups
-    const override = cfg.mode === 'verdict' ? String(body.override || '').toUpperCase() : '';
-    const results = await deliberate(question, cfg);
+    const decreeOk = cfg.mode === 'verdict' || (cfg.mode === 'link' && cfg.linkOut === 'verdict');
+    const override = decreeOk ? String(body.override || '').toUpperCase() : '';
+    const results = cfg.mode === 'link' ? await linkChain(question, cfg) : await deliberate(question, cfg);
     res.json({ question, results, ...tally(results, cfg, override) });
   }));
 };
