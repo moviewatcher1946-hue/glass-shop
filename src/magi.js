@@ -1,22 +1,51 @@
 // MAGI: three AI nodes, modelled on the MAGI supercomputers in Neon Genesis Evangelion.
-// Each node has its own personality (they were built from the three sides of one person), and they work in two rounds:
-//   Round 1: each node reaches its own verdict, independently.
-//   Round 2: each node reads the other nodes' verdicts and may revise its own. The final vote is taken after this.
-// Majority rule: two matching verdicts decide. A node that fails or answers unclearly does not vote.
-// Melchior = Google Gemini, Balthasar = Groq, Caspar = OpenRouter. Admin only. Keys come from environment variables only.
-// Optional models: MAGI_GEMINI_MODEL, MAGI_GROQ_MODEL, MAGI_OPENROUTER_MODEL.
-// The admin can link any node to any provider that has a key (saved in the magi_links table).
+// Each node has its own personality (they were built from the three sides of one person).
+//
+// ADMIN CONTROL (all saved in the magi_settings table, so it survives a restart):
+//   mode      "verdict" = each node answers APPROVED or DENIED and the majority decides.
+//             "discuss" = no yes or no at all. Each node gives an analysis and they talk it through.
+//   rounds    1, 2 or 3. The default is 1 (a quick single answer). The 3-round mode is switched on from the CONTROL panel.
+//               Round 1: every node answers alone.
+//               Round 2: the CONVINCING round (each node reads the others and argues to win them over),
+//                        or a plain debate when "convince" is switched off.
+//               Round 3: the FINAL round (each node hears every appeal and gives its closing position).
+//   directive standing orders added to every node's instructions.
+//   personas  the admin can rewrite any node's personality, or mute a node.
+//   temperature  how creative the nodes are (0 to 1.5).
+//   decree    on any single run the admin can force APPROVED or DENIED whatever the nodes voted (verdict mode).
+//
+// Majority rule: two matching verdicts decide. A node that fails, is muted or answers unclearly does not vote.
+// Melchior = Google Gemini, Balthasar = Groq, Caspar = OpenRouter (any node can be linked to any provider). Admin only.
+// Keys come from environment variables only.
 // Providers: Gemini, Groq, OpenRouter, NVIDIA (build.nvidia.com, free key) and Cloudflare Workers AI (free daily allowance).
-// When one runs out of credit, open LINKS on the panel and switch that node to another provider.
 // Env vars: GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY, NVIDIA_API_KEY, CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID.
-// Optional models: MAGI_NVIDIA_MODEL, MAGI_CLOUDFLARE_MODEL.
+// Optional models: MAGI_GEMINI_MODEL, MAGI_GROQ_MODEL, MAGI_OPENROUTER_MODEL, MAGI_NVIDIA_MODEL, MAGI_CLOUDFLARE_MODEL.
+// Without a database (pool is null) the settings and links only last until the server restarts.
 const TIMEOUT = 25000;
 const QUESTION_MAX = 1000;
 // Reasoning models (Qwen on Groq, Nemotron, Gemini 3.5) spend output tokens on thinking before the visible answer.
 // 1024 was often used up by the thinking alone, which left an empty or cut-off answer.
 const MAX_OUT = 2048;
 
-const FORMAT = 'On the first line write exactly APPROVED or DENIED. Then give your reasoning in at most three sentences. Plain text only.';
+const FORMAT_VERDICT = 'On the first line write exactly APPROVED or DENIED. Then give your reasoning in at most three sentences. Plain text only.';
+const FORMAT_DISCUSS = 'Do not answer yes or no, and never use the words APPROVED or DENIED. On the first line write a headline of at most eight words that sums up your position. Then give your analysis in at most four sentences. Plain text only.';
+const formatOf = (mode) => (mode === 'discuss' ? FORMAT_DISCUSS : FORMAT_VERDICT);
+
+// What each node is asked to do in rounds 2 and 3.
+const INSTR = {
+  debate: {
+    verdict: 'Consider their reasoning. Keep your position if you still believe it, or change it if they convinced you.',
+    discuss: 'Respond to their reasoning. Say where you agree and where you disagree, and sharpen your own view.',
+  },
+  convince: {
+    verdict: 'This is the convincing round. Make the strongest honest case you can to win the others over: speak to them by name and go after the weakest point in their reasoning. You may change your own verdict if their case beats yours.',
+    discuss: 'This is the convincing round. Make the strongest honest case you can to bring the others round to your view: speak to them by name and go after the weakest point in their reasoning. You may change your mind if their case beats yours.',
+  },
+  final: {
+    verdict: 'This is the final round. Weigh the arguments made to you. Hold your verdict or change it. The vote is taken on what you write now.',
+    discuss: 'This is the final round. Weigh the arguments made to you and state your closing position.',
+  },
+};
 
 // Providers: one entry per AI service. "model" is the built-in default, overridable with the env var.
 const PROVIDERS = {
@@ -48,7 +77,7 @@ const PROVIDERS = {
   },
 };
 
-// Nodes: fixed personality and role. "home" is the provider a node starts on.
+// Nodes: fixed id and role. "persona" is the built-in personality, which the admin can overwrite. "home" is the provider a node starts on.
 const NODES = [
   {
     id: 'melchior', name: 'MELCHIOR-1', role: 'SCIENCE', home: 'gemini',
@@ -68,6 +97,38 @@ const NODE_BY_ID = Object.fromEntries(NODES.map((n) => [n.id, n]));
 // node id -> { provider, model } saved by the admin. Empty model means "the provider's default".
 const links = new Map();
 
+// ===== admin settings =====
+const fresh = () => ({
+  mode: 'verdict',
+  rounds: 1,
+  convince: true,
+  temperature: 0.4,
+  directive: '',
+  nodes: Object.fromEntries(NODES.map((n) => [n.id, { persona: '', muted: false }])),
+});
+let settings = fresh();
+
+const publicSettings = () => ({ mode: settings.mode, rounds: settings.rounds, convince: settings.convince, temperature: settings.temperature, directive: settings.directive });
+const snapshot = () => JSON.parse(JSON.stringify(settings));
+
+// Take any of the fields from an object (a request body or a saved copy), checking each one.
+function applySettings(b) {
+  if (!b || typeof b !== 'object') return;
+  if (b.mode === 'verdict' || b.mode === 'discuss') settings.mode = b.mode;
+  if (b.rounds != null) { const r = parseInt(b.rounds, 10); if (r >= 1 && r <= 3) settings.rounds = r; }
+  if (b.convince != null) settings.convince = !!b.convince;
+  if (b.temperature != null) { const t = Number(b.temperature); if (Number.isFinite(t)) settings.temperature = Math.min(1.5, Math.max(0, Math.round(t * 10) / 10)); }
+  if (b.directive != null) settings.directive = String(b.directive).trim().slice(0, 1200);
+  if (b.nodes && typeof b.nodes === 'object') {
+    for (const n of NODES) {
+      const x = b.nodes[n.id];
+      if (!x || typeof x !== 'object') continue;
+      if (x.persona != null) settings.nodes[n.id].persona = String(x.persona).trim().slice(0, 1500);
+      if (x.muted != null) settings.nodes[n.id].muted = !!x.muted;
+    }
+  }
+}
+
 // A provider is ready only when its key (and, for Cloudflare, the account id) is set.
 const hintOf = (p) => p.keys[0] + (p.need ? ' and ' + p.need : '');
 const keyOf = (p) => { if (p.need && !(process.env[p.need] || '').trim()) return ''; for (const k of p.keys) { const v = (process.env[k] || '').trim(); if (v) return v; } return ''; };
@@ -78,6 +139,15 @@ function effective(n) {
   const pid = link && PROVIDERS[link.provider] ? link.provider : n.home;
   const p = PROVIDERS[pid];
   return { node: n, provider: p, label: p.label, model: (link && link.model) || p.model(), key: keyOf(p) };
+}
+
+// The full instructions for one node: personality, then the admin's standing orders, then the round text, then the answer format.
+const personaOf = (n, cfg) => (cfg.nodes[n.id] && cfg.nodes[n.id].persona) || n.persona;
+function systemFor(n, cfg, extra) {
+  let s = personaOf(n, cfg);
+  if (cfg.directive) s += ' STANDING ORDERS FROM THE ADMINISTRATOR. Follow them in everything you write: ' + cfg.directive;
+  if (extra) s += ' ' + extra;
+  return s + ' ' + formatOf(cfg.mode);
 }
 
 // Remove a reasoning model's visible "thinking" (<think>...</think>), which would otherwise be read as the verdict line.
@@ -123,9 +193,10 @@ async function postJson(url, headers, body) {
   }
 }
 
-// One call to one provider. system and user are plain strings.
-async function callProvider(view, system, user) {
+// One call to one provider. system and user are plain strings. temp is optional (the saved creativity is used when it is left out).
+async function callProvider(view, system, user, temp) {
   const { provider: p, key, model } = view;
+  const temperature = temp == null ? settings.temperature : temp;
   if (p.id === 'gemini') {
     const { r, d } = await postJson(
       'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent',
@@ -133,7 +204,7 @@ async function callProvider(view, system, user) {
       {
         systemInstruction: { parts: [{ text: system }] },
         contents: [{ role: 'user', parts: [{ text: user }] }],
-        generationConfig: { temperature: 0.4, maxOutputTokens: MAX_OUT },
+        generationConfig: { temperature, maxOutputTokens: MAX_OUT },
       }
     );
     if (!r.ok) throw new Error(errText(d, r.status));
@@ -147,7 +218,7 @@ async function callProvider(view, system, user) {
   const headers = { 'content-type': 'application/json', authorization: 'Bearer ' + key };
   if (p.id === 'openrouter') headers['X-Title'] = 'MAGI';
   const { r, d } = await postJson(url, headers, {
-    model, temperature: 0.4, max_tokens: MAX_OUT,
+    model, temperature, max_tokens: MAX_OUT,
     messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
   });
   if (!r.ok) throw new Error(errText(d, r.status));
@@ -158,77 +229,110 @@ async function callProvider(view, system, user) {
   return text;
 }
 
-function shape(view, text, started) {
-  return { id: view.node.id, name: view.node.name, role: view.node.role, provider: view.label, model: view.model, ok: true, verdict: verdictOf(text), text: String(text).trim().slice(0, 1200), ms: Date.now() - started };
+// In discuss mode nobody votes, so the "verdict" is the neutral word OPEN.
+function shape(view, text, started, mode, round, kind) {
+  return {
+    id: view.node.id, name: view.node.name, role: view.node.role, provider: view.label, model: view.model, ok: true,
+    verdict: mode === 'discuss' ? 'OPEN' : verdictOf(text),
+    text: String(text).trim().slice(0, 1500), ms: Date.now() - started, round, kind,
+  };
 }
 
 function failed(view, error, started) {
   return { id: view.node.id, name: view.node.name, role: view.node.role, provider: view.label, model: view.model, ok: false, error: String(error || 'no answer').slice(0, 200), ms: Date.now() - started };
 }
 
-async function round1(n, question) {
+// Round 1: the node answers alone.
+async function round1(n, question, cfg) {
   const v = effective(n), started = Date.now();
+  if (cfg.nodes[n.id].muted) return failed(v, 'Muted by the administrator', started);
   if (!v.key) return failed(v, 'Not set up: add ' + hintOf(v.provider) + ' on the server', started);
   try {
-    const text = await callProvider(v, n.persona + ' ' + FORMAT, question);
+    const text = await callProvider(v, systemFor(n, cfg, ''), question, cfg.temperature);
     if (!String(text).trim()) return failed(v, 'Empty answer from ' + v.label, started);
-    return shape(v, text, started);
+    return shape(v, text, started, cfg.mode, 1, 'independent');
   } catch (e) {
     return failed(v, (e && e.message) || e, started);
   }
 }
 
-async function round2(n, question, first, others) {
-  const v = effective(n), started = Date.now();
-  const lines = others.map((o) => o.name + ' (' + o.role + '): ' + o.verdict + '. ' + o.text).join('\n\n');
-  const user = 'Question: ' + question + '\n\nYour first verdict was ' + first.verdict + '.\n\nThe other nodes said:\n\n' + lines +
-    '\n\nConsider their reasoning. Keep your position if you still believe it, or change it if they convinced you. ' + FORMAT;
+// Rounds 2 and 3: the node reads where the others stand. kind is "debate", "convince" or "final".
+async function step(n, question, mine, others, kind, round, total, cfg) {
+  const v = effective(n), started = Date.now(), withVerdict = cfg.mode === 'verdict';
+  const said = (o) => (withVerdict ? o.verdict + '. ' : '') + o.text;
+  const lines = others.map((o) => o.name + ' (' + o.role + '): ' + said(o)).join('\n\n');
+  const user = 'Question: ' + question + '\n\nYour position so far: ' + said(mine) + '\n\nThe other nodes said:\n\n' + lines +
+    '\n\n' + INSTR[kind][cfg.mode] + ' ' + formatOf(cfg.mode);
   try {
-    // FORMAT is in the system text too, so the answer starts with the verdict word in round 2 as well.
-    const text = await callProvider(v, n.persona + ' This is the second round of deliberation. ' + FORMAT, user);
+    const text = await callProvider(v, systemFor(n, cfg, 'This is round ' + round + ' of ' + total + '.'), user, cfg.temperature);
     if (!String(text).trim()) throw new Error('empty');
-    return { ...shape(v, text, started), initial: first.verdict, revised: verdictOf(text) !== first.verdict };
+    return shape(v, text, started, cfg.mode, round, kind);
   } catch (e) {
-    // If round 2 fails, keep the round 1 verdict.
-    return { ...first, initial: first.verdict, revised: false, ms: Date.now() - started };
+    // If a later round fails, the node keeps what it said before.
+    return { ...mine };
   }
 }
 
-function tally(results) {
-  const ok = results.filter((r) => r.ok);
-  const approved = ok.filter((r) => r.verdict === 'APPROVED').length;
-  const denied = ok.filter((r) => r.verdict === 'DENIED').length;
-  const decision = approved >= 2 ? 'APPROVED' : denied >= 2 ? 'DENIED' : 'NO CONSENSUS';
-  return { decision, approved, denied, responded: ok.length };
+async function deliberate(question, cfg) {
+  const total = cfg.rounds;
+  let cur = await Promise.all(NODES.map((n) => round1(n, question, cfg)));
+  const spent = cur.map((r) => r.ms || 0);
+  const hist = cur.map((r) => (r.ok ? [{ round: 1, kind: r.kind, verdict: r.verdict, text: r.text }] : []));
+
+  for (let rd = 2; rd <= total; rd++) {
+    const kind = rd === 2 ? (cfg.convince ? 'convince' : 'debate') : 'final';
+    const prev = cur;
+    cur = await Promise.all(NODES.map((n, i) => {
+      const mine = prev[i];
+      if (!mine.ok) return Promise.resolve(mine);
+      const others = prev.filter((o, j) => j !== i && o.ok);
+      if (!others.length) return Promise.resolve(mine);
+      return step(n, question, mine, others, kind, rd, total, cfg);
+    }));
+    cur.forEach((r, i) => {
+      if (!r.ok) return;
+      if (r.round === rd && prev[i] !== r) { hist[i].push({ round: rd, kind: r.kind, verdict: r.verdict, text: r.text }); spent[i] += r.ms || 0; }
+    });
+  }
+
+  return cur.map((r, i) => {
+    if (!r.ok) return { ...r, initial: null, revised: false, history: [] };
+    const first = hist[i][0];
+    return {
+      ...r, ms: spent[i], initial: first ? first.verdict : r.verdict,
+      revised: cfg.mode === 'verdict' && !!first && first.verdict !== r.verdict,
+      history: hist[i],
+    };
+  });
 }
 
-async function deliberate(question) {
-  // Round 1: independent verdicts.
-  const first = await Promise.all(NODES.map((n) => round1(n, question)));
-  // Round 2: each responding node sees the others' round 1 verdicts and may revise.
-  const results = await Promise.all(NODES.map((n, i) => {
-    const f = first[i];
-    if (!f.ok) return Promise.resolve({ ...f, initial: null, revised: false });
-    const others = first.filter((o, j) => j !== i && o.ok);
-    if (!others.length) return Promise.resolve({ ...f, initial: f.verdict, revised: false });
-    return round2(n, question, f, others);
-  }));
-  return results;
+// The vote. In discuss mode there is no vote. A decree from the admin replaces the vote (verdict mode only).
+function tally(results, cfg, override) {
+  const ok = results.filter((r) => r.ok);
+  if (cfg.mode === 'discuss') {
+    return { decision: ok.length ? 'DISCUSSED' : 'NO CONSENSUS', approved: 0, denied: 0, responded: ok.length, mode: 'discuss', rounds: cfg.rounds };
+  }
+  const approved = ok.filter((r) => r.verdict === 'APPROVED').length;
+  const denied = ok.filter((r) => r.verdict === 'DENIED').length;
+  const vote = approved >= 2 ? 'APPROVED' : denied >= 2 ? 'DENIED' : 'NO CONSENSUS';
+  const forced = override === 'APPROVED' || override === 'DENIED' ? override : '';
+  return { decision: forced || vote, vote, overridden: !!forced, approved, denied, responded: ok.length, mode: 'verdict', rounds: cfg.rounds };
 }
 
 // What the admin screen shows for one node.
 function nodeView(n) {
-  const v = effective(n);
+  const v = effective(n), s = settings.nodes[n.id];
   return {
     id: n.id, name: n.name, role: n.role,
     provider: v.label, provider_id: v.provider.id,
     model: v.model, default_model: v.provider.model(),
-    enabled: !!v.key,
+    persona: s.persona, default_persona: n.persona, muted: !!s.muted,
+    enabled: !!v.key && !s.muted,
   };
 }
 
 module.exports = function mount(app, { pool, auth, admin, wrap }) {
-  // Load saved node links (provider and model) from the database, if there is one.
+  // Load saved node links and settings from the database, if there is one.
   const ready = (async () => {
     if (!pool) return;
     try {
@@ -236,15 +340,39 @@ module.exports = function mount(app, { pool, auth, admin, wrap }) {
       const r = await pool.query('SELECT node, provider, model FROM magi_links');
       for (const x of r.rows) if (NODE_BY_ID[x.node] && PROVIDERS[x.provider]) links.set(x.node, { provider: x.provider, model: x.model || '' });
     } catch (e) { console.error('magi links init:', e.message); }
+    try {
+      await pool.query(`CREATE TABLE IF NOT EXISTS magi_settings (k TEXT PRIMARY KEY, v TEXT NOT NULL)`);
+      const r = await pool.query("SELECT v FROM magi_settings WHERE k = 'main'");
+      if (r.rows[0]) applySettings(JSON.parse(r.rows[0].v));
+    } catch (e) { console.error('magi settings init:', e.message); }
   })();
+
+  const persist = () => (pool
+    ? pool.query(
+      "INSERT INTO magi_settings (k, v) VALUES ('main', $1) ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v",
+      [JSON.stringify(settings)]
+    ).catch((e) => console.error('magi settings save:', e.message))
+    : Promise.resolve());
 
   app.get('/api/admin/magi/status', auth, admin, wrap(async (req, res) => {
     await ready;
     res.json({
       nodes: NODES.map(nodeView),
       providers: Object.values(PROVIDERS).map((p) => ({ id: p.id, label: p.label, ready: !!keyOf(p), model: p.model() })),
+      settings: publicSettings(),
       quorum: 2,
     });
+  }));
+
+  // Change how the nodes act: mode, rounds, convincing round, creativity, standing orders, personalities, muting.
+  // Send only the fields that change, or { reset: true } to put everything back to the defaults.
+  app.post('/api/admin/magi/settings', auth, admin, wrap(async (req, res) => {
+    await ready;
+    const b = req.body || {};
+    if (b.reset) settings = fresh();
+    else applySettings(b);
+    await persist();
+    res.json({ settings: publicSettings(), nodes: NODES.map(nodeView) });
   }));
 
   // Save a node's provider and model, or reset it to its built-in link.
@@ -292,12 +420,16 @@ module.exports = function mount(app, { pool, auth, admin, wrap }) {
     }
   }));
 
+  // Run the MAGI. Optional "override": "APPROVED" or "DENIED" is the admin's decree and replaces the vote (verdict mode only).
   app.post('/api/admin/magi', auth, admin, wrap(async (req, res) => {
     await ready;
-    const question = String((req.body || {}).question || '').trim();
+    const body = req.body || {};
+    const question = String(body.question || '').trim();
     if (!question) return res.status(400).json({ error: 'Enter a question first.' });
     if (question.length > QUESTION_MAX) return res.status(400).json({ error: 'Question is too long (max ' + QUESTION_MAX + ' characters).' });
-    const results = await deliberate(question);
-    res.json({ question, results, ...tally(results) });
+    const cfg = snapshot(); // settings are frozen for the whole run, so a change mid-run cannot mix two setups
+    const override = cfg.mode === 'verdict' ? String(body.override || '').toUpperCase() : '';
+    const results = await deliberate(question, cfg);
+    res.json({ question, results, ...tally(results, cfg, override) });
   }));
 };
