@@ -20,12 +20,19 @@
 // Providers: Gemini, Groq, OpenRouter, NVIDIA (build.nvidia.com, free key) and Cloudflare Workers AI (free daily allowance).
 // Env vars: GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY, NVIDIA_API_KEY, CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID.
 // Optional models: MAGI_GEMINI_MODEL, MAGI_GROQ_MODEL, MAGI_OPENROUTER_MODEL, MAGI_NVIDIA_MODEL, MAGI_CLOUDFLARE_MODEL.
+// Optional: MAGI_THINKING=on keeps the providers' reasoning enabled (the default turns it off for speed).
 // Without a database (pool is null) the settings and links only last until the server restarts.
-const TIMEOUT = 120000;
+const TIMEOUT = 45000;       // longest wait for a single provider call
+const RUN_BUDGET = 60000;    // longest total time for one whole run; keep below the browser/proxy limit
+const MIN_CALL_MS = 5000;    // never start a call with less time than this
+const ROUND_MIN_MS = 20000;  // do not start another round with less time than this
 const QUESTION_MAX = 4096;
 // Reasoning models (Qwen on Groq, Nemotron, Gemini 3.5) spend output tokens on thinking before the visible answer.
 // 1024 was often used up by the thinking alone, which left an empty or cut-off answer.
 const MAX_OUT = 8192;
+// Turn off the reasoning step on providers that support it, unless MAGI_THINKING=on.
+const NO_THINK = process.env.MAGI_THINKING !== 'on';
+let runDeadline = 0; // set at the start of each run
 
 const FORMAT_VERDICT = 'On the first line write exactly APPROVED or DENIED. Then give your reasoning in at most three sentences. Plain text only.';
 const FORMAT_DISCUSS = 'Do not answer yes or no, and never use the words APPROVED or DENIED. On the first line write a headline of at most eight words that sums up your position. Then give your analysis in at most four sentences. Plain text only.';
@@ -180,9 +187,10 @@ const errText = (d, status) => {
 };
 
 // POST JSON. A rate limit (429) or a briefly unavailable server (503) is tried once more, since the free tiers hit those often.
-async function postJson(url, headers, body) {
+// ms is the longest this one request may wait.
+async function postJson(url, headers, body, ms = TIMEOUT) {
   for (let attempt = 0; ; attempt++) {
-    const r = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(TIMEOUT) });
+    const r = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(ms) });
     if ((r.status === 429 || r.status === 503) && attempt === 0) {
       const wait = Math.min(4000, (Number(r.headers.get('retry-after')) || 1.5) * 1000);
       await new Promise((ok) => setTimeout(ok, wait));
@@ -194,18 +202,23 @@ async function postJson(url, headers, body) {
 }
 
 // One call to one provider. system and user are plain strings. temp is optional (the saved creativity is used when it is left out).
+// Each call is capped by what is left of the run's time budget.
 async function callProvider(view, system, user, temp) {
   const { provider: p, key, model } = view;
   const temperature = temp == null ? settings.temperature : temp;
+  const ms = Math.max(MIN_CALL_MS, Math.min(TIMEOUT, runDeadline - Date.now()));
   if (p.id === 'gemini') {
+    const generationConfig = { temperature, maxOutputTokens: MAX_OUT };
+    if (NO_THINK) generationConfig.thinkingConfig = { thinkingBudget: 0 };
     const { r, d } = await postJson(
       'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent',
       { 'x-goog-api-key': key, 'content-type': 'application/json' },
       {
         systemInstruction: { parts: [{ text: system }] },
         contents: [{ role: 'user', parts: [{ text: user }] }],
-        generationConfig: { temperature, maxOutputTokens: MAX_OUT },
-      }
+        generationConfig,
+      },
+      ms
     );
     if (!r.ok) throw new Error(errText(d, r.status));
     const c = (d.candidates || [])[0];
@@ -217,10 +230,15 @@ async function callProvider(view, system, user, temp) {
   const url = p.url();
   const headers = { 'content-type': 'application/json', authorization: 'Bearer ' + key };
   if (p.id === 'openrouter') headers['X-Title'] = 'MAGI';
-  const { r, d } = await postJson(url, headers, {
+  const body = {
     model, temperature, max_tokens: MAX_OUT,
     messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
-  });
+  };
+  if (NO_THINK) {
+    if (p.id === 'groq') body.reasoning_effort = 'none';
+    if (p.id === 'openrouter') body.reasoning = { enabled: false };
+  }
+  const { r, d } = await postJson(url, headers, body, ms);
   if (!r.ok) throw new Error(errText(d, r.status));
   const ch = d.choices && d.choices[0];
   if (d.error) throw new Error(errText(d, r.status)); // OpenRouter can answer 200 with an error body
@@ -268,18 +286,21 @@ async function step(n, question, mine, others, kind, round, total, cfg) {
     if (!String(text).trim()) throw new Error('empty');
     return shape(v, text, started, cfg.mode, round, kind);
   } catch (e) {
-    // If a later round fails, the node keeps what it said before.
+    // If a later round fails, the node keeps what it said before. Log why, so a slow or broken node is visible.
+    console.error('magi round', round, n.id, (e && e.message) || e);
     return { ...mine };
   }
 }
 
 async function deliberate(question, cfg) {
+  runDeadline = Date.now() + RUN_BUDGET;
   const total = cfg.rounds;
   let cur = await Promise.all(NODES.map((n) => round1(n, question, cfg)));
   const spent = cur.map((r) => r.ms || 0);
   const hist = cur.map((r) => (r.ok ? [{ round: 1, kind: r.kind, verdict: r.verdict, text: r.text }] : []));
 
   for (let rd = 2; rd <= total; rd++) {
+    if (runDeadline - Date.now() < ROUND_MIN_MS) break; // not enough time left: keep the answers so far
     const kind = rd === 2 ? (cfg.convince ? 'convince' : 'debate') : 'final';
     const prev = cur;
     cur = await Promise.all(NODES.map((n, i) => {
@@ -411,6 +432,7 @@ module.exports = function mount(app, { pool, auth, admin, wrap }) {
     if (!n) return res.status(400).json({ error: 'Unknown node.' });
     const v = effective(n), started = Date.now();
     if (!v.key) return res.json({ ok: false, error: 'Not set up: add ' + hintOf(v.provider) + ' on the server', model: v.model });
+    runDeadline = Date.now() + TIMEOUT;
     try {
       const text = await callProvider(v, 'Reply with the single word APPROVED and nothing else.', 'Test.');
       if (!String(text).trim()) return res.json({ ok: false, error: 'Empty answer', model: v.model, ms: Date.now() - started });
