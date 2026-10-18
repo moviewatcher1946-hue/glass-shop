@@ -1,7 +1,13 @@
 // MAGI console (admin only), loaded by index.html for the admin role.
 //  - Lives INSIDE the admin Dashboard (above the numbers) and appears only while NERV mode is on.
 //  - Layout follows the MAGI screen: Balthasar top, Casper left, Melchior right, MAGI in the middle.
-//  - The LINKS button (top right of the panel) opens the provider / model switches for each node.
+//  - The CONTROL button (top right of the panel) is where you change how the nodes act:
+//      * MODE: VERDICT (approved / denied, majority wins) or DISCUSS (no yes or no, they talk it through),
+//      * 3-ROUND MODE (optional, off by default): round 2 = the convincing round, round 3 = the final ruling,
+//      * STANDING ORDERS that every node must follow, a personality box per node, MUTE per node, and CREATIVITY.
+//    The DECREE box next to EXECUTE lets you force APPROVED or DENIED for one run, whatever the nodes vote.
+//  - The LINKS button opens the provider / model switches for each node.
+//  - Hover a node screen to read its answer; with more than one round you see every round it spoke.
 //  - Sound (Web Audio, nothing to download):
 //      * an eerie ambient drone plays while the console is idle (starts on your first tap / click, because browsers block audio before that),
 //      * a mechanical machine-room drone with relay clicks and servo whines while the nodes think,
@@ -28,9 +34,13 @@
   var DISPLAY = { melchior: 'MELCHIOR\u20221', balthasar: 'BALTHASAR\u20222', caspar: 'CASPER\u20223' };
   var KATA = { melchior: '\u30e1\u30eb\u30ad\u30aa\u30fc\u30eb', balthasar: '\u30d0\u30eb\u30bf\u30b6\u30fc\u30eb', caspar: '\u30ab\u30b9\u30d1\u30fc' };
   var ORDER = { caspar: 1, balthasar: 2, melchior: 3 };
-  var KANJI = { APPROVED: '\u627f\u8a8d', DENIED: '\u5426\u6c7a', UNCLEAR: '\u4e0d\u660e', 'NO CONSENSUS': '\u6c7a\u8b70\u4e0d\u80fd' };
+  var KANJI = { APPROVED: '\u627f\u8a8d', DENIED: '\u5426\u6c7a', UNCLEAR: '\u4e0d\u660e', 'NO CONSENSUS': '\u6c7a\u8b70\u4e0d\u80fd', OPEN: '\u898b\u89e3', DISCUSSED: '\u5354\u8b70' };
   var K_WAIT = '\u5be9\u8b70\u4e2d', K_IDLE = '\u5f85\u6a5f', K_OFF = '\u672a\u63a5\u7d9a', K_NONE = '\u5fdc\u7b54\u306a\u3057';
   var K_Q = '\u8cea\u554f', K_A = '\u89e3\u6c7a', K_INFO = '\u60c5\u5831';
+
+  // the admin's settings (the server is the source of truth; this is the copy the screen uses)
+  var cfg = { mode: 'verdict', rounds: 1, convince: true, temperature: 0.4, directive: '' };
+  var lastNodes = [], pCols = {};
 
   // the three screen shapes (from the reference stylesheet)
   var SHAPE = {
@@ -163,6 +173,26 @@
     '.mg-pips i{width:11px;height:11px;border:2px solid var(--mg-gn);transform:rotate(45deg)}',
     '.mg-pips i.ap{background:var(--mg-gn)}.mg-pips i.dn{background:var(--mg-no);border-color:var(--mg-no)}.mg-pips i.off{border-color:var(--mg-dim)}',
 
+    // the CONTROL panel: how the nodes act
+    '.mg-panel>.mg-ctrl{display:none;position:absolute;z-index:8;top:64px;right:20px;width:min(900px,calc(100% - 40px));max-height:calc(100% - 84px);overflow:auto;margin:0;padding:0;background:#000;border:2px solid var(--mg-or);color:var(--mg-or);font-family:"Lucida Console",Menlo,Consolas,monospace}',
+    '#magi-dash.ctrl .mg-panel>.mg-ctrl{display:block}',
+    '.mg-cb{display:grid;gap:12px;padding:12px}',
+    '.mg-row{display:grid;grid-template-columns:150px minmax(0,1fr);gap:8px 12px;align-items:center}',
+    '.mg-row>label,.mg-pcol>label{font-size:.72rem;letter-spacing:.2em;color:var(--mg-hi)}',
+    '.mg-seg{display:flex;gap:6px;flex-wrap:wrap}',
+    '#magi-dash .mg-seg .mg-btn{padding:6px 12px;font-size:.8rem}',
+    '#magi-dash .mg-seg .mg-btn.sel{background:var(--mg-or);color:#000}',
+    '.mg-note{font:500 12px/1.4 ui-monospace,Menlo,Consolas,monospace;text-transform:none;color:var(--mg-hi);opacity:.85}',
+    '.mg-cb textarea{width:100%;margin:0;min-height:70px;padding:6px 8px;color:var(--mg-hi);background:#000;border:1px solid var(--mg-or);font:500 12px/1.35 ui-monospace,Menlo,Consolas,monospace;text-transform:none;resize:vertical;box-shadow:none}',
+    '.mg-cb textarea:focus,.mg-cb input[type=range]:focus{outline:none;box-shadow:0 0 0 2px #ff8a1f66}',
+    '.mg-cb input[type=range]{width:100%;margin:0;padding:0;min-height:0;accent-color:var(--mg-or)}',
+    '.mg-pgrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}',
+    '.mg-pcol{display:flex;flex-direction:column;gap:6px;min-width:0;padding:8px;border:1px solid var(--mg-dim);background:#050200}',
+    '.mg-pcol textarea{min-height:150px}',
+    '.mg-pcol .mg-acts{display:flex}',
+    '.mg-dec{margin-left:auto;min-height:0;padding:5px 8px;color:var(--mg-or);background:#000;border:1px solid var(--mg-or);font:700 .75rem/1.2 inherit;letter-spacing:.08em;text-transform:uppercase}',
+    '.mg-dec option{background:#000;color:var(--mg-hi)}',
+
     // bottom row, like the reference: question: [ input ] EXECUTE
     '.mg-form{position:relative;z-index:4;display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:center;margin:18px 0 0;padding-top:12px;border-top:1px solid var(--mg-dim)}',
     '.mg-form .mg-ql{font-size:.9rem;letter-spacing:.14em;color:var(--mg-or);white-space:nowrap}',
@@ -191,7 +221,7 @@
     '.mg-panel:after{content:"";position:absolute;inset:0;z-index:3;pointer-events:none;background:repeating-linear-gradient(0deg,rgba(0,0,0,.3) 0 1px,transparent 1px 3px);animation:mgFlick 5s linear infinite}',
     '@keyframes mgFlick{0%,100%{opacity:1}92%{opacity:1}93%{opacity:.6}94%{opacity:1}97%{opacity:.85}98%{opacity:1}}',
     '.mg-hx.dn{filter:none}',
-    '@media (max-width:860px){.mg-ctls{grid-template-columns:1fr}.mg-form{grid-template-columns:1fr}.mg-run{min-height:44px}.mg-lb{grid-template-columns:1fr}}',
+    '@media (max-width:860px){.mg-ctls{grid-template-columns:1fr}.mg-form{grid-template-columns:1fr}.mg-run{min-height:44px}.mg-lb{grid-template-columns:1fr}.mg-pgrid{grid-template-columns:1fr}.mg-row{grid-template-columns:1fr}.mg-dec{margin-left:0}}',
     '@media (prefers-reduced-motion:reduce){#magi-dash *{animation:none!important}}',
   ].join('\n');
   var style = document.createElement('style');
@@ -479,7 +509,7 @@
     beep(hit + 0.85, 880, 0.14, v, 'square');
     beep(hit + 1.05, 220, 0.6, v * 0.7, 'sawtooth', 110);
   }
-  // no consensus / test: two flat mid beeps
+  // no consensus / test / discussion: two flat mid beeps
   function unclearSound(hit) {
     var v = DING_VOL * 0.6;
     beep(hit, 1000, 0.12, v, 'square');
@@ -540,11 +570,19 @@
     th.connect(tg); tg.connect(bus); th.start(t); th.stop(t + 0.65);
     burst(t, 0.08, 'lowpass', 300, 0.25, 0.4);
   }
+  // one AI has spoken in discuss mode (no yes or no): a relay click and one soft tone, each AI at its own pitch
+  function openPing(id) {
+    var t = ctx.currentTime;
+    relay(t, 0.5);
+    dingTone(t + 0.03, pingBase(id, 'ap') / 2, 0.12);
+  }
   // one AI has decided
   function nodePing(verdict, id) {
     if (!soundOn() || !audio()) return;
     duckAmbient(ctx.currentTime, 0.04, 0.9, 2);
-    if (verdict === 'DENIED') deniedPing(id); else approvedPing(id);
+    if (verdict === 'DENIED') deniedPing(id);
+    else if (verdict === 'OPEN') openPing(id);
+    else approvedPing(id);
   }
   // a short clean ding with a fading tail and a little echo
   function dingTone(t, f, vol) {
@@ -577,11 +615,12 @@
   root.appendChild(panel);
 
   var bar = el('div', 'mg-bar');
+  var ctrlBtn = el('button', 'mg-btn', 'CONTROL');
   var linksBtn = el('button', 'mg-btn', 'LINKS');
   var sndBtn = el('button', 'mg-btn', 'SOUND: ON');
   var maxBtn = el('button', 'mg-btn', 'EXPAND');
   var offBtn = el('button', 'mg-btn', 'NERV: ON');
-  [linksBtn, sndBtn, maxBtn, offBtn].forEach(function (b) { b.type = 'button'; bar.appendChild(b); });
+  [ctrlBtn, linksBtn, sndBtn, maxBtn, offBtn].forEach(function (b) { b.type = 'button'; bar.appendChild(b); });
   panel.appendChild(bar);
 
   // the board: header rules, code block, response box, title and the three screens all sit in one grid
@@ -594,7 +633,8 @@
     nodesWrap.appendChild(d);
   });
   var statusBox = el('div', 'mg-status');
-  ['CODE:473', 'FILE:MAGI_SYS', 'EXTENTION:3023', 'EX_MODE:OFF', 'PRIORITY:AAA'].forEach(function (s) { statusBox.appendChild(el('div', null, s)); });
+  ['CODE:473', 'FILE:MAGI_SYS', 'EXTENTION:3023', 'EX_MODE:VERDICT/R1', 'PRIORITY:AAA'].forEach(function (s) { statusBox.appendChild(el('div', null, s)); });
+  var exModeEl = statusBox.children[3];
   nodesWrap.appendChild(statusBox);
   nodesWrap.appendChild(el('div', 'mg-title', 'MAGI'));
   var res = el('div', 'mg-res');
@@ -613,7 +653,7 @@
   var pips = el('div', 'mg-pips');
   panel.appendChild(pips);
 
-  // bottom row: question: [ input ] EXECUTE, then the example chips
+  // bottom row: question: [ input ] EXECUTE, then the example chips and the decree box
   var form = el('div', 'mg-form');
   var ql = el('span', 'mg-ql', 'QUESTION:');
   var ta = el('textarea');
@@ -632,6 +672,15 @@
     c.addEventListener('click', function () { ta.value = t; ta.focus(); });
     chips.appendChild(c);
   });
+  // the decree: force the result of the next run (it resets to AUTO after every run)
+  var dec = el('select', 'mg-dec');
+  dec.setAttribute('aria-label', 'Admin decree for the next run');
+  [['', 'DECREE: AUTO (THEY VOTE)'], ['APPROVED', 'DECREE: FORCE APPROVED'], ['DENIED', 'DECREE: FORCE DENIED']].forEach(function (o) {
+    var op = el('option', null, o[1]);
+    op.value = o[0];
+    dec.appendChild(op);
+  });
+  chips.appendChild(dec);
   form.appendChild(chips);
   panel.appendChild(form);
   var linkWrap = el('div', 'mg-links');
@@ -645,6 +694,147 @@
   linkWrap.appendChild(linkHead);
   linkWrap.appendChild(linkBody);
   panel.appendChild(linkWrap);
+
+  // ===== CONTROL panel: how the nodes act =====
+  var ctrlWrap = el('div', 'mg-ctrl');
+  var ctrlHead = el('div', 'mg-lh');
+  ctrlHead.appendChild(el('div', 'mg-lt', 'CONTROL'));
+  var ctrlX = el('button', 'mg-lx', 'X');
+  ctrlX.type = 'button';
+  ctrlX.setAttribute('aria-label', 'Close control');
+  ctrlHead.appendChild(ctrlX);
+  var ctrlBody = el('div', 'mg-cb');
+  ctrlWrap.appendChild(ctrlHead);
+  ctrlWrap.appendChild(ctrlBody);
+  panel.appendChild(ctrlWrap);
+
+  var ctrlOut = el('div', 'mg-out');
+  function ctrlNote(msg, kind) { ctrlOut.textContent = msg || ''; ctrlOut.className = 'mg-out' + (kind ? ' ' + kind : ''); }
+
+  // a row of buttons where one is lit; opts is [[value, text], ...]
+  function seg(label, opts, onPick) {
+    var row = el('div', 'mg-row'), box = el('div', 'mg-seg'), btns = {};
+    row.appendChild(el('label', null, label));
+    opts.forEach(function (o) {
+      var b = el('button', 'mg-btn', o[1]);
+      b.type = 'button';
+      b.addEventListener('click', function () { onPick(o[0]); });
+      btns[o[0]] = b;
+      box.appendChild(b);
+    });
+    row.appendChild(box);
+    ctrlBody.appendChild(row);
+    return {
+      row: row,
+      mark: function (v) { Object.keys(btns).forEach(function (k) { btns[k].classList.toggle('sel', String(k) === String(v)); }); }
+    };
+  }
+  var segMode = seg('MODE', [['verdict', 'VERDICT \u00b7 APPROVE / DENY'], ['discuss', 'DISCUSS \u00b7 NO YES OR NO']], function (v) { quick({ mode: v }); });
+  var segRounds = seg('3-ROUND MODE', [[1, 'OFF \u00b7 ONE QUICK ROUND'], [3, 'ON \u00b7 THREE ROUNDS']], function (v) { quick({ rounds: v }); });
+  var segConv = seg('CONVINCING ROUND', [['1', 'ON'], ['0', 'OFF']], function (v) { quick({ convince: v === '1' }); });
+  ctrlBody.appendChild(el('div', 'mg-note', '3-ROUND MODE OFF: each node answers once, alone (fast). ON: Round 1: each node answers alone. Round 2: the convincing round, where each node reads the others and argues to win them over (switch it off and round 2 is a plain debate). Round 3: the final ruling, after every node has heard every appeal. These buttons save at once.'));
+
+  var tRow = el('div', 'mg-row'), tLab = el('label', null, 'CREATIVITY 0.4'), tr = el('input');
+  tr.type = 'range'; tr.min = '0'; tr.max = '1.5'; tr.step = '0.1'; tr.value = '0.4';
+  tr.setAttribute('aria-label', 'Creativity of the nodes');
+  tRow.appendChild(tLab);
+  tRow.appendChild(tr);
+  ctrlBody.appendChild(tRow);
+  tr.addEventListener('input', function () { tLab.textContent = 'CREATIVITY ' + Number(tr.value).toFixed(1); });
+  tr.addEventListener('change', function () { quick({ temperature: Number(tr.value) }); });
+
+  var ordRow = el('div', 'mg-row'), ordTa = el('textarea');
+  ordTa.maxLength = 1200;
+  ordTa.placeholder = 'Orders every node must follow, for example: "Our shop is small, so be careful with money." Leave empty for none.';
+  ordTa.setAttribute('aria-label', 'Standing orders for every node');
+  ordRow.appendChild(el('label', null, 'STANDING ORDERS'));
+  ordRow.appendChild(ordTa);
+  ctrlBody.appendChild(ordRow);
+
+  var pGrid = el('div', 'mg-pgrid');
+  ctrlBody.appendChild(pGrid);
+  ctrlBody.appendChild(el('div', 'mg-note', 'Each box is that node\u2019s personality. Rewrite it however you like, then press SAVE. MUTE silences a node (it stops voting) and saves at once. DEFAULT puts the built-in personality back in the box.'));
+
+  var cAct = el('div', 'mg-acts');
+  var bSaveCtrl = el('button', 'mg-btn solid', 'SAVE ORDERS + PERSONALITIES');
+  var bResetCtrl = el('button', 'mg-btn', 'RESET ALL');
+  [bSaveCtrl, bResetCtrl].forEach(function (b) { b.type = 'button'; cAct.appendChild(b); });
+  ctrlBody.appendChild(cAct);
+  ctrlBody.appendChild(ctrlOut);
+
+  // build the personality boxes (once the node list is known)
+  function buildCtrl(list) {
+    pGrid.textContent = '';
+    pCols = {};
+    list.slice().sort(function (a, b) { return (ORDER[a.id] || 9) - (ORDER[b.id] || 9); }).forEach(function (n) {
+      var col = el('div', 'mg-pcol'), pta = el('textarea');
+      pta.maxLength = 1500;
+      pta.setAttribute('aria-label', 'Personality for ' + n.name);
+      var acts = el('div', 'mg-acts'), bMute = el('button', 'mg-btn', 'MUTE'), bDef = el('button', 'mg-btn', 'DEFAULT');
+      [bMute, bDef].forEach(function (b) { b.type = 'button'; acts.appendChild(b); });
+      col.appendChild(el('label', null, (DISPLAY[n.id] || n.name) + ' \u00b7 PERSONALITY'));
+      col.appendChild(pta);
+      col.appendChild(acts);
+      pGrid.appendChild(col);
+      var pc = { ta: pta, mute: bMute, def: '', muted: false };
+      pCols[n.id] = pc;
+      bMute.addEventListener('click', function () { var o = {}; o[n.id] = { muted: !pc.muted }; quick({ nodes: o }); });
+      bDef.addEventListener('click', function () { pta.value = pc.def; });
+    });
+  }
+  // put the saved values into the control panel (text = also overwrite the text boxes)
+  function fillCtrl(list, text) {
+    (list || []).forEach(function (n) {
+      var pc = pCols[n.id];
+      if (!pc) return;
+      pc.def = n.default_persona || '';
+      pc.muted = !!n.muted;
+      pc.mute.textContent = pc.muted ? 'UNMUTE' : 'MUTE';
+      pc.mute.classList.toggle('solid', pc.muted);
+      if (text) pc.ta.value = n.persona || pc.def;
+    });
+    if (text) ordTa.value = cfg.directive || '';
+  }
+  // reflect the mode, rounds and creativity everywhere they show
+  function syncMode() {
+    segMode.mark(cfg.mode);
+    segRounds.mark(cfg.rounds > 1 ? 3 : 1);
+    segConv.mark(cfg.convince ? '1' : '0');
+    segConv.row.style.opacity = cfg.rounds < 2 ? '.4' : '1';   // only matters when the 3-round mode is on
+    tr.value = String(cfg.temperature);
+    tLab.textContent = 'CREATIVITY ' + Number(cfg.temperature).toFixed(1);
+    exModeEl.textContent = 'EX_MODE:' + (cfg.mode === 'discuss' ? 'DISCUSS' : 'VERDICT') + '/R' + cfg.rounds;
+    dec.style.display = cfg.mode === 'verdict' ? '' : 'none';
+    ta.placeholder = cfg.mode === 'discuss' ? 'Ask anything. The nodes will talk it through without a yes or no.' : 'Ask a yes or no question.';
+  }
+  function takeSettings(d, text) {
+    if (d.settings) cfg = d.settings;
+    if (d.nodes) {
+      lastNodes = d.nodes;
+      d.nodes.forEach(function (n) { if (cards[n.id]) applyNode(cards[n.id], n); });
+      idleLine(d.nodes);
+    }
+    syncMode();
+    fillCtrl(lastNodes, text);
+  }
+  function saveSettings(body, msg, text) {
+    ctrlNote('SAVING...');
+    return api('/api/admin/magi/settings', 'POST', body).then(function (d) {
+      takeSettings(d, text);
+      ctrlNote(msg || 'SAVED', 'ok');
+    }).catch(function (e) { ctrlNote(e.message, 'err'); });
+  }
+  function quick(patch) { return saveSettings(patch, 'SAVED'); }
+  bSaveCtrl.addEventListener('click', function () {
+    var nodes = {};
+    Object.keys(pCols).forEach(function (id) {
+      var pc = pCols[id], v = pc.ta.value.trim();
+      nodes[id] = { persona: v === pc.def.trim() ? '' : v };   // the built-in text is saved as "no change"
+    });
+    saveSettings({ directive: ordTa.value, nodes: nodes }, 'ORDERS AND PERSONALITIES SAVED', true);
+  });
+  bResetCtrl.addEventListener('click', function () { saveSettings({ reset: true }, 'EVERYTHING BACK TO DEFAULT', true); });
+  syncMode();
 
   // ===== header switch =====
   var hdrTgl = el('button', 'mg-hdr');
@@ -682,9 +872,17 @@
   function setLinks(open) {
     root.classList.toggle('links', open);
     linksBtn.textContent = open ? 'LINKS \u25b4' : 'LINKS';
+    if (open) setCtrl(false);
+  }
+  function setCtrl(open) {
+    root.classList.toggle('ctrl', open);
+    ctrlBtn.textContent = open ? 'CONTROL \u25b4' : 'CONTROL';
+    if (open) { root.classList.remove('links'); linksBtn.textContent = 'LINKS'; }
   }
   linksBtn.addEventListener('click', function () { setLinks(!root.classList.contains('links')); });
   linkX.addEventListener('click', function () { setLinks(false); });
+  ctrlBtn.addEventListener('click', function () { setCtrl(!root.classList.contains('ctrl')); });
+  ctrlX.addEventListener('click', function () { setCtrl(false); });
   sndBtn.addEventListener('click', function () {
     var next = !soundOn();
     try { localStorage.setItem(SND, next ? '1' : '0'); } catch (e) { }
@@ -781,15 +979,17 @@
   function note(c, msg, kind) { c.out.textContent = msg || ''; c.out.className = 'mg-out' + (kind ? ' ' + kind : ''); }
 
   function applyNode(c, n) {
+    if (c.muted !== !!n.muted) c.shown = false;   // a node that was just muted or unmuted goes back to its standby screen
     c.n = n;
     c.enabled = n.enabled;
+    c.muted = !!n.muted;
     c.tag = n.role + ' \u00b7 ' + n.provider + ' \u00b7 ' + (n.model || '');
     fillProviders(c);
     c.model.value = n.model || '';
     c.model.placeholder = n.default_model || 'model name';
     if (!c.shown) {
       if (n.enabled) paint(c, '', K_IDLE, 'STANDBY', c.tag);
-      else paint(c, 'off', K_OFF, 'NO KEY', c.tag);
+      else paint(c, 'off', K_OFF, n.muted ? 'MUTED' : 'NO KEY', c.tag);
     }
   }
 
@@ -881,7 +1081,7 @@
     pips.textContent = '';
     (list || []).forEach(function (r) {
       var i = el('i', !r.ok ? 'off' : r.verdict === 'APPROVED' ? 'ap' : r.verdict === 'DENIED' ? 'dn' : '');
-      i.title = (DISPLAY[r.id] || r.name) + ': ' + (r.ok ? r.verdict : 'NO RESPONSE');
+      i.title = (DISPLAY[r.id] || r.name) + ': ' + (r.ok ? (r.verdict === 'OPEN' ? 'SPOKE' : r.verdict) : 'NO RESPONSE');
       pips.appendChild(i);
     });
   }
@@ -901,8 +1101,12 @@
       loaded = true;
       provs = d.providers || [];
       var list = d.nodes || [];
-      if (!built) buildNodes(list);
+      if (d.settings) cfg = d.settings;
+      lastNodes = list;
+      if (!built) { buildNodes(list); buildCtrl(list); }
       else list.forEach(function (n) { if (cards[n.id]) applyNode(cards[n.id], n); });
+      fillCtrl(list, true);
+      syncMode();
       idleLine(list);
     }).catch(function (e) {
       resSub.textContent = e.message || 'Could not load MAGI status';
@@ -911,6 +1115,17 @@
 
   function setBusy(c) { c.shown = false; paint(c, 'busy', K_WAIT, 'DELIBERATING', c.tag, ''); c.mb.style.setProperty('--w', '0%'); }
 
+  var ROUND_NAME = { independent: 'ALONE', debate: 'DEBATE', convince: 'CONVINCING', final: 'FINAL' };
+  // what the node screen shows when you hover it: every round the node spoke in
+  function logOf(r) {
+    var h = r.history || [];
+    if (h.length < 2) return r.text || '';
+    return h.map(function (x) {
+      var tag = 'ROUND ' + x.round + ' \u00b7 ' + (ROUND_NAME[x.kind] || '') + (x.verdict && x.verdict !== 'OPEN' ? ' \u00b7 ' + x.verdict : '');
+      return tag + '\n' + (x.text || '');
+    }).join('\n\n');
+  }
+
   function showResult(r) {
     var c = cards[r.id];
     if (!c) return;
@@ -918,7 +1133,7 @@
     if (r.ok) {
       var mode = r.verdict === 'DENIED' ? 'dn' : r.verdict === 'APPROVED' ? 'ap' : '';
       var sub = (r.revised ? 'REVISED FROM ' + r.initial + ' \u00b7 ' : '') + (r.ms / 1000).toFixed(1) + 'S \u00b7 ' + (r.provider || '') + ' \u00b7 ' + (r.model || '');
-      paint(c, mode, KANJI[r.verdict] || KANJI.UNCLEAR, r.verdict, sub, r.text || '');
+      paint(c, mode, KANJI[r.verdict] || KANJI.UNCLEAR, r.verdict === 'OPEN' ? 'ANALYSIS' : r.verdict, sub, logOf(r));
       c.mb.style.setProperty('--w', Math.max(6, Math.min(100, Math.round(100 - r.ms / 250))) + '%');
     } else {
       paint(c, 'off', K_NONE, 'NO RESPONSE', c.tag, r.error || 'Node did not respond.', true);
@@ -930,8 +1145,16 @@
     res.className = 'mg-res' + (mode ? ' ' + mode : '');
     resBig.textContent = KANJI[d.decision] || d.decision;
     resBig.className = 'mg-st' + ((KANJI[d.decision] || '').length > 2 ? ' small' : '');
-    resEn.textContent = d.decision === 'APPROVED' ? 'ALL GREEN' : d.decision === 'DENIED' ? 'ALL RED' : d.decision;
-    resSub.textContent = d.approved + ' APPROVED / ' + d.denied + ' DENIED \u00b7 ' + d.responded + ' RESPONDED';
+    if (d.overridden) {
+      resEn.textContent = 'ADMIN DECREE';
+      resSub.textContent = 'FORCED BY ADMIN \u00b7 NODES VOTED ' + d.approved + ' APPROVED / ' + d.denied + ' DENIED';
+    } else if (d.decision === 'DISCUSSED') {
+      resEn.textContent = 'DISCUSSION CLOSED';
+      resSub.textContent = d.responded + ' NODES SPOKE \u00b7 ' + (d.rounds || 1) + ' ROUND' + (d.rounds > 1 ? 'S' : '') + ' \u00b7 NO VOTE';
+    } else {
+      resEn.textContent = d.decision === 'APPROVED' ? 'ALL GREEN' : d.decision === 'DENIED' ? 'ALL RED' : d.decision;
+      resSub.textContent = d.approved + ' APPROVED / ' + d.denied + ' DENIED \u00b7 ' + d.responded + ' RESPONDED';
+    }
     res.classList.add('glitch');
     setTimeout(function () { res.classList.remove('glitch'); }, 500);
     if (d.decision === 'DENIED') {
@@ -953,13 +1176,14 @@
     res.className = 'mg-res busy';
     resBig.textContent = K_WAIT;
     resBig.className = 'mg-st small';
-    resEn.textContent = 'DELIBERATING';
+    resEn.textContent = 'DELIBERATING \u00b7 ' + cfg.rounds + ' ROUND' + (cfg.rounds > 1 ? 'S' : '');
     resSub.textContent = '';
     Object.keys(cards).forEach(function (id) { if (cards[id].enabled) setBusy(cards[id]); });
     startAmbient();   // in case the first tap never started it
     startHum();
     startFlicker();
-    api('/api/admin/magi', 'POST', { question: q }).then(function (d) {
+    var decree = cfg.mode === 'verdict' ? dec.value : '';
+    api('/api/admin/magi', 'POST', { question: q, override: decree }).then(function (d) {
       var list = (d.results || []).slice().sort(function (a, b) { return (a.ms || 0) - (b.ms || 0); });
       var GAP = 900;   // time between one AI showing its colour and the next
       list.forEach(function (r, i) {
@@ -985,6 +1209,7 @@
       resSub.textContent = e.message || 'Request failed';
     }).then(function () {
       busy = false;
+      dec.value = '';   // a decree only lasts for one run
       run.disabled = false;
       run.textContent = 'EXECUTE';
       root.classList.remove('busy');
