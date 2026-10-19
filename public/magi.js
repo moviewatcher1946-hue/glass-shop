@@ -11,6 +11,8 @@
 //    The DECREE box next to EXECUTE lets you force APPROVED or DENIED for one run, whatever the nodes say.
 //    The decree is shown in VERDICT mode, and in LINK mode when the chain ends with a verdict.
 //  - The LINKS button opens the provider / model switches for each node.
+//  - The HISTORY button lists the last 50 runs (saved by the server). Click one to put it back on the board.
+//  - The COPY button copies the last ruling and every node's answer to the clipboard.
 //  - Hover a node screen to read its answer; with more than one round you see every round it spoke.
 //    In LINK mode each screen shows its link (DRAFT, REVIEW, FINAL) and the full chain answer appears under the board.
 //  - Sound (Web Audio, nothing to download):
@@ -209,6 +211,17 @@
     '.mg-dec{margin-left:auto;min-height:0;padding:5px 8px;color:var(--mg-or);background:#000;border:1px solid var(--mg-or);font:700 .75rem/1.2 inherit;letter-spacing:.08em;text-transform:uppercase}',
     '.mg-dec option{background:#000;color:var(--mg-hi)}',
 
+    // the HISTORY panel: the last runs, click one to put it back on the board
+    '.mg-panel>.mg-hist{display:none;position:absolute;z-index:9;top:64px;right:20px;width:min(760px,calc(100% - 40px));margin:0;padding:0;background:#000;border:2px solid var(--mg-or);color:var(--mg-or);font-family:"Lucida Console",Menlo,Consolas,monospace;overflow:auto;overscroll-behavior:contain}',
+    '#magi-dash.hist .mg-panel>.mg-hist{display:block}',
+    '.mg-hi{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:center;padding:10px;border-bottom:1px solid var(--mg-dim);cursor:pointer;text-transform:none;font:500 13px/1.3 ui-monospace,Menlo,Consolas,monospace;color:var(--mg-hi)}',
+    '.mg-hi:hover{background:#1f1203}',
+    '.mg-hi b{font:800 .72rem/1 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.1em;text-transform:uppercase}',
+    '.mg-hi.ap b{color:var(--mg-gn)}.mg-hi.dn b{color:var(--mg-no)}',
+    '.mg-hi span:last-child{opacity:.6;font-size:11px;white-space:nowrap}',
+    '.mg-hi span:nth-child(2){overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+    '.mg-hist .mg-note{padding:10px}',
+
     // bottom row, like the reference: question: [ input ] EXECUTE
     '.mg-form{position:relative;z-index:4;display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:center;margin:18px 0 0;padding-top:12px;border-top:1px solid var(--mg-dim)}',
     '.mg-form .mg-ql{font-size:.9rem;letter-spacing:.14em;color:var(--mg-or);white-space:nowrap}',
@@ -238,9 +251,9 @@
     '@keyframes mgFlick{0%,100%{opacity:1}92%{opacity:1}93%{opacity:.6}94%{opacity:1}97%{opacity:.85}98%{opacity:1}}',
     '.mg-hx.dn{filter:none}',
     '.mg-panel>.mg-links,.mg-panel>.mg-ctrl{overflow:auto;overscroll-behavior:contain}',
-    '.mg-panel>.mg-links .mg-lh,.mg-panel>.mg-ctrl .mg-lh{position:sticky;top:0;z-index:2;background:#000}',
+    '.mg-panel>.mg-links .mg-lh,.mg-panel>.mg-ctrl .mg-lh,.mg-panel>.mg-hist .mg-lh{position:sticky;top:0;z-index:2;background:#000}',
     '#magi-dash .mg-lx{min-width:46px;min-height:34px;font-size:1rem}',
-    '@media (max-width:860px){.mg-ctls{grid-template-columns:1fr}.mg-form{grid-template-columns:1fr}.mg-run{min-height:44px}.mg-lb{grid-template-columns:1fr}.mg-pgrid{grid-template-columns:1fr}.mg-row{grid-template-columns:1fr}.mg-dec{margin-left:0}}',
+    '@media (max-width:860px){.mg-ctls{grid-template-columns:1fr}.mg-form{grid-template-columns:1fr}.mg-run{min-height:44px}.mg-lb{grid-template-columns:1fr}.mg-pgrid{grid-template-columns:1fr}.mg-row{grid-template-columns:1fr}.mg-dec{margin-left:0}.mg-hi{grid-template-columns:auto minmax(0,1fr)}.mg-hi span:last-child{grid-column:1/-1}}',
     '@media (prefers-reduced-motion:reduce){#magi-dash *{animation:none!important}}',
   ].join('\n');
   var style = document.createElement('style');
@@ -646,10 +659,13 @@
   var bar = el('div', 'mg-bar');
   var ctrlBtn = el('button', 'mg-btn', 'CONTROL');
   var linksBtn = el('button', 'mg-btn', 'LINKS');
+  var histBtn = el('button', 'mg-btn', 'HISTORY');
+  var copyBtn = el('button', 'mg-btn', 'COPY');
   var sndBtn = el('button', 'mg-btn', 'SOUND: ON');
   var maxBtn = el('button', 'mg-btn', 'EXPAND');
   var offBtn = el('button', 'mg-btn', 'NERV: ON');
-  [ctrlBtn, linksBtn, sndBtn, maxBtn, offBtn].forEach(function (b) { b.type = 'button'; bar.appendChild(b); });
+  var lastRun = null;   // the last run on the board (a fresh run or one replayed from the history), used by COPY
+  [ctrlBtn, linksBtn, histBtn, copyBtn, sndBtn, maxBtn, offBtn].forEach(function (b) { b.type = 'button'; bar.appendChild(b); });
   panel.appendChild(bar);
 
   // the board: header rules, code block, response box, title and the three screens all sit in one grid
@@ -749,6 +765,19 @@
   ctrlWrap.appendChild(ctrlHead);
   ctrlWrap.appendChild(ctrlBody);
   panel.appendChild(ctrlWrap);
+
+  // ===== HISTORY panel: the last runs, saved by the server =====
+  var histWrap = el('div', 'mg-hist');
+  var histHead = el('div', 'mg-lh');
+  histHead.appendChild(el('div', 'mg-lt', 'HISTORY'));
+  var histX = el('button', 'mg-lx', 'X');
+  histX.type = 'button';
+  histX.setAttribute('aria-label', 'Close history');
+  histHead.appendChild(histX);
+  var histBody = el('div');
+  histWrap.appendChild(histHead);
+  histWrap.appendChild(histBody);
+  panel.appendChild(histWrap);
 
   var ctrlOut = el('div', 'mg-out');
   function ctrlNote(msg, kind) { ctrlOut.textContent = msg || ''; ctrlOut.className = 'mg-out' + (kind ? ' ' + kind : ''); }
@@ -932,37 +961,51 @@
   hdrTgl.addEventListener('click', function () { setNerv(!root.classList.contains('on')); });
   stripBtn.addEventListener('click', function () { setNerv(true); });
   offBtn.addEventListener('click', function () { setNerv(false); });
+
+  // the three pop-up panels (LINKS, CONTROL, HISTORY): only one is open at a time
   function setLinks(open) {
     root.classList.toggle('links', open);
     linksBtn.textContent = open ? 'LINKS \u25b4' : 'LINKS';
-    if (open) { setCtrl(false); placePanels(); }
+    if (open) { root.classList.remove('hist'); histBtn.textContent = 'HISTORY'; setCtrl(false); placePanels(); }
   }
   function setCtrl(open) {
     root.classList.toggle('ctrl', open);
     ctrlBtn.textContent = open ? 'CONTROL \u25b4' : 'CONTROL';
-    if (open) { root.classList.remove('links'); linksBtn.textContent = 'LINKS'; placePanels(); }
+    if (open) { root.classList.remove('hist'); histBtn.textContent = 'HISTORY'; root.classList.remove('links'); linksBtn.textContent = 'LINKS'; placePanels(); }
   }
+  function setHist(open) {
+    if (open) {
+      root.classList.remove('links'); linksBtn.textContent = 'LINKS';
+      root.classList.remove('ctrl'); ctrlBtn.textContent = 'CONTROL';
+    }
+    root.classList.toggle('hist', open);
+    histBtn.textContent = open ? 'HISTORY \u25b4' : 'HISTORY';
+    if (open) { placePanels(); loadHist(); }
+  }
+  var anyPanel = function () { return root.classList.contains('links') || root.classList.contains('ctrl') || root.classList.contains('hist'); };
   linksBtn.addEventListener('click', function () { setLinks(!root.classList.contains('links')); });
   linkX.addEventListener('click', function () { setLinks(false); });
   ctrlBtn.addEventListener('click', function () { setCtrl(!root.classList.contains('ctrl')); });
   ctrlX.addEventListener('click', function () { setCtrl(false); });
-  // the two pop-up panels sit just under the button bar (never over it) and scroll inside if they are taller than the console
+  histBtn.addEventListener('click', function () { setHist(!root.classList.contains('hist')); });
+  histX.addEventListener('click', function () { setHist(false); });
+  // the pop-up panels sit just under the button bar (never over it) and scroll inside if they are taller than the console
   function placePanels() {
     var top = (bar.offsetTop || 0) + (bar.offsetHeight || 0) + 6;
-    [linkWrap, ctrlWrap].forEach(function (w) {
+    [linkWrap, ctrlWrap, histWrap].forEach(function (w) {
       w.style.top = top + 'px';
       w.style.maxHeight = Math.max(200, (panel.clientHeight || 600) - top - 10) + 'px';
     });
   }
-  function closePanels() { setLinks(false); setCtrl(false); }
+  function closePanels() { setLinks(false); setCtrl(false); setHist(false); }
   // several ways out: the X, the same button again, a click anywhere outside the panel, or the Escape key
   root.addEventListener('click', function (e) {
-    if (!root.classList.contains('links') && !root.classList.contains('ctrl')) return;
+    if (!anyPanel()) return;
     var t = e.target;
-    if (linkWrap.contains(t) || ctrlWrap.contains(t) || bar.contains(t)) return;
+    if (linkWrap.contains(t) || ctrlWrap.contains(t) || histWrap.contains(t) || bar.contains(t)) return;
     closePanels();
   });
-  window.addEventListener('resize', function () { if (root.classList.contains('links') || root.classList.contains('ctrl')) placePanels(); });
+  window.addEventListener('resize', function () { if (anyPanel()) placePanels(); });
   sndBtn.addEventListener('click', function () {
     var next = !soundOn();
     try { localStorage.setItem(SND, next ? '1' : '0'); } catch (e) { }
@@ -1014,7 +1057,7 @@
   maxBtn.addEventListener('click', function () { if (root.classList.contains('max')) collapse(); else expand(); });
   document.addEventListener('keydown', function (e) {
     if (e.key !== 'Escape') return;
-    if (root.classList.contains('links') || root.classList.contains('ctrl')) { closePanels(); return; }
+    if (anyPanel()) { closePanels(); return; }
     if (root.classList.contains('max')) collapse();
   });
   function fsChange() {
@@ -1264,6 +1307,60 @@
     }
   }
 
+  // ===== history: list the saved runs, put one back on the board, copy the last ruling =====
+  function loadHist() {
+    histBody.textContent = '';
+    histBody.appendChild(el('div', 'mg-note', 'LOADING...'));
+    api('/api/admin/magi/history').then(function (d) {
+      histBody.textContent = '';
+      var rows = d.items || [];
+      if (!rows.length) { histBody.appendChild(el('div', 'mg-note', 'NO RUNS YET')); return; }
+      rows.forEach(function (it) {
+        var row = el('div', 'mg-hi ' + (it.decision === 'APPROVED' ? 'ap' : it.decision === 'DENIED' ? 'dn' : ''));
+        row.appendChild(el('b', null, it.decision));
+        row.appendChild(el('span', null, it.question));
+        row.appendChild(el('span', null, new Date(it.ts).toLocaleString()));
+        row.title = it.question;
+        row.addEventListener('click', function () { replay(it.id); });
+        histBody.appendChild(row);
+      });
+      var clr = el('button', 'mg-btn', 'CLEAR HISTORY');
+      clr.type = 'button';
+      clr.style.margin = '10px';
+      clr.addEventListener('click', function () {
+        api('/api/admin/magi/history', 'DELETE').then(loadHist).catch(function (e) { histBody.textContent = ''; histBody.appendChild(el('div', 'mg-note', e.message)); });
+      });
+      histBody.appendChild(clr);
+    }).catch(function (e) { histBody.textContent = ''; histBody.appendChild(el('div', 'mg-note', e.message)); });
+  }
+  function replay(id) {
+    if (busy) return;
+    api('/api/admin/magi/history/' + id).then(function (d) {
+      var r = d.run;
+      if (!r) return;
+      lastRun = r;
+      hasResult = true;
+      lastMode = r.mode;
+      ta.value = r.question;
+      (r.results || []).forEach(showResult);
+      setPips(r.results);
+      setResolution(r);
+      showFinal(r.mode === 'link' ? (r.final || '') : '');
+      setHist(false);
+    }).catch(function (e) { resSub.textContent = e.message; });
+  }
+  copyBtn.addEventListener('click', function () {
+    var flash = function (t) { copyBtn.textContent = t; setTimeout(function () { copyBtn.textContent = 'COPY'; }, 1300); };
+    if (!lastRun) { flash('NOTHING YET'); return; }
+    var t = 'QUESTION: ' + lastRun.question + '\nRESULT: ' + lastRun.decision + '\n\n' +
+      (lastRun.mode === 'link' && lastRun.final ? 'FINAL: ' + lastRun.final + '\n\n' : '') +
+      (lastRun.results || []).filter(function (r) { return r.ok; }).map(function (r) {
+        return (DISPLAY[r.id] || r.name) + (r.verdict && r.verdict !== 'OPEN' ? ' [' + r.verdict + ']' : '') + ':\n' + r.text;
+      }).join('\n\n');
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(function () { flash('COPIED'); }, function () { flash('FAILED'); });
+    else flash('NO CLIPBOARD');
+  });
+
   var busy = false;
   function execute() {
     var q = ta.value.trim();
@@ -1287,6 +1384,7 @@
     startFlicker();
     var decree = hasVotes() ? dec.value : '';
     api('/api/admin/magi', 'POST', { question: q, override: decree }).then(function (d) {
+      lastRun = d;
       // link mode reveals the chain in order (Melchior, Balthasar, Casper); the other modes go by speed
       var list = d.mode === 'link'
         ? (d.results || []).slice()
