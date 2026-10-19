@@ -19,6 +19,8 @@
 //   temperature  how creative the nodes are (0 to 1.5).
 //   decree    on any single run the admin can force APPROVED or DENIED whatever the nodes said
 //             (verdict mode, and link mode when it ends with a verdict).
+//   history   the last 50 runs are saved (magi_history table, or in memory without a database).
+//             The console can list them, replay one, or clear them.
 //
 // Majority rule (verdict mode): two matching verdicts decide. A node that fails, is muted or answers unclearly does not vote.
 // Link mode: nodes run one after another. A muted, unready or failed node is skipped and the chain carries on.
@@ -28,7 +30,7 @@
 // Env vars: GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY, NVIDIA_API_KEY, CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID.
 // Optional models: MAGI_GEMINI_MODEL, MAGI_GROQ_MODEL, MAGI_OPENROUTER_MODEL, MAGI_NVIDIA_MODEL, MAGI_CLOUDFLARE_MODEL.
 // Optional: MAGI_THINKING=on keeps the providers' reasoning enabled (the default turns it off for speed).
-// Without a database (pool is null) the settings and links only last until the server restarts.
+// Without a database (pool is null) the settings, links and history only last until the server restarts.
 const TIMEOUT = 45000;       // longest wait for a single provider call
 const RUN_BUDGET = 60000;    // longest total time for one whole run; keep below the browser/proxy limit
 const MIN_CALL_MS = 5000;    // never start a call with less time than this
@@ -463,6 +465,58 @@ module.exports = function mount(app, { pool, auth, admin, wrap }) {
     ).catch((e) => console.error('magi settings save:', e.message))
     : Promise.resolve());
 
+  // ===== run history (last 50). With no database it lives in memory until the server restarts =====
+  const HIST_MAX = 50;
+  const memHist = [];
+  let memId = 0;
+  const histReady = (async () => {
+    if (!pool) return;
+    try {
+      await pool.query(`CREATE TABLE IF NOT EXISTS magi_history (id SERIAL PRIMARY KEY, ts TIMESTAMPTZ NOT NULL DEFAULT now(), question TEXT NOT NULL, mode TEXT NOT NULL, decision TEXT NOT NULL, payload TEXT NOT NULL)`);
+    } catch (e) { console.error('magi history init:', e.message); }
+  })();
+
+  async function histSave(run) {
+    const slim = { ...run, results: (run.results || []).map((r) => ({ ...r, history: (r.history || []).slice(0, 3) })) };
+    if (!pool) {
+      memHist.unshift({ id: ++memId, ts: new Date().toISOString(), question: run.question, mode: run.mode, decision: run.decision, payload: slim });
+      memHist.length = Math.min(memHist.length, HIST_MAX);
+      return;
+    }
+    await histReady;
+    await pool.query(
+      'INSERT INTO magi_history (question, mode, decision, payload) VALUES ($1, $2, $3, $4)',
+      [run.question.slice(0, QUESTION_MAX), run.mode, run.decision, JSON.stringify(slim)]
+    );
+    await pool.query('DELETE FROM magi_history WHERE id NOT IN (SELECT id FROM magi_history ORDER BY id DESC LIMIT $1)', [HIST_MAX]);
+  }
+
+  app.get('/api/admin/magi/history', auth, admin, wrap(async (req, res) => {
+    if (!pool) return res.json({ items: memHist.map(({ payload, ...m }) => m) });
+    await histReady;
+    const r = await pool.query('SELECT id, ts, question, mode, decision FROM magi_history ORDER BY id DESC LIMIT $1', [HIST_MAX]);
+    res.json({ items: r.rows });
+  }));
+
+  app.get('/api/admin/magi/history/:id', auth, admin, wrap(async (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'Bad id.' });
+    if (!pool) {
+      const m = memHist.find((x) => x.id === id);
+      return m ? res.json({ run: m.payload }) : res.status(404).json({ error: 'Not found.' });
+    }
+    await histReady;
+    const r = await pool.query('SELECT payload FROM magi_history WHERE id = $1', [id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'Not found.' });
+    res.json({ run: JSON.parse(r.rows[0].payload) });
+  }));
+
+  app.delete('/api/admin/magi/history', auth, admin, wrap(async (req, res) => {
+    memHist.length = 0;
+    if (pool) { await histReady; await pool.query('DELETE FROM magi_history'); }
+    res.json({ ok: true });
+  }));
+
   app.get('/api/admin/magi/status', auth, admin, wrap(async (req, res) => {
     await ready;
     res.json({
@@ -542,6 +596,8 @@ module.exports = function mount(app, { pool, auth, admin, wrap }) {
     const decreeOk = cfg.mode === 'verdict' || (cfg.mode === 'link' && cfg.linkOut === 'verdict');
     const override = decreeOk ? String(body.override || '').toUpperCase() : '';
     const results = cfg.mode === 'link' ? await linkChain(question, cfg) : await deliberate(question, cfg);
-    res.json({ question, results, ...tally(results, cfg, override) });
+    const run = { question, results, ...tally(results, cfg, override) };
+    await histSave(run).catch((e) => console.error('magi history save:', e.message));
+    res.json(run);
   }));
 };
