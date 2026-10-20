@@ -14,11 +14,6 @@
 //               Round 2: the CONVINCING round (each node reads the others and argues to win them over),
 //                        or a plain debate when "convince" is switched off.
 //               Round 3: the FINAL round (each node hears every appeal and gives its closing position).
-//   timeout   the TIME LIMIT of one run in seconds (5 to 120, default 30). The console shows it as an EVA-style countdown clock.
-//             When it ends, every call that is still waiting is aborted and that node shows "Timed out".
-//             The nodes that did answer still count. Set from the CONTROL panel.
-//   emergency the RED ZONE of the countdown clock: the last N seconds of the time limit (1 to 60, default 10).
-//             Only the console clock uses it (it turns red and sounds an alarm). It never changes what the nodes do.
 //   directive standing orders added to every node's instructions.
 //   personas  the admin can rewrite any node's personality, or mute a node.
 //   temperature  how creative the nodes are (0 to 1.5).
@@ -36,23 +31,17 @@
 // Optional models: MAGI_GEMINI_MODEL, MAGI_GROQ_MODEL, MAGI_OPENROUTER_MODEL, MAGI_NVIDIA_MODEL, MAGI_CLOUDFLARE_MODEL.
 // Optional: MAGI_THINKING=on keeps the providers' reasoning enabled (the default turns it off for speed).
 // Without a database (pool is null) the settings, links and history only last until the server restarts.
-const TIMEOUT = 45000;       // longest wait for a single provider call (the run's time limit can make it shorter)
-const MIN_CALL_MS = 2000;    // never start a call with less time than this
-const ROUND_MIN_MS = 8000;   // do not start another round with less time than this
-const LIMIT_DEFAULT = 30;    // default time limit of a run, in seconds
-const LIMIT_MIN = 5;
-const LIMIT_MAX = 120;
-const EMERG_DEFAULT = 10;    // default red zone of the countdown clock, in seconds
-const EMERG_MIN = 1;
-const EMERG_MAX = 60;
+const TIMEOUT = 45000;       // longest wait for a single provider call
+const RUN_BUDGET = 60000;    // longest total time for one whole run; keep below the browser/proxy limit
+const MIN_CALL_MS = 5000;    // never start a call with less time than this
+const ROUND_MIN_MS = 20000;  // do not start another round with less time than this
 const QUESTION_MAX = 4096;
 // Reasoning models (Qwen on Groq, Nemotron, Gemini 3.5) spend output tokens on thinking before the visible answer.
 // 1024 was often used up by the thinking alone, which left an empty or cut-off answer.
 const MAX_OUT = 8192;
 // Turn off the reasoning step on providers that support it, unless MAGI_THINKING=on.
 const NO_THINK = process.env.MAGI_THINKING !== 'on';
-let runDeadline = 0; // set at the start of each run (now + the time limit)
-let running = false; // only one run at a time, because runDeadline is shared
+let runDeadline = 0; // set at the start of each run
 
 const FORMAT_VERDICT = 'On the first line write exactly APPROVED or DENIED. Then give your reasoning in at most three sentences. Plain text only.';
 const FORMAT_DISCUSS = 'Do not answer yes or no, and never use the words APPROVED or DENIED. On the first line write a headline of at most eight words that sums up your position. Then give your analysis in at most four sentences. Plain text only.';
@@ -144,14 +133,12 @@ const fresh = () => ({
   rounds: 1,
   convince: true,
   temperature: 0.4,
-  timeout: LIMIT_DEFAULT, // time limit of one run, in seconds
-  emergency: EMERG_DEFAULT, // red zone of the countdown clock, in seconds
   directive: '',
   nodes: Object.fromEntries(NODES.map((n) => [n.id, { persona: '', muted: false }])),
 });
 let settings = fresh();
 
-const publicSettings = () => ({ mode: settings.mode, linkOut: settings.linkOut, rounds: settings.rounds, convince: settings.convince, temperature: settings.temperature, timeout: settings.timeout, emergency: settings.emergency, directive: settings.directive });
+const publicSettings = () => ({ mode: settings.mode, linkOut: settings.linkOut, rounds: settings.rounds, convince: settings.convince, temperature: settings.temperature, directive: settings.directive });
 const snapshot = () => JSON.parse(JSON.stringify(settings));
 
 // Take any of the fields from an object (a request body or a saved copy), checking each one.
@@ -162,8 +149,6 @@ function applySettings(b) {
   if (b.rounds != null) { const r = parseInt(b.rounds, 10); if (r >= 1 && r <= 3) settings.rounds = r; }
   if (b.convince != null) settings.convince = !!b.convince;
   if (b.temperature != null) { const t = Number(b.temperature); if (Number.isFinite(t)) settings.temperature = Math.min(1.5, Math.max(0, Math.round(t * 10) / 10)); }
-  if (b.timeout != null) { const s = parseInt(b.timeout, 10); if (Number.isFinite(s)) settings.timeout = Math.min(LIMIT_MAX, Math.max(LIMIT_MIN, s)); }
-  if (b.emergency != null) { const e = parseInt(b.emergency, 10); if (Number.isFinite(e)) settings.emergency = Math.min(EMERG_MAX, Math.max(EMERG_MIN, e)); }
   if (b.directive != null) settings.directive = String(b.directive).trim().slice(0, 1200);
   if (b.nodes && typeof b.nodes === 'object') {
     for (const n of NODES) {
@@ -228,18 +213,14 @@ const errText = (d, status) => {
   return String(e || 'HTTP ' + status).slice(0, 200);
 };
 
-// A readable message from a thrown error. A call that was cut off by the time limit shows as "Timed out".
-const msgOf = (e) => ((e && (e.name === 'TimeoutError' || e.name === 'AbortError')) ? 'Timed out (time limit reached)' : String((e && e.message) || e || 'no answer'));
-
-// POST JSON. A rate limit (429) or a briefly unavailable server (503) is tried once more, since the free tiers hit those often
-// (but only when there is time left in the run). ms is the longest this one request may wait; the run's deadline is never exceeded.
+// POST JSON. A rate limit (429) or a briefly unavailable server (503) is tried once more, since the free tiers hit those often.
+// ms is the longest this one request may wait.
 async function postJson(url, headers, body, ms = TIMEOUT) {
   for (let attempt = 0; ; attempt++) {
-    const wait = attempt === 0 ? ms : Math.max(1000, Math.min(ms, runDeadline - Date.now()));
-    const r = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(wait) });
-    if ((r.status === 429 || r.status === 503) && attempt === 0 && runDeadline - Date.now() > 6000) {
-      const pause = Math.min(4000, (Number(r.headers.get('retry-after')) || 1.5) * 1000);
-      await new Promise((ok) => setTimeout(ok, pause));
+    const r = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(ms) });
+    if ((r.status === 429 || r.status === 503) && attempt === 0) {
+      const wait = Math.min(4000, (Number(r.headers.get('retry-after')) || 1.5) * 1000);
+      await new Promise((ok) => setTimeout(ok, wait));
       continue;
     }
     const d = await r.json().catch(() => ({}));
@@ -248,11 +229,11 @@ async function postJson(url, headers, body, ms = TIMEOUT) {
 }
 
 // One call to one provider. system and user are plain strings. temp is optional (the saved creativity is used when it is left out).
-// Each call is capped by what is left of the run's time limit.
+// Each call is capped by what is left of the run's time budget.
 async function callProvider(view, system, user, temp) {
   const { provider: p, key, model } = view;
   const temperature = temp == null ? settings.temperature : temp;
-  const ms = Math.max(1000, Math.min(TIMEOUT, runDeadline - Date.now()));
+  const ms = Math.max(MIN_CALL_MS, Math.min(TIMEOUT, runDeadline - Date.now()));
   if (p.id === 'gemini') {
     // Gemini 3-series uses thinkingLevel. Older models do not accept thinkingBudget here,
     // so the setting is only sent to Gemini 3 models.
@@ -329,7 +310,7 @@ async function round1(n, question, cfg) {
     if (!String(text).trim()) return failed(v, 'Empty answer from ' + v.label, started);
     return shape(v, text, started, cfg.mode, 1, 'independent');
   } catch (e) {
-    return failed(v, msgOf(e), started);
+    return failed(v, (e && e.message) || e, started);
   }
 }
 
@@ -345,14 +326,14 @@ async function step(n, question, mine, others, kind, round, total, cfg) {
     if (!String(text).trim()) throw new Error('empty');
     return shape(v, text, started, cfg.mode, round, kind);
   } catch (e) {
-    // If a later round fails (or the time limit ends), the node keeps what it said before. Log why, so a slow or broken node is visible.
-    console.error('magi round', round, n.id, msgOf(e));
+    // If a later round fails, the node keeps what it said before. Log why, so a slow or broken node is visible.
+    console.error('magi round', round, n.id, (e && e.message) || e);
     return { ...mine };
   }
 }
 
 async function deliberate(question, cfg) {
-  runDeadline = Date.now() + cfg.timeout * 1000;
+  runDeadline = Date.now() + RUN_BUDGET;
   const total = cfg.rounds;
   let cur = await Promise.all(NODES.map((n) => round1(n, question, cfg)));
   const spent = cur.map((r) => r.ms || 0);
@@ -388,9 +369,9 @@ async function deliberate(question, cfg) {
 
 // Link mode: the nodes run one after another (Melchior, Balthasar, Casper), each building on the one before.
 // The first link drafts, the middle link reviews, the last usable link gives the final answer.
-// Muted, unready or failed nodes are skipped and the chain carries on. When the time limit ends, the links that are left are skipped.
+// Muted, unready or failed nodes are skipped and the chain carries on.
 async function linkChain(question, cfg) {
-  runDeadline = Date.now() + cfg.timeout * 1000;
+  runDeadline = Date.now() + RUN_BUDGET;
   const out = outModeOf(cfg);
   const usable = NODES.filter((n) => !cfg.nodes[n.id].muted && effective(n).key);
   const lastId = usable.length ? usable[usable.length - 1].id : '';
@@ -400,7 +381,7 @@ async function linkChain(question, cfg) {
     const v = effective(n), started = Date.now();
     if (cfg.nodes[n.id].muted) { results.push(failed(v, 'Muted by the administrator', started)); continue; }
     if (!v.key) { results.push(failed(v, 'Not set up: add ' + hintOf(v.provider) + ' on the server', started)); continue; }
-    if (runDeadline - Date.now() < MIN_CALL_MS) { results.push(failed(v, 'Timed out (time limit reached)', started)); continue; }
+    if (runDeadline - Date.now() < MIN_CALL_MS) { results.push(failed(v, 'Out of time', started)); continue; }
 
     const kind = !chain.length ? 'draft' : n.id === lastId ? 'final' : 'review';
     let user = question;
@@ -417,8 +398,8 @@ async function linkChain(question, cfg) {
       chain.push(r);
       results.push({ ...r, initial: r.verdict, revised: false, history: [] });
     } catch (e) {
-      console.error('magi link', n.id, msgOf(e));
-      results.push(failed(v, msgOf(e), started));
+      console.error('magi link', n.id, (e && e.message) || e);
+      results.push(failed(v, (e && e.message) || e, started));
     }
   }
   return results;
@@ -546,7 +527,7 @@ module.exports = function mount(app, { pool, auth, admin, wrap }) {
     });
   }));
 
-  // Change how the nodes act: mode, link ending, rounds, convincing round, creativity, time limit, red zone, standing orders, personalities, muting.
+  // Change how the nodes act: mode, link ending, rounds, convincing round, creativity, standing orders, personalities, muting.
   // Send only the fields that change, or { reset: true } to put everything back to the defaults.
   app.post('/api/admin/magi/settings', auth, admin, wrap(async (req, res) => {
     await ready;
@@ -593,45 +574,29 @@ module.exports = function mount(app, { pool, auth, admin, wrap }) {
     if (!n) return res.status(400).json({ error: 'Unknown node.' });
     const v = effective(n), started = Date.now();
     if (!v.key) return res.json({ ok: false, error: 'Not set up: add ' + hintOf(v.provider) + ' on the server', model: v.model });
-    if (running) return res.json({ ok: false, error: 'A run is in progress. Try again when it ends.', model: v.model }); // the test would overwrite the run's deadline
     runDeadline = Date.now() + TIMEOUT;
     try {
       const text = await callProvider(v, 'Reply with the single word APPROVED and nothing else.', 'Test.');
       if (!String(text).trim()) return res.json({ ok: false, error: 'Empty answer', model: v.model, ms: Date.now() - started });
       res.json({ ok: true, model: v.model, ms: Date.now() - started });
     } catch (e) {
-      res.json({ ok: false, error: msgOf(e).slice(0, 200), model: v.model, ms: Date.now() - started });
+      res.json({ ok: false, error: String((e && e.message) || e).slice(0, 200), model: v.model, ms: Date.now() - started });
     }
   }));
 
   // Run the MAGI. Optional "override": "APPROVED" or "DENIED" is the admin's decree and replaces the vote
   // (verdict mode, and link mode when the chain ends with a verdict).
-  // The answer carries the numbers for the console's countdown clock: timeout, emergency (red zone), elapsed (ms) and timedOut.
   app.post('/api/admin/magi', auth, admin, wrap(async (req, res) => {
     await ready;
     const body = req.body || {};
     const question = String(body.question || '').trim();
     if (!question) return res.status(400).json({ error: 'Enter a question first.' });
     if (question.length > QUESTION_MAX) return res.status(400).json({ error: 'Question is too long (max ' + QUESTION_MAX + ' characters).' });
-    if (running) return res.status(409).json({ error: 'A run is already in progress.' });
     const cfg = snapshot(); // settings are frozen for the whole run, so a change mid-run cannot mix two setups
     const decreeOk = cfg.mode === 'verdict' || (cfg.mode === 'link' && cfg.linkOut === 'verdict');
     const override = decreeOk ? String(body.override || '').toUpperCase() : '';
-    const t0 = Date.now();
-    running = true;
-    let results;
-    try {
-      results = cfg.mode === 'link' ? await linkChain(question, cfg) : await deliberate(question, cfg);
-    } finally { running = false; }
-    const elapsed = Date.now() - t0;
-    const run = {
-      question, results,
-      timeout: cfg.timeout,                              // the countdown starts here (seconds)
-      emergency: Math.min(cfg.emergency, cfg.timeout),   // the red zone (seconds)
-      elapsed,                                           // how long the run really took (ms)
-      timedOut: elapsed >= cfg.timeout * 1000 - 250,     // the clock hit zero
-      ...tally(results, cfg, override),
-    };
+    const results = cfg.mode === 'link' ? await linkChain(question, cfg) : await deliberate(question, cfg);
+    const run = { question, results, ...tally(results, cfg, override) };
     await histSave(run).catch((e) => console.error('magi history save:', e.message));
     res.json(run);
   }));
