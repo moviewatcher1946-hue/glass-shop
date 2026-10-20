@@ -1,21 +1,12 @@
 // MAGI console (admin only), loaded by index.html for the admin role.
 //  - Lives INSIDE the admin Dashboard (above the numbers) and appears only while NERV mode is on.
 //  - Layout follows the MAGI screen: Balthasar top, Casper left, Melchior right, MAGI in the middle.
-//  - The EVA COUNTDOWN CLOCK (M:SS:CC) sits under the board. It counts down from the TIME LIMIT while the nodes think.
-//      STANDBY (breathing) -> RACING (orange) -> EMERGENCY (red, blinking, the last N seconds) -> TIME UP (fast blink).
-//      When the run ends in time the clock freezes in green (DONE) at the time the run really took.
-//  - NEW: the EVA TIMER WIDGET. When you press EXECUTE, an angled Evangelion "ACTIVE TIME REMAINING" timer
-//      (7-segment digits, INTERNAL / EXTERNAL badges, STOP / SLOW / NORMAL / RACING lamps, DANGER box)
-//      swings in from the bottom right corner of the screen, counts down with the same clock as the bar under the board,
-//      goes red in the EMERGENCY zone, shows TIME UP / DONE at the end, then swings away again after a few seconds.
-//      It is an extra layer: nothing in the original UI was removed or moved.
 //  - The CONTROL button (top right of the panel) is where you change how the nodes act:
 //      * MODE: VERDICT (approved / denied, majority wins), DISCUSS (no yes or no, they talk it through),
 //              or LINK (the nodes assist each other in a chain: Melchior drafts, Balthasar reviews, Casper finishes),
 //      * CHAIN ENDS WITH (link mode only): VERDICT (the last link rules APPROVED / DENIED) or DISCUSSION (no yes or no),
 //      * 3-ROUND MODE (optional, off by default): round 2 = the convincing round, round 3 = the final ruling,
 //        3-ROUND MODE and CONVINCING ROUND are hidden in LINK mode, because the chain has no rounds.
-//      * TIME LIMIT (the countdown; when it hits zero the nodes still thinking are cut off) and EMERGENCY (the red zone),
 //      * STANDING ORDERS that every node must follow, a personality box per node, MUTE per node, and CREATIVITY.
 //    The DECREE box next to EXECUTE lets you force APPROVED or DENIED for one run, whatever the nodes say.
 //    The decree is shown in VERDICT mode, and in LINK mode when the chain ends with a verdict.
@@ -24,13 +15,12 @@
 //  - The COPY button copies the last ruling and every node's answer to the clipboard.
 //  - Hover a node screen to read its answer; with more than one round you see every round it spoke.
 //    In LINK mode each screen shows its link (DRAFT, REVIEW, FINAL) and the full chain answer appears under the board.
-//  - Sound (Web Audio, nothing to download):
-//      * an eerie ambient drone plays while the console is idle (starts on your first tap / click, because browsers block audio before that),
-//      * a mechanical machine-room drone with relay clicks and servo whines while the nodes think,
-//      * an alarm when the clock enters the red zone, a tick each second in it, and a low buzz at zero,
-//      * a deep slam with a hall tail on the verdict.
+//  - Sound (Web Audio, nothing to download), Evangelion MAGI style (dry computer chirps, relay clicks, alarm buzz):
+//      * a low control-room hum with faint data chirps plays while the console is idle (starts on your first tap / click, because browsers block audio before that),
+//      * a fast storm of data chirps and relay clicks while the nodes think,
+//      * chirp burst + three beeps + long tone on APPROVED, chirp mess + alarm siren + low buzz on DENIED.
 //    The SOUND button mutes everything (remembered on this device).
-//  - EXPAND covers the whole page (a fixed full-viewport layer) and also requests real browser fullscreen where the browser allows it.
+//  - EXPAND covers the whole page (a fixed full-viewport layer, scrollable) and also requests real browser fullscreen where the browser allows it.
 // Uses textContent for everything that comes from the server, so an AI answer can never inject HTML.
 // Colours are CSS variables on #magi-dash (--mg-or, --mg-gn, --mg-no, ...).
 (function () {
@@ -60,7 +50,7 @@
   var CHAIN_KIND = ['draft', 'review', 'final'];
 
   // the admin's settings (the server is the source of truth; this is the copy the screen uses)
-  var cfg = { mode: 'verdict', linkOut: 'verdict', rounds: 1, convince: true, temperature: 0.4, timeout: 30, emergency: 10, directive: '' };
+  var cfg = { mode: 'verdict', linkOut: 'verdict', rounds: 1, convince: true, temperature: 0.4, directive: '' };
   var lastNodes = [], pCols = {};
   var lastMode = 'verdict';
   // does a run with these settings end in an APPROVED / DENIED decision (so the decree makes sense)?
@@ -197,75 +187,6 @@
     '.mg-pips i{width:11px;height:11px;border:2px solid var(--mg-gn);transform:rotate(45deg)}',
     '.mg-pips i.ap{background:var(--mg-gn)}.mg-pips i.dn{background:var(--mg-no);border-color:var(--mg-no)}.mg-pips i.off{border-color:var(--mg-dim)}',
 
-    // ===== EVA countdown clock =====
-    '.mg-clock{position:relative;z-index:2;display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:4px 16px;align-items:center;margin:14px 0 0;padding:8px 14px;background:#000;border:2px solid var(--mg-or);color:var(--mg-or)}',
-    '.mg-clk-l{font-size:.8rem;letter-spacing:.25em;white-space:nowrap}',
-    '.mg-clk-t{justify-self:center;font:900 clamp(34px,7vw,76px)/1 "TrueLCDNGE","True LCD NGE","7segment",ui-monospace,Menlo,Consolas,monospace;letter-spacing:.04em;text-shadow:0 0 14px currentColor;text-transform:none;font-variant-numeric:tabular-nums}',
-    '.mg-clk-s{justify-self:end;font:800 .8rem/1 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.22em;white-space:nowrap}',
-    '.mg-clk-b{grid-column:1/-1;position:relative;height:8px;border:1px solid var(--mg-dim);background:#120803}',
-    '.mg-clk-b i{position:absolute;left:0;top:0;bottom:0;width:100%;background:var(--mg-or)}',
-    '.mg-clk-b u{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--mg-no);text-decoration:none}',
-    '.mg-clock.standby .mg-clk-t{animation:mgBreath 1.5s ease infinite}',
-    '.mg-clock.racing{color:var(--mg-or)}',
-    '.mg-clock.emergency{color:var(--mg-no);border-color:var(--mg-no);box-shadow:0 0 24px #e5231b66,inset 0 0 24px #e5231b22}',
-    '.mg-clock.emergency .mg-clk-b i{background:var(--mg-no)}',
-    '.mg-clock.emergency .mg-clk-t,.mg-clock.emergency .mg-clk-s{animation:mgBlink .5s steps(2) infinite}',
-    '.mg-clock.ended{color:var(--mg-no);border-color:var(--mg-no)}',
-    '.mg-clock.ended .mg-clk-t,.mg-clock.ended .mg-clk-s{animation:mgBlink .2s steps(2) infinite}',
-    '.mg-clock.done{color:var(--mg-gn);border-color:var(--mg-gn)}',
-    '.mg-clock.done .mg-clk-b i{background:var(--mg-gn)}',
-    '@keyframes mgBreath{30%{opacity:1}50%{opacity:.4}70%{opacity:1}}',
-
-    // ===== EVA TIMER WIDGET: angled, fixed in the bottom right corner of the screen, shown while a run is going =====
-    // (a fixed layer, so it never moves or covers the original console; pointer-events none so it never blocks a click)
-    '.mg-tw{display:none;position:fixed;right:16px;bottom:16px;z-index:60;width:min(420px,46vw);aspect-ratio:610/317;container-type:inline-size;pointer-events:none;--c:#f5a02a;color:var(--c);font-family:Arial,Helvetica,sans-serif;text-transform:uppercase}',
-    '#magi-dash:not(.on) .mg-tw{display:none!important}',
-    '.mg-tw.show{display:block}',
-    // the tilt (perspective, like the reference picture)
-    '.mg-twb{position:absolute;inset:0;transform:perspective(900px) rotateX(9deg) rotateY(-24deg) rotateZ(-4deg);transform-origin:100% 100%;filter:drop-shadow(0 0 16px #ff6a0055)}',
-    '.mg-tw.show .mg-twb{animation:twIn .8s cubic-bezier(.2,.9,.25,1) both}',
-    '.mg-tw.out .mg-twb{animation:twOut .45s ease-in both}',
-    '@keyframes twIn{0%{opacity:0;transform:perspective(900px) translate(70%,55%) rotateX(40deg) rotateY(-80deg) rotateZ(-20deg) scale(.3)}45%{opacity:.5}60%{opacity:1}100%{opacity:1;transform:perspective(900px) rotateX(9deg) rotateY(-24deg) rotateZ(-4deg)}}',
-    '@keyframes twOut{0%{opacity:1;transform:perspective(900px) rotateX(9deg) rotateY(-24deg) rotateZ(-4deg)}100%{opacity:0;transform:perspective(900px) translate(70%,55%) rotateX(40deg) rotateY(-80deg) rotateZ(-20deg) scale(.3)}}',
-    '.mg-tw.st-emergency{--c:#ff3d2a}',
-    '.mg-tw.st-ended{--c:#ff3d2a}',
-    '.mg-tw.st-done{--c:#5ef0a0}',
-    // the gradient plate and the black face
-    '.mg-twp{position:absolute;inset:0;background:linear-gradient(90deg,#b53a2b 0%,#d99a26 38%,#7b8c38 72%,#0f6a3b 100%)}',
-    '.mg-twk{position:absolute;left:14%;top:16%;right:3%;bottom:14%;background:#000;clip-path:polygon(34% 0,100% 0,100% 100%,30% 100%,0 25%)}',
-    '.mg-twl0{position:absolute;left:2.2%;top:4%;bottom:4%;width:1%;background:#7a1d12}',
-    // the Japanese label and the English label
-    '.mg-twj{position:absolute;left:31%;top:15.5%;padding:.3cqw 1cqw;background:#000;border:1px solid #c5601f;color:#f5a02a;font:700 3.3cqw/1.15 "Hiragino Mincho ProN","Yu Mincho","Noto Serif JP",serif;white-space:nowrap}',
-    '.mg-twa{position:absolute;left:31.5%;top:27.5%;color:#f5a02a;font:700 2.6cqw/1 "Hiragino Mincho ProN","Yu Mincho","Noto Serif JP",serif}',
-    '.mg-twe{position:absolute;left:51%;top:19.5%;color:#f5a02a;font:600 1.7cqw/1 Arial,Helvetica,sans-serif;letter-spacing:.02em;white-space:nowrap}',
-    // the 7-segment digits
-    '.mg-twd{position:absolute;left:36.5%;top:26%;width:46.5%;height:40%;display:flex;align-items:flex-end;gap:.8cqw;color:var(--c);filter:drop-shadow(0 0 5px currentColor)}',
-    '.mg-twd svg{display:block;flex:none;width:8.6cqw;height:100%}',
-    '.mg-twd svg.sm{width:5.6cqw;height:62%;margin-bottom:3%}',
-    '.mg-twd svg.cl{width:2.2cqw}',
-    '.mg-twd svg.cl.sm{width:1.7cqw}',
-    '.mg-twd polygon{fill:currentColor;opacity:.07}',
-    '.mg-twd polygon.on{opacity:1}',
-    '.mg-twd rect{fill:currentColor}',
-    '.mg-tw.st-emergency .mg-twd{animation:mgBlink .5s steps(2) infinite}',
-    '.mg-tw.st-ended .mg-twd{animation:mgBlink .2s steps(2) infinite}',
-    // INTERNAL / EXTERNAL badges
-    '.mg-twi{position:absolute;left:83%;width:13%;height:15%;border:1px solid #c5601f;background:#000;overflow:hidden}',
-    '.mg-twi .jp{position:absolute;left:3%;top:2%;color:#f5a02a;font:700 4.2cqw/1 "Hiragino Mincho ProN","Yu Mincho","Noto Serif JP",serif}',
-    '.mg-twi .en{position:absolute;left:3%;bottom:2%;color:#f5a02a;font:700 1.9cqw/1 Arial,Helvetica,sans-serif;letter-spacing:.02em}',
-    '.mg-twi .sp{position:absolute;right:0;top:0;bottom:0;width:22%;background:repeating-linear-gradient(115deg,#e5231b 0 .9cqw,#000 .9cqw 1.6cqw)}',
-    '.mg-twm{position:absolute;left:83%;top:40%;width:13.5%;color:#f5a02a;font:700 1.9cqw/1.1 "Hiragino Mincho ProN","Yu Mincho","Noto Serif JP",serif;white-space:nowrap}',
-    '.mg-twm small{display:block;font:600 1.15cqw/1.2 Arial,Helvetica,sans-serif}',
-    // the STOP / SLOW / NORMAL / RACING lamps and the DANGER box
-    '.mg-twl{position:absolute;top:69%;width:9.2%;height:11%;border:1px solid #c5601f;background:#000;display:flex;flex-direction:column;align-items:center;color:#f5a02a;font:700 1.7cqw/1.3 Arial,Helvetica,sans-serif}',
-    '.mg-twl i{display:block;width:84%;height:30%;margin-top:auto;margin-bottom:6%;background:#6e0e08}',
-    '.mg-twl.lit{color:#ffd9a0}',
-    '.mg-twl.lit i{background:#ff2a1a;box-shadow:0 0 8px #ff2a1a}',
-    '.mg-twl.dg{left:81.5%;width:11%;justify-content:center;font-size:1.35cqw;line-height:1.2;text-align:center;border-color:#c5601f}',
-    '.mg-twl.dg.lit{background:#e5231b;color:#000;animation:mgBlink .4s steps(2) infinite}',
-    '.mg-twl.dg i{display:none}',
-    '@media (max-width:860px){.mg-tw{width:min(300px,64vw);right:8px;bottom:8px}}',
-
     // the final answer of a link-mode run (shown under the board, hidden until there is one)
     '.mg-final-lbl{display:none;margin:14px 0 0;font-size:.72rem;letter-spacing:.2em;color:var(--mg-hi)}',
     '.mg-final{display:none;margin:6px 0 0;padding:10px 12px;background:#000;border:1px solid var(--mg-gn);color:var(--mg-hi);font:500 14px/1.45 ui-monospace,Menlo,Consolas,monospace;text-transform:none;white-space:pre-wrap;word-break:break-word;max-height:18vh;overflow:auto}',
@@ -332,7 +253,7 @@
     '.mg-panel>.mg-links,.mg-panel>.mg-ctrl{overflow:auto;overscroll-behavior:contain}',
     '.mg-panel>.mg-links .mg-lh,.mg-panel>.mg-ctrl .mg-lh,.mg-panel>.mg-hist .mg-lh{position:sticky;top:0;z-index:2;background:#000}',
     '#magi-dash .mg-lx{min-width:46px;min-height:34px;font-size:1rem}',
-    '@media (max-width:860px){.mg-ctls{grid-template-columns:1fr}.mg-form{grid-template-columns:1fr}.mg-run{min-height:44px}.mg-lb{grid-template-columns:1fr}.mg-pgrid{grid-template-columns:1fr}.mg-row{grid-template-columns:1fr}.mg-dec{margin-left:0}.mg-hi{grid-template-columns:auto minmax(0,1fr)}.mg-hi span:last-child{grid-column:1/-1}.mg-clock{grid-template-columns:1fr auto}.mg-clk-t{grid-column:1/-1;order:3}}',
+    '@media (max-width:860px){.mg-ctls{grid-template-columns:1fr}.mg-form{grid-template-columns:1fr}.mg-run{min-height:44px}.mg-lb{grid-template-columns:1fr}.mg-pgrid{grid-template-columns:1fr}.mg-row{grid-template-columns:1fr}.mg-dec{margin-left:0}.mg-hi{grid-template-columns:auto minmax(0,1fr)}.mg-hi span:last-child{grid-column:1/-1}}',
     '@media (prefers-reduced-motion:reduce){#magi-dash *{animation:none!important}}',
   ].join('\n');
   var style = document.createElement('style');
@@ -341,9 +262,19 @@
   document.head.appendChild(style);
 
   // ===== sound: all synthesized, nothing to load =====
+  // Design: a small speaker in a control room. Everything is dry and a bit rough:
+  //  - non-musical terminal pitches, clumped irregular chatter, tiny pitch / timing / volume wobble (never the same twice),
+  //  - every beep has a key-click on its front edge and goes through a narrow "small speaker" filter,
+  //  - relays are noise clacks with a small thump, not pure tones,
+  //  - idle is a quiet 50 Hz mains hum plus air noise, with rare clacks and short data bursts (no pad, no reverb tails).
   var SND = 'magi_snd';
   function soundOn() { try { return localStorage.getItem(SND) !== '0'; } catch (e) { return true; } }
-  var AC = window.AudioContext || window.webkitAudioContext, ctx = null, bus = null, fx = null, noiseBuf = null, hum = null, amb = null;
+  var AC = window.AudioContext || window.webkitAudioContext, ctx = null, bus = null, spk = null, room = null, noiseBuf = null, hum = null, amb = null;
+  var AMB_LEVEL = 0.06;
+  var rnd = function (a, b) { return a + Math.random() * (b - a); };
+  // terminal pitches: deliberately not a musical scale
+  var FREQS = [931, 1108, 1337, 1622, 1913, 2284, 2731];
+  var pick = function () { return FREQS[Math.floor(Math.random() * FREQS.length)]; };
 
   function audio() {
     if (!AC) return null;
@@ -355,20 +286,24 @@
       master.connect(ctx.destination);
       bus = comp;
 
-      fx = ctx.createGain();
-      var dly = ctx.createDelay(1), fb = ctx.createGain(), tone = ctx.createBiquadFilter(), eo = ctx.createGain();
-      dly.delayTime.value = 0.31; fb.gain.value = 0.45; eo.gain.value = 0.55;
-      tone.type = 'lowpass'; tone.frequency.value = 3000;
-      fx.connect(dly); dly.connect(tone); tone.connect(fb); fb.connect(dly); tone.connect(eo); eo.connect(bus);
-      var rv = ctx.createConvolver(), rg = ctx.createGain(), len = Math.floor(ctx.sampleRate * 2.8), imp = ctx.createBuffer(2, len, ctx.sampleRate);
+      // the small console speaker: narrow band, a little boxy
+      spk = ctx.createBiquadFilter();
+      spk.type = 'bandpass'; spk.frequency.value = 2000; spk.Q.value = 0.55;
+      var spkG = ctx.createGain();
+      spkG.gain.value = 1.6;
+      spk.connect(spkG); spkG.connect(bus);
+
+      // a tiny dry room (under half a second), just enough to stop it sounding like it is inside your head
+      room = ctx.createGain();
+      var rv = ctx.createConvolver(), rg = ctx.createGain(), len = Math.floor(ctx.sampleRate * 0.45), imp = ctx.createBuffer(2, len, ctx.sampleRate);
       for (var ch = 0; ch < 2; ch++) {
         var d = imp.getChannelData(ch);
-        for (var i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 2.6);
+        for (var i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3);
       }
-      rv.buffer = imp; rg.gain.value = 0.55;
-      fx.connect(rv); rv.connect(rg); rg.connect(bus);
+      rv.buffer = imp; rg.gain.value = 0.5;
+      room.connect(rv); rv.connect(rg); rg.connect(bus);
 
-      noiseBuf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
+      noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
       var nd = noiseBuf.getChannelData(0);
       for (var j = 0; j < nd.length; j++) nd[j] = Math.random() * 2 - 1;
     }
@@ -376,150 +311,145 @@
     return ctx;
   }
 
-  function burst(t, dur, type, freq, vol, send) {
+  // short envelope: fast attack, exponential decay (never ramps to 0)
+  function env(g, t, peak, att, dur) {
+    g.gain.setValueAtTime(0.001, t);
+    g.gain.linearRampToValueAtTime(peak, t + att);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  }
+  // a key-click: a few milliseconds of band-passed noise
+  function click(t, vol, freq) {
     var s = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain();
-    s.buffer = noiseBuf; f.type = type; f.frequency.value = freq; f.Q.value = 1.2;
-    g.gain.setValueAtTime(vol, t);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.buffer = noiseBuf; f.type = 'bandpass'; f.frequency.value = freq || rnd(2200, 3800); f.Q.value = 1.4;
+    env(g, t, vol, 0.0008, 0.012 + rnd(0, 0.01));
     s.connect(f); f.connect(g); g.connect(bus);
-    if (send) { var sg = ctx.createGain(); sg.gain.value = send; g.connect(sg); sg.connect(fx); }
-    s.start(t, Math.random() * 0.8); s.stop(t + dur + 0.02);
+    s.start(t, rnd(0, 1.5)); s.stop(t + 0.05);
   }
+  // a relay: two noise clacks and a small thump
   function relay(t, vol) {
-    burst(t, 0.018, 'highpass', 2600, vol * 0.5, 0.15);
+    click(t, vol * 0.5, rnd(1500, 2600));
+    click(t + rnd(0.012, 0.022), vol * 0.35, rnd(2800, 4200));
     var o = ctx.createOscillator(), g = ctx.createGain();
-    o.type = 'square'; o.frequency.setValueAtTime(900 + Math.random() * 500, t);
-    o.frequency.exponentialRampToValueAtTime(260, t + 0.02);
-    g.gain.setValueAtTime(vol * 0.12, t);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.025);
-    o.connect(g); g.connect(bus); o.start(t); o.stop(t + 0.04);
+    o.type = 'sine'; o.frequency.setValueAtTime(rnd(120, 160), t);
+    o.frequency.exponentialRampToValueAtTime(55, t + 0.045);
+    env(g, t, vol * 0.25, 0.002, 0.06);
+    o.connect(g); g.connect(bus); o.start(t); o.stop(t + 0.08);
   }
-  function servo(t) {
-    var o = ctx.createOscillator(), f = ctx.createBiquadFilter(), g = ctx.createGain();
-    var a = 220 + Math.random() * 120, b = a * (1.8 + Math.random() * 1.2), d = 0.16 + Math.random() * 0.2;
-    o.type = 'sawtooth'; f.type = 'bandpass'; f.Q.value = 7; f.frequency.value = 1100;
-    o.frequency.setValueAtTime(a, t);
-    o.frequency.exponentialRampToValueAtTime(b, t + d * 0.5);
-    o.frequency.exponentialRampToValueAtTime(a * 0.9, t + d);
-    g.gain.setValueAtTime(0, t);
-    g.gain.linearRampToValueAtTime(0.06, t + 0.02);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + d);
-    o.connect(f); f.connect(g); g.connect(bus);
-    var sg = ctx.createGain(); sg.gain.value = 0.3; g.connect(sg); sg.connect(fx);
-    o.start(t); o.stop(t + d + 0.05);
+  // one terminal beep: tiny pitch wobble, key-click on the front, through the small speaker
+  function blip(t, f, dur, vol, type, send) {
+    var o = ctx.createOscillator(), g = ctx.createGain(), rg = ctx.createGain();
+    o.type = type || 'square';
+    o.frequency.setValueAtTime(f * rnd(0.994, 1.006), t);
+    env(g, t, vol, 0.001, dur);
+    o.connect(g); g.connect(spk);
+    rg.gain.value = send == null ? 0.08 : send; g.connect(rg); rg.connect(room);
+    o.start(t); o.stop(t + dur + 0.02);
+    click(t, vol * 0.6, 3000);
+  }
+  // a clump of data chatter: uneven gaps, uneven lengths, uneven volume. returns when it ends
+  function dataBurst(t, n, vol) {
+    var at = t;
+    for (var i = 0; i < n; i++) {
+      blip(at, pick(), rnd(0.02, 0.05), vol * rnd(0.6, 1), 'square', 0.05);
+      at += rnd(0.05, 0.11);
+    }
+    return at;
+  }
+  // human-ish timing for a deliberate beep
+  var hz = function (t) { return t + rnd(-0.006, 0.006); };
+
+  // the quiet room: 50 Hz mains hum plus air noise
+  function roomBed(out, t, oscs, level) {
+    var lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass'; lp.frequency.value = 240;
+    lp.connect(out);
+    [[50, 'sawtooth', 0.5], [100, 'sine', 0.35], [150, 'triangle', 0.12]].forEach(function (p) {
+      var o = ctx.createOscillator(), g = ctx.createGain();
+      o.type = p[1]; o.frequency.value = p[0] * rnd(0.999, 1.001); g.gain.value = p[2] * level;
+      o.connect(g); g.connect(lp); o.start(t); oscs.push(o);
+    });
+    var ns = ctx.createBufferSource(), nf = ctx.createBiquadFilter(), ng = ctx.createGain();
+    ns.buffer = noiseBuf; ns.loop = true; nf.type = 'lowpass'; nf.frequency.value = 500; ng.gain.value = 0.3 * level;
+    ns.connect(nf); nf.connect(ng); ng.connect(out); ns.start(t); oscs.push(ns);
   }
 
-  // the machine-room drone while the nodes think
+  // while the nodes think: clumped bursts of chatter with relay clacks between
   function startHum() {
     if (!soundOn() || hum || !audio()) return;
     var t = ctx.currentTime, out = ctx.createGain(), oscs = [];
-    out.gain.setValueAtTime(0, t);
-    out.gain.linearRampToValueAtTime(0.2, t + 0.8);
+    out.gain.setValueAtTime(0.001, t);
+    out.gain.linearRampToValueAtTime(0.05, t + 0.6);
     out.connect(bus);
-    var send = ctx.createGain(); send.gain.value = 0.2; out.connect(send); send.connect(fx);
-
-    var lp = ctx.createBiquadFilter(), pulse = ctx.createGain();
-    lp.type = 'lowpass'; lp.frequency.value = 280; lp.Q.value = 5;
-    pulse.gain.value = 0.7;
-    lp.connect(pulse); pulse.connect(out);
-    var mot = ctx.createOscillator(), motG = ctx.createGain();
-    mot.frequency.value = 8.5; motG.gain.value = 0.28;
-    mot.connect(motG); motG.connect(pulse.gain); mot.start(t); oscs.push(mot);
-    [[55, 'sawtooth', 0, 0.5], [55, 'sawtooth', 9, 0.4], [110, 'square', -7, 0.14]].forEach(function (p) {
-      var o = ctx.createOscillator(), g = ctx.createGain();
-      o.type = p[1]; o.frequency.value = p[0]; o.detune.value = p[2]; g.gain.value = p[3];
-      o.connect(g); g.connect(lp); o.start(t); oscs.push(o);
-    });
-
-    var ns = ctx.createBufferSource(), nf = ctx.createBiquadFilter(), ng = ctx.createGain();
-    ns.buffer = noiseBuf; ns.loop = true; nf.type = 'bandpass'; nf.frequency.value = 2400; nf.Q.value = 0.7; ng.gain.value = 0.035;
-    ns.connect(nf); nf.connect(ng); ng.connect(out); ns.start(t); oscs.push(ns);
-
-    var h = { out: out, oscs: oscs, alive: true, timer: null }, step = 0;
-    h.timer = setInterval(function () {
+    roomBed(out, t, oscs, 1);
+    var h = { out: out, oscs: oscs, alive: true, timer: null };
+    function loop() {
       if (!h.alive || !ctx) return;
-      var now = ctx.currentTime; step++;
-      if (step % 5 === 0) servo(now);
-      else if (Math.random() < 0.3) relay(now, 0.6);
-      if (Math.random() < 0.12) relay(now + 0.07, 0.4);
-    }, 150);
+      var now = ctx.currentTime;
+      var end = dataBurst(now, Math.floor(rnd(4, 11)), 0.045);
+      if (Math.random() < 0.5) relay(now + rnd(0, 0.2), 0.35);
+      h.timer = setTimeout(loop, (end - now) * 1000 + rnd(120, 520));
+    }
+    loop();
     hum = h;
   }
   function stopHum() {
     if (!hum || !ctx) { hum = null; return; }
     var h = hum, t = ctx.currentTime;
-    hum = null; h.alive = false; clearInterval(h.timer);
+    hum = null; h.alive = false; clearTimeout(h.timer);
     h.out.gain.cancelScheduledValues(t);
-    h.out.gain.setValueAtTime(h.out.gain.value, t);
-    h.out.gain.linearRampToValueAtTime(0, t + 0.3);
+    h.out.gain.setValueAtTime(Math.max(0.001, h.out.gain.value), t);
+    h.out.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
     setTimeout(function () { h.oscs.forEach(function (o) { try { o.stop(); } catch (e) { } }); }, 400);
   }
 
-  // the eerie ambient drone that plays while the console is idle (keeps going quietly under the thinking sound)
+  // idle: quiet hum and air, with a rare relay clack or a short data burst at random
   function startAmbient() {
     if (!soundOn() || amb || document.hidden || !root.classList.contains('on') || !isAdminNow() || !audio()) return;
     var t = ctx.currentTime, out = ctx.createGain(), oscs = [];
-    out.gain.setValueAtTime(0, t);
-    out.gain.linearRampToValueAtTime(0.11, t + 4);
+    out.gain.setValueAtTime(0.001, t);
+    out.gain.linearRampToValueAtTime(AMB_LEVEL, t + 3);
     out.connect(bus);
-    var send = ctx.createGain(); send.gain.value = 0.5; out.connect(send); send.connect(fx);
-
-    // slowly breathing low-pass over a dissonant pad (a root, a minor second above it, a fifth, an octave)
-    var lp = ctx.createBiquadFilter();
-    lp.type = 'lowpass'; lp.frequency.value = 500; lp.Q.value = 2;
-    lp.connect(out);
-    var lfo = ctx.createOscillator(), lg = ctx.createGain();
-    lfo.frequency.value = 0.07; lg.gain.value = 260;
-    lfo.connect(lg); lg.connect(lp.frequency); lfo.start(t); oscs.push(lfo);
-    [[55, 'sawtooth', 0, 0.35], [58.27, 'sawtooth', 4, 0.25], [82.41, 'triangle', -5, 0.3], [110, 'sine', 0, 0.2], [164.81, 'triangle', 7, 0.1]].forEach(function (p) {
-      var o = ctx.createOscillator(), g = ctx.createGain();
-      o.type = p[1]; o.frequency.value = p[0]; o.detune.value = p[2]; g.gain.value = p[3];
-      o.connect(g); g.connect(lp); o.start(t); oscs.push(o);
-    });
-    // a thin high tone that slowly fades in and out
-    var hi = ctx.createOscillator(), hg = ctx.createGain(), tr = ctx.createOscillator(), tg = ctx.createGain();
-    hi.type = 'sine'; hi.frequency.value = 932.33; hg.gain.value = 0.04;
-    tr.frequency.value = 0.18; tg.gain.value = 0.03;
-    tr.connect(tg); tg.connect(hg.gain); hi.connect(hg); hg.connect(out);
-    hi.start(t); tr.start(t); oscs.push(hi, tr);
-
+    roomBed(out, t, oscs, 1);
     var a = { out: out, oscs: oscs, alive: true, timer: null };
-    // now and then: a far-off relay click (no pings, so nothing in the music sounds like the verdict ding)
-    a.timer = setInterval(function () {
+    function next() {
       if (!a.alive || !ctx) return;
       var now = ctx.currentTime;
-      if (Math.random() < 0.12) relay(now, 0.25);
-    }, 1000);
+      if (Math.random() < 0.55) relay(now, 0.2);
+      else dataBurst(now, Math.floor(rnd(3, 8)), 0.02);
+      a.timer = setTimeout(next, rnd(1800, 6000));
+    }
+    a.timer = setTimeout(next, rnd(1500, 3500));
     amb = a;
   }
-  // pull the ambient drone down for a moment so a sound on top of it comes through clearly, then bring it back
+  // pull the idle bed down for a moment so a sound on top comes through clearly, then bring it back
   function duckAmbient(t, level, hold, back) {
     if (!amb || !ctx) return;
     var g = amb.out.gain;
     g.cancelScheduledValues(t);
-    g.setValueAtTime(g.value, t);
-    g.linearRampToValueAtTime(level, t + 0.12);
-    g.setValueAtTime(level, t + hold);
-    g.linearRampToValueAtTime(0.11, t + hold + back);
+    g.setValueAtTime(Math.max(0.001, g.value), t);
+    g.linearRampToValueAtTime(Math.max(0.001, level), t + 0.12);
+    g.setValueAtTime(Math.max(0.001, level), t + hold);
+    g.linearRampToValueAtTime(AMB_LEVEL, t + hold + back);
   }
   function stopAmbient() {
     if (!amb || !ctx) { amb = null; return; }
     var a = amb, t = ctx.currentTime;
-    amb = null; a.alive = false; clearInterval(a.timer);
+    amb = null; a.alive = false; clearTimeout(a.timer);
     a.out.gain.cancelScheduledValues(t);
-    a.out.gain.setValueAtTime(a.out.gain.value, t);
-    a.out.gain.linearRampToValueAtTime(0, t + 0.6);
+    a.out.gain.setValueAtTime(Math.max(0.001, a.out.gain.value), t);
+    a.out.gain.exponentialRampToValueAtTime(0.001, t + 0.6);
     setTimeout(function () { a.oscs.forEach(function (o) { try { o.stop(); } catch (e) { } }); }, 800);
   }
-  // browsers only allow sound after a tap / click / key press, so the ambient drone starts on the first one
+  // browsers only allow sound after a tap / click / key press, so the idle sound starts on the first one
   ['pointerdown', 'keydown', 'touchstart'].forEach(function (ev) {
     document.addEventListener(ev, function () { startAmbient(); }, { passive: true });
   });
   document.addEventListener('visibilitychange', function () { if (document.hidden) stopAmbient(); else startAmbient(); });
 
+  // a soft key-click that follows the screens flickering while the nodes think
   function tick() {
     if (!soundOn() || !ctx || ctx.state !== 'running') return;
-    relay(ctx.currentTime, 0.8);
+    if (Math.random() < 0.35) click(ctx.currentTime, 0.1);
   }
 
   var flickT = null;
@@ -540,129 +470,54 @@
     Object.keys(cards).forEach(function (id) { cards[id].hx.style.removeProperty('--flick'); });
   }
 
-  // a deep mechanical slam with a long hall tail (no tone, no bell partials)
-  function boom(t, vol) {
-    var o = ctx.createOscillator(), g = ctx.createGain(), sg = ctx.createGain();
-    o.type = 'sine';
-    o.frequency.setValueAtTime(110, t);
-    o.frequency.exponentialRampToValueAtTime(35, t + 0.9);
-    g.gain.setValueAtTime(vol, t);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 1.6);
-    sg.gain.value = 0.5;
-    o.connect(g); g.connect(bus); g.connect(sg); sg.connect(fx);
-    o.start(t); o.stop(t + 1.7);
-    burst(t, 0.06, 'lowpass', 400, vol * 0.8, 0.6);
-  }
-  // one node being counted in: a double relay clack
-  function tally(t) { relay(t, 0.7); relay(t + 0.02, 0.4); }
+  // one node being counted in: a relay clack
+  function tally(t) { relay(t, 0.55); }
 
-  // a low tone that swells in slowly and fades into the hall
-  function swell(t, f, rise, vol) {
-    var o = ctx.createOscillator(), g = ctx.createGain(), sg = ctx.createGain();
-    o.type = 'sine'; o.frequency.value = f;
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.linearRampToValueAtTime(vol, t + rise);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + rise + 2.2);
-    sg.gain.value = 0.4;
-    o.connect(g); g.connect(bus); g.connect(sg); sg.connect(fx);
-    o.start(t); o.stop(t + rise + 2.3);
-  }
-  // a dark, filtered tone that slides downward
-  function glide(t, a, b, dur, vol) {
-    var o = ctx.createOscillator(), f = ctx.createBiquadFilter(), g = ctx.createGain(), sg = ctx.createGain();
-    o.type = 'sawtooth'; f.type = 'lowpass'; f.frequency.value = 700;
-    o.frequency.setValueAtTime(a, t);
-    o.frequency.exponentialRampToValueAtTime(b, t + dur);
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.linearRampToValueAtTime(vol, t + 0.08);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    o.connect(f); f.connect(g); g.connect(bus);
-    sg.gain.value = 0.5; g.connect(sg); sg.connect(fx);
-    o.start(t); o.stop(t + dur + 0.05);
-  }
-  // ===== the verdict: an Evangelion-style computer readout (square-wave data chatter, then a sharp electronic confirm / alarm) =====
-  // these go straight to the speakers, past the compressor (which was squashing them), with a little room echo on the side
-  var DING_VOL = 0.55;   // raise for louder, lower for quieter (keep it under about 0.7 or it can distort)
-  function beep(t, f, dur, vol, type, f2) {
-    var o = ctx.createOscillator(), lp = ctx.createBiquadFilter(), g = ctx.createGain(), sg = ctx.createGain();
-    o.type = type || 'square';
-    o.frequency.setValueAtTime(f, t);
-    if (f2) o.frequency.exponentialRampToValueAtTime(f2, t + dur);
-    lp.type = 'lowpass'; lp.frequency.value = 5200;
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.linearRampToValueAtTime(vol, t + 0.003);
-    g.gain.setValueAtTime(vol, t + dur * 0.7);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    o.connect(lp); lp.connect(g); g.connect(ctx.destination);
-    sg.gain.value = 0.15; g.connect(sg); sg.connect(fx);
-    o.start(t); o.stop(t + dur + 0.03);
-  }
-  // fast data chatter: a row of very short blips
-  function chatter(t, freqs, vol) {
-    freqs.forEach(function (f, i) { beep(t + i * 0.055, f, 0.035, vol, 'square'); });
-  }
-  // approved: data chatter climbs, then two sharp confirm beeps and a longer final one
+  // ===== the verdict =====
+  // chatter first, then the call itself. Approved: three even pulses and a held tone. Denied: a harsh two-tone buzzer and a sinking growl.
   function approvedSound(hit) {
-    var v = DING_VOL * 0.6;
-    relay(hit, 0.8);
-    chatter(hit, [1200, 1500, 1800, 1500, 2100, 2400], v * 0.7);
-    beep(hit + 0.45, 2093, 0.13, v, 'square');
-    beep(hit + 0.65, 2093, 0.13, v, 'square');
-    beep(hit + 0.85, 2637, 0.45, v, 'square');
+    relay(hit, 0.6);
+    var end = dataBurst(hit, 7, 0.06);
+    var s = end + 0.12;
+    blip(hz(s), 1760, 0.09, 0.12, 'square', 0.1);
+    blip(hz(s + 0.15), 1760, 0.09, 0.12, 'square', 0.1);
+    blip(hz(s + 0.30), 1760, 0.09, 0.12, 'square', 0.1);
+    blip(hz(s + 0.52), 1760, 0.6, 0.1, 'square', 0.15);
   }
-  // denied: erratic chatter falls apart, then three alarm pulses a tritone apart and a low sinking buzz
   function deniedSound(hit) {
-    var v = DING_VOL * 0.6;
-    relay(hit, 0.8);
-    chatter(hit, [1400, 1100, 1250, 800, 950, 600], v * 0.7);
-    beep(hit + 0.45, 880, 0.14, v, 'square');
-    beep(hit + 0.65, 622, 0.14, v, 'square');
-    beep(hit + 0.85, 880, 0.14, v, 'square');
-    beep(hit + 1.05, 220, 0.6, v * 0.7, 'sawtooth', 110);
+    relay(hit, 0.6);
+    var end = dataBurst(hit, 6, 0.05);
+    var s = end + 0.12;
+    for (var i = 0; i < 4; i++) blip(hz(s + i * 0.19), i % 2 ? 294 : 392, 0.16, 0.14, 'sawtooth', 0.1);
+    var t = s + 0.85;
+    var o = ctx.createOscillator(), lp = ctx.createBiquadFilter(), g = ctx.createGain();
+    o.type = 'sawtooth'; lp.type = 'lowpass'; lp.frequency.value = 500;
+    o.frequency.setValueAtTime(170, t);
+    o.frequency.exponentialRampToValueAtTime(65, t + 0.7);
+    env(g, t, 0.16, 0.01, 0.75);
+    o.connect(lp); lp.connect(g); g.connect(bus); o.start(t); o.stop(t + 0.8);
+    click(t, 0.2, 800);
   }
-  // linked: a rising data run, then three even confirm tones that climb (a chain completing, neither yes nor no)
+  // linked: a data run, then three rising tones (a chain completing, neither yes nor no)
   function linkedSound(hit) {
-    var v = DING_VOL * 0.6;
-    relay(hit, 0.8);
-    chatter(hit, [900, 1100, 1300, 1500, 1700], v * 0.6);
-    beep(hit + 0.4, 1319, 0.12, v, 'square');
-    beep(hit + 0.55, 1568, 0.12, v, 'square');
-    beep(hit + 0.7, 2093, 0.4, v, 'square');
+    relay(hit, 0.6);
+    var end = dataBurst(hit, 5, 0.05);
+    var s = end + 0.1;
+    blip(hz(s), 1337, 0.1, 0.11, 'square', 0.1);
+    blip(hz(s + 0.16), 1622, 0.1, 0.11, 'square', 0.1);
+    blip(hz(s + 0.32), 1913, 0.4, 0.1, 'square', 0.12);
   }
-  // no consensus / test / discussion: two flat mid beeps
+  // no consensus / test / discussion: two flat beeps
   function unclearSound(hit) {
-    var v = DING_VOL * 0.6;
-    beep(hit, 1000, 0.12, v, 'square');
-    beep(hit + 0.2, 1000, 0.12, v, 'square');
+    blip(hz(hit), 1108, 0.1, 0.1, 'square', 0.08);
+    blip(hz(hit + 0.2), 1108, 0.1, 0.1, 'square', 0.08);
   }
-
-  // ===== sounds for the countdown clock =====
-  // alarm when the red zone starts: three sharp pulses
-  function clockAlarm() {
-    if (!soundOn() || !audio()) return;
-    var t = ctx.currentTime, v = DING_VOL * 0.55;
-    for (var i = 0; i < 3; i++) beep(t + i * 0.16, 988, 0.1, v, 'square');
-  }
-  // one tick per second inside the red zone
-  function clockTickSec() {
-    if (!soundOn() || !audio()) return;
-    beep(ctx.currentTime, 1500, 0.05, DING_VOL * 0.4, 'square');
-  }
-  // time is up: a low sinking buzz
-  function clockEnd() {
-    if (!soundOn() || !audio()) return;
-    var t = ctx.currentTime;
-    duckAmbient(t, 0.02, 1.6, 2);
-    beep(t, 260, 0.9, DING_VOL * 0.6, 'sawtooth', 70);
-    relay(t, 0.8);
-  }
-
   function ding(verdict) {
     if (!soundOn() || !audio()) return;
-    var t = ctx.currentTime, gap = 0.22;
-    duckAmbient(t, 0.02, 3.2, 3.3);
-    for (var i = 0; i < 3; i++) tally(t + i * gap);   // the three nodes clack in one by one
-    var hit = t + 3 * gap + 0.1;
+    var t = ctx.currentTime;
+    duckAmbient(t, 0.01, 3, 2.5);
+    for (var i = 0; i < 3; i++) tally(t + i * 0.22 + rnd(-0.01, 0.01));   // the three nodes clack in one by one
+    var hit = t + 0.8;
     if (verdict === 'APPROVED') approvedSound(hit);
     else if (verdict === 'DENIED') deniedSound(hit);
     else if (verdict === 'LINKED') linkedSound(hit);
@@ -672,70 +527,33 @@
   var PING = { melchior: { ap: 1568, dn: 520 }, balthasar: { ap: 1245, dn: 440 }, caspar: { ap: 1760, dn: 600 } };
   function pingBase(id, k) { return (PING[id] || PING.melchior)[k]; }
 
-  // one AI approved: a dry machine acknowledgement, three square-wave blips (root, fifth, octave) after a relay click
+  // one AI approved: relay click and two short beeps
   function approvedPing(id) {
-    var t = ctx.currentTime, root = pingBase(id, 'ap') / 2;
-    relay(t, 0.5);
-    [[1, 0], [1.5, 0.065], [2, 0.13]].forEach(function (s) {
-      var o = ctx.createOscillator(), lp = ctx.createBiquadFilter(), g = ctx.createGain(), at = t + 0.02 + s[1];
-      o.type = 'square'; o.frequency.value = root * s[0];
-      lp.type = 'lowpass'; lp.frequency.value = 3500;
-      g.gain.setValueAtTime(0.0001, at);
-      g.gain.linearRampToValueAtTime(0.1, at + 0.004);
-      g.gain.setValueAtTime(0.1, at + 0.04);
-      g.gain.exponentialRampToValueAtTime(0.0001, at + 0.055);
-      o.connect(lp); lp.connect(g); g.connect(bus);
-      o.start(at); o.stop(at + 0.07);
-    });
+    var t = ctx.currentTime, f = pingBase(id, 'ap');
+    relay(t, 0.35);
+    blip(t + 0.03, f, 0.05, 0.1, 'square');
+    blip(t + 0.11 + rnd(0, 0.01), f * 1.19, 0.08, 0.1, 'square');
   }
-  // one AI denied: three wobbling tones (a tritone and a minor second apart) sink together, with a low thud and a long echo
+  // one AI denied: relay click and two low buzzy tones
   function deniedPing(id) {
-    var t = ctx.currentTime, b = pingBase(id, 'dn');
-    var g = ctx.createGain(), lpf = ctx.createBiquadFilter(), sg = ctx.createGain(), lfo = ctx.createOscillator(), lg = ctx.createGain();
-    lpf.type = 'lowpass'; lpf.frequency.value = 1400;
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.linearRampToValueAtTime(0.28, t + 0.02);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.8);
-    lpf.connect(g); g.connect(bus);
-    sg.gain.value = 0.6; g.connect(sg); sg.connect(fx);
-    lfo.frequency.value = 9; lg.gain.value = 7; lfo.connect(lg);
-    [[b, 'triangle', b * 0.635, 1], [b * 1.414, 'sawtooth', b * 0.895, 0.35], [b * 1.06, 'triangle', b * 0.6, 0.5]].forEach(function (p) {
-      var o = ctx.createOscillator(), og = ctx.createGain();
-      o.type = p[1]; o.frequency.setValueAtTime(p[0], t);
-      o.frequency.exponentialRampToValueAtTime(p[2], t + 0.6);
-      og.gain.value = p[3]; lg.connect(o.frequency); o.connect(og); og.connect(lpf);
-      o.start(t); o.stop(t + 0.85);
-    });
-    lfo.start(t); lfo.stop(t + 0.85);
-    var th = ctx.createOscillator(), tg = ctx.createGain();
-    th.type = 'sine'; th.frequency.setValueAtTime(90, t); th.frequency.exponentialRampToValueAtTime(45, t + 0.5);
-    tg.gain.setValueAtTime(0.3, t); tg.gain.exponentialRampToValueAtTime(0.0001, t + 0.6);
-    th.connect(tg); tg.connect(bus); th.start(t); th.stop(t + 0.65);
-    burst(t, 0.08, 'lowpass', 300, 0.25, 0.4);
+    var t = ctx.currentTime, f = pingBase(id, 'dn');
+    relay(t, 0.35);
+    blip(t + 0.03, f, 0.1, 0.12, 'sawtooth');
+    blip(t + 0.17, f * 0.8, 0.16, 0.12, 'sawtooth');
   }
-  // one AI has spoken in discuss or link mode (no yes or no): a relay click and one soft tone, each AI at its own pitch
+  // one AI has spoken in discuss or link mode (no yes or no): relay click and one beep
   function openPing(id) {
     var t = ctx.currentTime;
-    relay(t, 0.5);
-    dingTone(t + 0.03, pingBase(id, 'ap') / 2, 0.12);
+    relay(t, 0.35);
+    blip(t + 0.03, pingBase(id, 'ap'), 0.08, 0.1, 'square');
   }
   // one AI has decided
   function nodePing(verdict, id) {
     if (!soundOn() || !audio()) return;
-    duckAmbient(ctx.currentTime, 0.04, 0.9, 2);
+    duckAmbient(ctx.currentTime, 0.02, 0.9, 2);
     if (verdict === 'DENIED') deniedPing(id);
     else if (verdict === 'OPEN') openPing(id);
     else approvedPing(id);
-  }
-  // a short clean ding with a fading tail and a little echo
-  function dingTone(t, f, vol) {
-    var o = ctx.createOscillator(), g = ctx.createGain(), sg = ctx.createGain();
-    o.type = 'sine'; o.frequency.value = f;
-    g.gain.setValueAtTime(vol, t);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 1.2);
-    sg.gain.value = 0.35;
-    o.connect(g); g.connect(bus); g.connect(sg); sg.connect(fx);
-    o.start(t); o.stop(t + 1.3);
   }
 
   // ===== NERV mode (remembered on this device; on unless it was switched off) =====
@@ -798,249 +616,6 @@
   panel.appendChild(ctlWrap);
   var pips = el('div', 'mg-pips');
   panel.appendChild(pips);
-
-  // ===== the EVA countdown clock =====
-  var clock = el('div', 'mg-clock standby');
-  var clockLbl = el('div', 'mg-clk-l', '\u6d3b\u52d5\u9650\u754c\u307e\u3067\u3042\u3068');   // "until the activity limit"
-  var clockTime = el('div', 'mg-clk-t', '0:30:00');
-  var clockTag = el('div', 'mg-clk-s', 'STANDBY');
-  var clockBar = el('div', 'mg-clk-b'), clockFill = el('i'), clockMark = el('u');
-  clockBar.appendChild(clockFill);
-  clockBar.appendChild(clockMark);
-  [clockLbl, clockTag, clockTime, clockBar].forEach(function (x) { clock.appendChild(x); });
-  panel.appendChild(clock);
-
-  // ===== the EVA TIMER WIDGET (angled, bottom right corner of the screen, swings in when EXECUTE is pressed) =====
-  // it is a child of the MAGI block (not of the panel), so it also shows in EXPAND and in real fullscreen
-  var NS = 'http://www.w3.org/2000/svg';
-  // the 7 segments of one digit (a, b, c, d, e, f, g), drawn in a 60 x 100 box
-  var SEGP = [
-    '10,5 15,0 45,0 50,5 45,10 15,10',
-    '55,8 60,13 60,42 55,47 50,42 50,13',
-    '55,53 60,58 60,87 55,92 50,87 50,58',
-    '10,95 15,90 45,90 50,95 45,100 15,100',
-    '5,53 10,58 10,87 5,92 0,87 0,58',
-    '5,8 10,13 10,42 5,47 0,42 0,13',
-    '10,50 15,45 45,45 50,50 45,55 15,55'
-  ];
-  var DMAP = ['abcdef', 'bc', 'abdeg', 'abcdg', 'bcfg', 'acdfg', 'acdefg', 'abc', 'abcdefg', 'abcdfg'];
-  function mkDigit(small) {
-    var s = document.createElementNS(NS, 'svg'), p = [];
-    s.setAttribute('viewBox', '0 0 60 100');
-    s.setAttribute('preserveAspectRatio', 'none');
-    s.setAttribute('class', small ? 'sm' : '');
-    SEGP.forEach(function (pts) {
-      var g = document.createElementNS(NS, 'polygon');
-      g.setAttribute('points', pts);
-      s.appendChild(g);
-      p.push(g);
-    });
-    return { svg: s, p: p, v: -1 };
-  }
-  function setDigit(d, n) {
-    if (d.v === n) return;
-    d.v = n;
-    var on = DMAP[n];
-    for (var i = 0; i < 7; i++) d.p[i].setAttribute('class', on.indexOf('abcdefg'.charAt(i)) >= 0 ? 'on' : '');
-  }
-  function mkColon(small) {
-    var s = document.createElementNS(NS, 'svg');
-    s.setAttribute('viewBox', '0 0 20 100');
-    s.setAttribute('preserveAspectRatio', 'none');
-    s.setAttribute('class', 'cl' + (small ? ' sm' : ''));
-    [28, 62].forEach(function (y) {
-      var r = document.createElementNS(NS, 'rect');
-      r.setAttribute('x', '4'); r.setAttribute('y', String(y)); r.setAttribute('width', '12'); r.setAttribute('height', '10');
-      s.appendChild(r);
-    });
-    return s;
-  }
-
-  var tw = el('div', 'mg-tw'), twb = el('div', 'mg-twb');
-  twb.appendChild(el('div', 'mg-twp'));
-  twb.appendChild(el('div', 'mg-twk'));
-  twb.appendChild(el('div', 'mg-twl0'));
-  twb.appendChild(el('div', 'mg-twj', '\u6d3b\u52d5\u9650\u754c\u307e\u3067'));          // "until the activity limit"
-  twb.appendChild(el('div', 'mg-twa', '\u3042\u3068'));                                    // "remaining"
-  twb.appendChild(el('div', 'mg-twe', 'ACTIVE TIME REMAINING:'));
-
-  // the digits: M : S S : C C (the hundredths are smaller, like the reference)
-  var twd = el('div', 'mg-twd');
-  var dg = [mkDigit(false), mkDigit(false), mkDigit(false), mkDigit(true), mkDigit(true)];
-  twd.appendChild(dg[0].svg);
-  twd.appendChild(mkColon(false));
-  twd.appendChild(dg[1].svg);
-  twd.appendChild(dg[2].svg);
-  twd.appendChild(mkColon(true));
-  twd.appendChild(dg[3].svg);
-  twd.appendChild(dg[4].svg);
-  twb.appendChild(twd);
-
-  // INTERNAL / EXTERNAL badges and the power-supply label
-  function twBadge(jp, en, top) {
-    var b = el('div', 'mg-twi');
-    b.style.top = top;
-    b.appendChild(el('span', 'jp', jp));
-    b.appendChild(el('span', 'en', en));
-    b.appendChild(el('span', 'sp'));
-    twb.appendChild(b);
-  }
-  twBadge('\u5185\u90e8', 'INTERNAL', '24%');
-  var twm = el('div', 'mg-twm', '\u4e3b\u96fb\u6e90\u4f9b\u7d66 \u30b7\u30b9\u30c6\u30e0');
-  twm.appendChild(el('small', null, 'MAIN ENERGY SUPPLY SYSTEM'));
-  twb.appendChild(twm);
-  twBadge('\u5916\u90e8', 'EXTERNAL', '50%');
-
-  // the lamps along the bottom: STOP, SLOW, NORMAL, RACING and the DANGER box
-  var twLamp = {};
-  function mkLamp(key, label, left, cls) {
-    var b = el('div', 'mg-twl' + (cls ? ' ' + cls : ''));
-    b.style.left = left;
-    b.appendChild(el('span', null, label));
-    b.appendChild(el('i'));
-    twb.appendChild(b);
-    twLamp[key] = b;
-  }
-  mkLamp('stop', 'STOP', '39.8%');
-  mkLamp('slow', 'SLOW', '50%');
-  mkLamp('normal', 'NORMAL', '60.2%');
-  mkLamp('racing', 'RACING', '70.4%');
-  var twDg = el('div', 'mg-twl dg lit-off');
-  twDg.style.left = '81.5%';
-  twDg.appendChild(el('span', null, 'DANGER'));
-  twDg.appendChild(el('span', null, 'EMERGENCY'));
-  twb.appendChild(twDg);
-  twLamp.danger = twDg;
-
-  tw.appendChild(twb);
-  root.appendChild(tw);
-
-  var twT = null, twBootT = [], twBooting = false, twSt = '';
-  function twLamps(o) { Object.keys(twLamp).forEach(function (k) { twLamp[k].classList.toggle('lit', !!o[k]); }); }
-  // which lamps are lit in each state of the clock
-  function twByState(s) {
-    var o = {};
-    if (s === 'racing') o.racing = 1;
-    else if (s === 'emergency') { o.racing = 1; o.danger = 1; }
-    else if (s === 'ended') { o.stop = 1; o.danger = 1; }
-    else if (s === 'done') o.normal = 1;
-    return o;
-  }
-  // power-up: the lamps light one after another (STOP, SLOW, NORMAL, RACING), then settle on the real state
-  function twBoot() {
-    twBootT.forEach(clearTimeout);
-    twBootT = [];
-    twBooting = true;
-    twLamps({});
-    ['stop', 'slow', 'normal', 'racing'].forEach(function (k, i) {
-      twBootT.push(setTimeout(function () { var o = {}; o[k] = 1; twLamps(o); }, 350 + i * 120));
-    });
-    twBootT.push(setTimeout(function () { twBooting = false; twLamps(twByState(twSt)); }, 350 + 4 * 120 + 150));
-  }
-  function twShow() {
-    clearTimeout(twT);
-    if (twSt) { tw.classList.remove('st-' + twSt); twSt = ''; }
-    tw.classList.remove('out');
-    tw.classList.remove('show');
-    void tw.offsetWidth;   // restart the swing-in animation
-    tw.classList.add('show');
-    twBoot();
-  }
-  function twHide(now) {
-    clearTimeout(twT);
-    if (!tw.classList.contains('show')) return;
-    if (now) { twBootT.forEach(clearTimeout); tw.classList.remove('show'); tw.classList.remove('out'); return; }
-    tw.classList.add('out');
-    twT = setTimeout(function () { tw.classList.remove('show'); tw.classList.remove('out'); }, 480);
-  }
-  // the run is over: keep the timer on screen for a few seconds, then swing it away
-  function twLinger() {
-    if (!tw.classList.contains('show')) return;
-    clearTimeout(twT);
-    twT = setTimeout(function () { twHide(false); }, 7000);
-  }
-  // called by the clock on every paint: update the digits, the colour and the lamps
-  function twSync(state, rem) {
-    if (!tw.classList.contains('show')) return;
-    if (twSt !== state) {
-      if (twSt) tw.classList.remove('st-' + twSt);
-      tw.classList.add('st-' + state);
-      twSt = state;
-      if (!twBooting) twLamps(twByState(state));
-    }
-    if (!(rem > 0)) rem = 0;
-    var m = Math.floor(rem / 60) % 10, s = Math.floor(rem % 60), c = Math.floor((rem % 1) * 100);
-    setDigit(dg[0], m);
-    setDigit(dg[1], Math.floor(s / 10));
-    setDigit(dg[2], s % 10);
-    setDigit(dg[3], Math.floor(c / 10));
-    setDigit(dg[4], c % 10);
-  }
-
-  // M:SS:CC, like the EVA timer
-  function fmtClock(sec) {
-    if (!(sec > 0)) sec = 0;
-    var m = Math.floor(sec / 60), s = Math.floor(sec % 60), c = Math.floor((sec % 1) * 100);
-    return m + ':' + (s < 10 ? '0' : '') + s + ':' + (c < 10 ? '0' : '') + c;
-  }
-  var clk = { timer: null, t0: 0, limit: 30, emerg: 10, state: '', lastSec: -1 };
-  function clockPaint(state, remaining, tag) {
-    clk.state = state;
-    clock.className = 'mg-clock ' + state;
-    clockTime.textContent = fmtClock(remaining);
-    clockTag.textContent = tag;
-    clockFill.style.width = Math.max(0, Math.min(100, remaining / clk.limit * 100)) + '%';
-    // the fill shrinks toward the left as time runs out, so the red zone is the left emerg/limit part of the bar
-    clockMark.style.left = Math.max(0, Math.min(100, clk.emerg / clk.limit * 100)) + '%';
-    twSync(state, remaining);   // the corner widget follows the same clock
-  }
-  function stopClockTimer() { if (clk.timer) { clearInterval(clk.timer); clk.timer = null; } }
-  // standby: the full time limit, breathing
-  function idleClock() {
-    if (clk.timer) return;
-    clk.limit = cfg.timeout || 30;
-    clk.emerg = Math.min(cfg.emergency || 10, clk.limit);
-    clockPaint('standby', clk.limit, 'STANDBY');
-  }
-  // the run starts: count down from the time limit
-  function startClock() {
-    stopClockTimer();
-    clk.limit = cfg.timeout || 30;
-    clk.emerg = Math.min(cfg.emergency || 10, clk.limit);
-    clk.t0 = performance.now();
-    clk.lastSec = -1;
-    twShow();   // swing the corner timer in
-    var prev = '';
-    function tickClock() {
-      var rem = clk.limit - (performance.now() - clk.t0) / 1000;
-      if (rem <= 0) {
-        stopClockTimer();
-        clockPaint('ended', 0, 'TIME UP');
-        clockEnd();
-        return;
-      }
-      var st = rem <= clk.emerg ? 'emergency' : 'racing';
-      clockPaint(st, rem, st === 'emergency' ? 'EMERGENCY' : 'RACING');
-      if (st === 'emergency') {
-        if (prev !== 'emergency') clockAlarm();
-        var whole = Math.ceil(rem);
-        if (whole !== clk.lastSec) { clk.lastSec = whole; if (prev === 'emergency') clockTickSec(); }
-      }
-      prev = st;
-    }
-    tickClock();
-    clk.timer = setInterval(tickClock, 35);
-  }
-  // the run is over: freeze the clock at the time the run really took
-  function freezeClock(limit, emerg, elapsedMs, timedOut) {
-    stopClockTimer();
-    clk.limit = limit || cfg.timeout || 30;
-    clk.emerg = Math.min(emerg || cfg.emergency || 10, clk.limit);
-    var rem = clk.limit - (elapsedMs || 0) / 1000;
-    if (timedOut || rem <= 0) clockPaint('ended', 0, 'TIME UP');
-    else clockPaint('done', rem, 'DONE');
-    twLinger();   // the corner timer stays a few seconds, then swings away
-  }
 
   // the full answer of a link-mode run (hidden in the other modes)
   var finalLbl = el('div', 'mg-final-lbl', 'FINAL ANSWER \u00b7 MELCHIOR \u2192 BALTHASAR \u2192 CASPER');
@@ -1165,27 +740,6 @@
   tr.addEventListener('input', function () { tLab.textContent = 'CREATIVITY ' + Number(tr.value).toFixed(1); });
   tr.addEventListener('change', function () { quick({ temperature: Number(tr.value) }); });
 
-  // TIME LIMIT: when the countdown reaches 0, every node still thinking is cut off
-  var limRow = el('div', 'mg-row'), limLab = el('label', null, 'TIME LIMIT 30S'), limR = el('input');
-  limR.type = 'range'; limR.min = '5'; limR.max = '120'; limR.step = '5'; limR.value = '30';
-  limR.setAttribute('aria-label', 'Time limit of one run in seconds');
-  limRow.appendChild(limLab);
-  limRow.appendChild(limR);
-  ctrlBody.appendChild(limRow);
-  limR.addEventListener('input', function () { limLab.textContent = 'TIME LIMIT ' + limR.value + 'S'; });
-  limR.addEventListener('change', function () { quick({ timeout: Number(limR.value) }); });
-
-  // EMERGENCY: the red zone, the last N seconds of the countdown
-  var emRow = el('div', 'mg-row'), emLab = el('label', null, 'EMERGENCY 10S'), emR = el('input');
-  emR.type = 'range'; emR.min = '1'; emR.max = '60'; emR.step = '1'; emR.value = '10';
-  emR.setAttribute('aria-label', 'Red zone of the countdown in seconds');
-  emRow.appendChild(emLab);
-  emRow.appendChild(emR);
-  ctrlBody.appendChild(emRow);
-  emR.addEventListener('input', function () { emLab.textContent = 'EMERGENCY ' + emR.value + 'S'; });
-  emR.addEventListener('change', function () { quick({ emergency: Number(emR.value) }); });
-  ctrlBody.appendChild(el('div', 'mg-note', 'TIME LIMIT is the countdown. When it hits zero, nodes still thinking are cut off and show "Timed out"; nodes that already answered still count. EMERGENCY is the red zone: the clock (and the corner timer) turns red and sounds an alarm in the last N seconds. It is only a warning, it does not change what the nodes do.'));
-
   var ordRow = el('div', 'mg-row'), ordTa = el('textarea');
   ordTa.maxLength = 1200;
   ordTa.placeholder = 'Orders every node must follow, for example: "Our shop is small, so be careful with money." Leave empty for none.';
@@ -1238,7 +792,7 @@
     });
     if (text) ordTa.value = cfg.directive || '';
   }
-  // reflect the mode, link ending, rounds, creativity and time limit everywhere they show
+  // reflect the mode, link ending, rounds and creativity everywhere they show
   function syncMode() {
     var isLink = cfg.mode === 'link';
     segMode.mark(cfg.mode);
@@ -1253,12 +807,6 @@
     linkNote.style.display = isLink ? '' : 'none';
     tr.value = String(cfg.temperature);
     tLab.textContent = 'CREATIVITY ' + Number(cfg.temperature).toFixed(1);
-    limR.value = String(cfg.timeout || 30);
-    limLab.textContent = 'TIME LIMIT ' + (cfg.timeout || 30) + 'S';
-    emR.max = String(Math.min(60, cfg.timeout || 30));
-    emR.value = String(Math.min(cfg.emergency || 10, cfg.timeout || 30));
-    emLab.textContent = 'EMERGENCY ' + emR.value + 'S';
-    idleClock();
     exModeEl.textContent = 'EX_MODE:' + (isLink ? 'LINK/' + (cfg.linkOut === 'verdict' ? 'VERDICT' : 'DISCUSS') : (cfg.mode === 'discuss' ? 'DISCUSS' : 'VERDICT') + '/R' + cfg.rounds);
     dec.style.display = hasVotes() ? '' : 'none';
     if (isLink) ta.placeholder = cfg.linkOut === 'verdict' ? 'Ask a yes or no question. Melchior drafts, Balthasar reviews, Casper rules.' : 'Ask anything. Melchior drafts, Balthasar reviews, Casper finishes.';
@@ -1314,7 +862,7 @@
     root.classList.toggle('on', on);
     if (on && !root.classList.contains('boot')) { root.classList.add('boot'); setTimeout(function () { root.classList.remove('boot'); }, 1400); }
     hdrTgl.style.display = admin ? '' : 'none';
-    if (!admin || !on) { closePanels(); collapse(); stopHum(); stopAmbient(); stopFlicker(); stopClockTimer(); twHide(true); }
+    if (!admin || !on) { closePanels(); collapse(); stopHum(); stopAmbient(); stopFlicker(); }
     syncToggles();
     place();
   }
@@ -1711,7 +1259,6 @@
       (r.results || []).forEach(showResult);
       setPips(r.results);
       setResolution(r);
-      freezeClock(r.timeout, r.emergency, r.elapsed, r.timedOut);   // runs saved before the clock existed have no numbers: the clock then uses the current limit
       showFinal(r.mode === 'link' ? (r.final || '') : '');
       setHist(false);
     }).catch(function (e) { resSub.textContent = e.message; });
@@ -1749,12 +1296,9 @@
     startAmbient();   // in case the first tap never started it
     startHum();
     startFlicker();
-    startClock();     // the EVA countdown starts with the run (and the corner timer swings in)
     var decree = hasVotes() ? dec.value : '';
     api('/api/admin/magi', 'POST', { question: q, override: decree }).then(function (d) {
       lastRun = d;
-      // the server is done: freeze the clock at the real time (if the limit ran out, the clock stays on TIME UP)
-      freezeClock(d.timeout, d.emergency, d.elapsed, d.timedOut);
       // link mode reveals the chain in order (Melchior, Balthasar, Casper); the other modes go by speed
       var list = d.mode === 'link'
         ? (d.results || []).slice()
@@ -1777,9 +1321,6 @@
     }).catch(function (e) {
       stopHum();
       stopFlicker();
-      stopClockTimer();
-      twHide(false);
-      idleClock();
       res.className = 'mg-res dn';
       resBig.textContent = 'ERROR';
       resBig.className = 'mg-st small';
