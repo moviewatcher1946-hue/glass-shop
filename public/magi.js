@@ -4,6 +4,11 @@
 //  - The EVA COUNTDOWN CLOCK (M:SS:CC) sits under the board. It counts down from the TIME LIMIT while the nodes think.
 //      STANDBY (breathing) -> RACING (orange) -> EMERGENCY (red, blinking, the last N seconds) -> TIME UP (fast blink).
 //      When the run ends in time the clock freezes in green (DONE) at the time the run really took.
+//  - NEW: the EVA TIMER WIDGET. When you press EXECUTE, an angled Evangelion "ACTIVE TIME REMAINING" timer
+//      (7-segment digits, INTERNAL / EXTERNAL badges, STOP / SLOW / NORMAL / RACING lamps, DANGER box)
+//      swings in from the bottom right corner of the screen, counts down with the same clock as the bar under the board,
+//      goes red in the EMERGENCY zone, shows TIME UP / DONE at the end, then swings away again after a few seconds.
+//      It is an extra layer: nothing in the original UI was removed or moved.
 //  - The CONTROL button (top right of the panel) is where you change how the nodes act:
 //      * MODE: VERDICT (approved / denied, majority wins), DISCUSS (no yes or no, they talk it through),
 //              or LINK (the nodes assist each other in a chain: Melchior drafts, Balthasar reviews, Casper finishes),
@@ -210,6 +215,56 @@
     '.mg-clock.done{color:var(--mg-gn);border-color:var(--mg-gn)}',
     '.mg-clock.done .mg-clk-b i{background:var(--mg-gn)}',
     '@keyframes mgBreath{30%{opacity:1}50%{opacity:.4}70%{opacity:1}}',
+
+    // ===== EVA TIMER WIDGET: angled, fixed in the bottom right corner of the screen, shown while a run is going =====
+    // (a fixed layer, so it never moves or covers the original console; pointer-events none so it never blocks a click)
+    '.mg-tw{display:none;position:fixed;right:16px;bottom:16px;z-index:60;width:min(420px,46vw);aspect-ratio:610/317;container-type:inline-size;pointer-events:none;--c:#f5a02a;color:var(--c);font-family:Arial,Helvetica,sans-serif;text-transform:uppercase}',
+    '#magi-dash:not(.on) .mg-tw{display:none!important}',
+    '.mg-tw.show{display:block}',
+    // the tilt (perspective, like the reference picture)
+    '.mg-twb{position:absolute;inset:0;transform:perspective(900px) rotateX(9deg) rotateY(-24deg) rotateZ(-4deg);transform-origin:100% 100%;filter:drop-shadow(0 0 16px #ff6a0055)}',
+    '.mg-tw.show .mg-twb{animation:twIn .8s cubic-bezier(.2,.9,.25,1) both}',
+    '.mg-tw.out .mg-twb{animation:twOut .45s ease-in both}',
+    '@keyframes twIn{0%{opacity:0;transform:perspective(900px) translate(70%,55%) rotateX(40deg) rotateY(-80deg) rotateZ(-20deg) scale(.3)}45%{opacity:.5}60%{opacity:1}100%{opacity:1;transform:perspective(900px) rotateX(9deg) rotateY(-24deg) rotateZ(-4deg)}}',
+    '@keyframes twOut{0%{opacity:1;transform:perspective(900px) rotateX(9deg) rotateY(-24deg) rotateZ(-4deg)}100%{opacity:0;transform:perspective(900px) translate(70%,55%) rotateX(40deg) rotateY(-80deg) rotateZ(-20deg) scale(.3)}}',
+    '.mg-tw.st-emergency{--c:#ff3d2a}',
+    '.mg-tw.st-ended{--c:#ff3d2a}',
+    '.mg-tw.st-done{--c:#5ef0a0}',
+    // the gradient plate and the black face
+    '.mg-twp{position:absolute;inset:0;background:linear-gradient(90deg,#b53a2b 0%,#d99a26 38%,#7b8c38 72%,#0f6a3b 100%)}',
+    '.mg-twk{position:absolute;left:14%;top:16%;right:3%;bottom:14%;background:#000;clip-path:polygon(34% 0,100% 0,100% 100%,30% 100%,0 25%)}',
+    '.mg-twl0{position:absolute;left:2.2%;top:4%;bottom:4%;width:1%;background:#7a1d12}',
+    // the Japanese label and the English label
+    '.mg-twj{position:absolute;left:31%;top:15.5%;padding:.3cqw 1cqw;background:#000;border:1px solid #c5601f;color:#f5a02a;font:700 3.3cqw/1.15 "Hiragino Mincho ProN","Yu Mincho","Noto Serif JP",serif;white-space:nowrap}',
+    '.mg-twa{position:absolute;left:31.5%;top:27.5%;color:#f5a02a;font:700 2.6cqw/1 "Hiragino Mincho ProN","Yu Mincho","Noto Serif JP",serif}',
+    '.mg-twe{position:absolute;left:51%;top:19.5%;color:#f5a02a;font:600 1.7cqw/1 Arial,Helvetica,sans-serif;letter-spacing:.02em;white-space:nowrap}',
+    // the 7-segment digits
+    '.mg-twd{position:absolute;left:36.5%;top:26%;width:46.5%;height:40%;display:flex;align-items:flex-end;gap:.8cqw;color:var(--c);filter:drop-shadow(0 0 5px currentColor)}',
+    '.mg-twd svg{display:block;flex:none;width:8.6cqw;height:100%}',
+    '.mg-twd svg.sm{width:5.6cqw;height:62%;margin-bottom:3%}',
+    '.mg-twd svg.cl{width:2.2cqw}',
+    '.mg-twd svg.cl.sm{width:1.7cqw}',
+    '.mg-twd polygon{fill:currentColor;opacity:.07}',
+    '.mg-twd polygon.on{opacity:1}',
+    '.mg-twd rect{fill:currentColor}',
+    '.mg-tw.st-emergency .mg-twd{animation:mgBlink .5s steps(2) infinite}',
+    '.mg-tw.st-ended .mg-twd{animation:mgBlink .2s steps(2) infinite}',
+    // INTERNAL / EXTERNAL badges
+    '.mg-twi{position:absolute;left:83%;width:13%;height:15%;border:1px solid #c5601f;background:#000;overflow:hidden}',
+    '.mg-twi .jp{position:absolute;left:3%;top:2%;color:#f5a02a;font:700 4.2cqw/1 "Hiragino Mincho ProN","Yu Mincho","Noto Serif JP",serif}',
+    '.mg-twi .en{position:absolute;left:3%;bottom:2%;color:#f5a02a;font:700 1.9cqw/1 Arial,Helvetica,sans-serif;letter-spacing:.02em}',
+    '.mg-twi .sp{position:absolute;right:0;top:0;bottom:0;width:22%;background:repeating-linear-gradient(115deg,#e5231b 0 .9cqw,#000 .9cqw 1.6cqw)}',
+    '.mg-twm{position:absolute;left:83%;top:40%;width:13.5%;color:#f5a02a;font:700 1.9cqw/1.1 "Hiragino Mincho ProN","Yu Mincho","Noto Serif JP",serif;white-space:nowrap}',
+    '.mg-twm small{display:block;font:600 1.15cqw/1.2 Arial,Helvetica,sans-serif}',
+    // the STOP / SLOW / NORMAL / RACING lamps and the DANGER box
+    '.mg-twl{position:absolute;top:69%;width:9.2%;height:11%;border:1px solid #c5601f;background:#000;display:flex;flex-direction:column;align-items:center;color:#f5a02a;font:700 1.7cqw/1.3 Arial,Helvetica,sans-serif}',
+    '.mg-twl i{display:block;width:84%;height:30%;margin-top:auto;margin-bottom:6%;background:#6e0e08}',
+    '.mg-twl.lit{color:#ffd9a0}',
+    '.mg-twl.lit i{background:#ff2a1a;box-shadow:0 0 8px #ff2a1a}',
+    '.mg-twl.dg{left:81.5%;width:11%;justify-content:center;font-size:1.35cqw;line-height:1.2;text-align:center;border-color:#c5601f}',
+    '.mg-twl.dg.lit{background:#e5231b;color:#000;animation:mgBlink .4s steps(2) infinite}',
+    '.mg-twl.dg i{display:none}',
+    '@media (max-width:860px){.mg-tw{width:min(300px,64vw);right:8px;bottom:8px}}',
 
     // the final answer of a link-mode run (shown under the board, hidden until there is one)
     '.mg-final-lbl{display:none;margin:14px 0 0;font-size:.72rem;letter-spacing:.2em;color:var(--mg-hi)}',
@@ -755,6 +810,173 @@
   [clockLbl, clockTag, clockTime, clockBar].forEach(function (x) { clock.appendChild(x); });
   panel.appendChild(clock);
 
+  // ===== the EVA TIMER WIDGET (angled, bottom right corner of the screen, swings in when EXECUTE is pressed) =====
+  // it is a child of the MAGI block (not of the panel), so it also shows in EXPAND and in real fullscreen
+  var NS = 'http://www.w3.org/2000/svg';
+  // the 7 segments of one digit (a, b, c, d, e, f, g), drawn in a 60 x 100 box
+  var SEGP = [
+    '10,5 15,0 45,0 50,5 45,10 15,10',
+    '55,8 60,13 60,42 55,47 50,42 50,13',
+    '55,53 60,58 60,87 55,92 50,87 50,58',
+    '10,95 15,90 45,90 50,95 45,100 15,100',
+    '5,53 10,58 10,87 5,92 0,87 0,58',
+    '5,8 10,13 10,42 5,47 0,42 0,13',
+    '10,50 15,45 45,45 50,50 45,55 15,55'
+  ];
+  var DMAP = ['abcdef', 'bc', 'abdeg', 'abcdg', 'bcfg', 'acdfg', 'acdefg', 'abc', 'abcdefg', 'abcdfg'];
+  function mkDigit(small) {
+    var s = document.createElementNS(NS, 'svg'), p = [];
+    s.setAttribute('viewBox', '0 0 60 100');
+    s.setAttribute('preserveAspectRatio', 'none');
+    s.setAttribute('class', small ? 'sm' : '');
+    SEGP.forEach(function (pts) {
+      var g = document.createElementNS(NS, 'polygon');
+      g.setAttribute('points', pts);
+      s.appendChild(g);
+      p.push(g);
+    });
+    return { svg: s, p: p, v: -1 };
+  }
+  function setDigit(d, n) {
+    if (d.v === n) return;
+    d.v = n;
+    var on = DMAP[n];
+    for (var i = 0; i < 7; i++) d.p[i].setAttribute('class', on.indexOf('abcdefg'.charAt(i)) >= 0 ? 'on' : '');
+  }
+  function mkColon(small) {
+    var s = document.createElementNS(NS, 'svg');
+    s.setAttribute('viewBox', '0 0 20 100');
+    s.setAttribute('preserveAspectRatio', 'none');
+    s.setAttribute('class', 'cl' + (small ? ' sm' : ''));
+    [28, 62].forEach(function (y) {
+      var r = document.createElementNS(NS, 'rect');
+      r.setAttribute('x', '4'); r.setAttribute('y', String(y)); r.setAttribute('width', '12'); r.setAttribute('height', '10');
+      s.appendChild(r);
+    });
+    return s;
+  }
+
+  var tw = el('div', 'mg-tw'), twb = el('div', 'mg-twb');
+  twb.appendChild(el('div', 'mg-twp'));
+  twb.appendChild(el('div', 'mg-twk'));
+  twb.appendChild(el('div', 'mg-twl0'));
+  twb.appendChild(el('div', 'mg-twj', '\u6d3b\u52d5\u9650\u754c\u307e\u3067'));          // "until the activity limit"
+  twb.appendChild(el('div', 'mg-twa', '\u3042\u3068'));                                    // "remaining"
+  twb.appendChild(el('div', 'mg-twe', 'ACTIVE TIME REMAINING:'));
+
+  // the digits: M : S S : C C (the hundredths are smaller, like the reference)
+  var twd = el('div', 'mg-twd');
+  var dg = [mkDigit(false), mkDigit(false), mkDigit(false), mkDigit(true), mkDigit(true)];
+  twd.appendChild(dg[0].svg);
+  twd.appendChild(mkColon(false));
+  twd.appendChild(dg[1].svg);
+  twd.appendChild(dg[2].svg);
+  twd.appendChild(mkColon(true));
+  twd.appendChild(dg[3].svg);
+  twd.appendChild(dg[4].svg);
+  twb.appendChild(twd);
+
+  // INTERNAL / EXTERNAL badges and the power-supply label
+  function twBadge(jp, en, top) {
+    var b = el('div', 'mg-twi');
+    b.style.top = top;
+    b.appendChild(el('span', 'jp', jp));
+    b.appendChild(el('span', 'en', en));
+    b.appendChild(el('span', 'sp'));
+    twb.appendChild(b);
+  }
+  twBadge('\u5185\u90e8', 'INTERNAL', '24%');
+  var twm = el('div', 'mg-twm', '\u4e3b\u96fb\u6e90\u4f9b\u7d66 \u30b7\u30b9\u30c6\u30e0');
+  twm.appendChild(el('small', null, 'MAIN ENERGY SUPPLY SYSTEM'));
+  twb.appendChild(twm);
+  twBadge('\u5916\u90e8', 'EXTERNAL', '50%');
+
+  // the lamps along the bottom: STOP, SLOW, NORMAL, RACING and the DANGER box
+  var twLamp = {};
+  function mkLamp(key, label, left, cls) {
+    var b = el('div', 'mg-twl' + (cls ? ' ' + cls : ''));
+    b.style.left = left;
+    b.appendChild(el('span', null, label));
+    b.appendChild(el('i'));
+    twb.appendChild(b);
+    twLamp[key] = b;
+  }
+  mkLamp('stop', 'STOP', '39.8%');
+  mkLamp('slow', 'SLOW', '50%');
+  mkLamp('normal', 'NORMAL', '60.2%');
+  mkLamp('racing', 'RACING', '70.4%');
+  var twDg = el('div', 'mg-twl dg lit-off');
+  twDg.style.left = '81.5%';
+  twDg.appendChild(el('span', null, 'DANGER'));
+  twDg.appendChild(el('span', null, 'EMERGENCY'));
+  twb.appendChild(twDg);
+  twLamp.danger = twDg;
+
+  tw.appendChild(twb);
+  root.appendChild(tw);
+
+  var twT = null, twBootT = [], twBooting = false, twSt = '';
+  function twLamps(o) { Object.keys(twLamp).forEach(function (k) { twLamp[k].classList.toggle('lit', !!o[k]); }); }
+  // which lamps are lit in each state of the clock
+  function twByState(s) {
+    var o = {};
+    if (s === 'racing') o.racing = 1;
+    else if (s === 'emergency') { o.racing = 1; o.danger = 1; }
+    else if (s === 'ended') { o.stop = 1; o.danger = 1; }
+    else if (s === 'done') o.normal = 1;
+    return o;
+  }
+  // power-up: the lamps light one after another (STOP, SLOW, NORMAL, RACING), then settle on the real state
+  function twBoot() {
+    twBootT.forEach(clearTimeout);
+    twBootT = [];
+    twBooting = true;
+    twLamps({});
+    ['stop', 'slow', 'normal', 'racing'].forEach(function (k, i) {
+      twBootT.push(setTimeout(function () { var o = {}; o[k] = 1; twLamps(o); }, 350 + i * 120));
+    });
+    twBootT.push(setTimeout(function () { twBooting = false; twLamps(twByState(twSt)); }, 350 + 4 * 120 + 150));
+  }
+  function twShow() {
+    clearTimeout(twT);
+    if (twSt) { tw.classList.remove('st-' + twSt); twSt = ''; }
+    tw.classList.remove('out');
+    tw.classList.remove('show');
+    void tw.offsetWidth;   // restart the swing-in animation
+    tw.classList.add('show');
+    twBoot();
+  }
+  function twHide(now) {
+    clearTimeout(twT);
+    if (!tw.classList.contains('show')) return;
+    if (now) { twBootT.forEach(clearTimeout); tw.classList.remove('show'); tw.classList.remove('out'); return; }
+    tw.classList.add('out');
+    twT = setTimeout(function () { tw.classList.remove('show'); tw.classList.remove('out'); }, 480);
+  }
+  // the run is over: keep the timer on screen for a few seconds, then swing it away
+  function twLinger() {
+    if (!tw.classList.contains('show')) return;
+    clearTimeout(twT);
+    twT = setTimeout(function () { twHide(false); }, 7000);
+  }
+  // called by the clock on every paint: update the digits, the colour and the lamps
+  function twSync(state, rem) {
+    if (!tw.classList.contains('show')) return;
+    if (twSt !== state) {
+      if (twSt) tw.classList.remove('st-' + twSt);
+      tw.classList.add('st-' + state);
+      twSt = state;
+      if (!twBooting) twLamps(twByState(state));
+    }
+    if (!(rem > 0)) rem = 0;
+    var m = Math.floor(rem / 60) % 10, s = Math.floor(rem % 60), c = Math.floor((rem % 1) * 100);
+    setDigit(dg[0], m);
+    setDigit(dg[1], Math.floor(s / 10));
+    setDigit(dg[2], s % 10);
+    setDigit(dg[3], Math.floor(c / 10));
+    setDigit(dg[4], c % 10);
+  }
+
   // M:SS:CC, like the EVA timer
   function fmtClock(sec) {
     if (!(sec > 0)) sec = 0;
@@ -770,6 +992,7 @@
     clockFill.style.width = Math.max(0, Math.min(100, remaining / clk.limit * 100)) + '%';
     // the fill shrinks toward the left as time runs out, so the red zone is the left emerg/limit part of the bar
     clockMark.style.left = Math.max(0, Math.min(100, clk.emerg / clk.limit * 100)) + '%';
+    twSync(state, remaining);   // the corner widget follows the same clock
   }
   function stopClockTimer() { if (clk.timer) { clearInterval(clk.timer); clk.timer = null; } }
   // standby: the full time limit, breathing
@@ -786,6 +1009,7 @@
     clk.emerg = Math.min(cfg.emergency || 10, clk.limit);
     clk.t0 = performance.now();
     clk.lastSec = -1;
+    twShow();   // swing the corner timer in
     var prev = '';
     function tickClock() {
       var rem = clk.limit - (performance.now() - clk.t0) / 1000;
@@ -815,6 +1039,7 @@
     var rem = clk.limit - (elapsedMs || 0) / 1000;
     if (timedOut || rem <= 0) clockPaint('ended', 0, 'TIME UP');
     else clockPaint('done', rem, 'DONE');
+    twLinger();   // the corner timer stays a few seconds, then swings away
   }
 
   // the full answer of a link-mode run (hidden in the other modes)
@@ -959,7 +1184,7 @@
   ctrlBody.appendChild(emRow);
   emR.addEventListener('input', function () { emLab.textContent = 'EMERGENCY ' + emR.value + 'S'; });
   emR.addEventListener('change', function () { quick({ emergency: Number(emR.value) }); });
-  ctrlBody.appendChild(el('div', 'mg-note', 'TIME LIMIT is the countdown. When it hits zero, nodes still thinking are cut off and show "Timed out"; nodes that already answered still count. EMERGENCY is the red zone: the clock turns red and sounds an alarm in the last N seconds. It is only a warning, it does not change what the nodes do.'));
+  ctrlBody.appendChild(el('div', 'mg-note', 'TIME LIMIT is the countdown. When it hits zero, nodes still thinking are cut off and show "Timed out"; nodes that already answered still count. EMERGENCY is the red zone: the clock (and the corner timer) turns red and sounds an alarm in the last N seconds. It is only a warning, it does not change what the nodes do.'));
 
   var ordRow = el('div', 'mg-row'), ordTa = el('textarea');
   ordTa.maxLength = 1200;
@@ -1089,7 +1314,7 @@
     root.classList.toggle('on', on);
     if (on && !root.classList.contains('boot')) { root.classList.add('boot'); setTimeout(function () { root.classList.remove('boot'); }, 1400); }
     hdrTgl.style.display = admin ? '' : 'none';
-    if (!admin || !on) { closePanels(); collapse(); stopHum(); stopAmbient(); stopFlicker(); stopClockTimer(); }
+    if (!admin || !on) { closePanels(); collapse(); stopHum(); stopAmbient(); stopFlicker(); stopClockTimer(); twHide(true); }
     syncToggles();
     place();
   }
@@ -1524,7 +1749,7 @@
     startAmbient();   // in case the first tap never started it
     startHum();
     startFlicker();
-    startClock();     // the EVA countdown starts with the run
+    startClock();     // the EVA countdown starts with the run (and the corner timer swings in)
     var decree = hasVotes() ? dec.value : '';
     api('/api/admin/magi', 'POST', { question: q, override: decree }).then(function (d) {
       lastRun = d;
@@ -1553,6 +1778,7 @@
       stopHum();
       stopFlicker();
       stopClockTimer();
+      twHide(false);
       idleClock();
       res.className = 'mg-res dn';
       resBig.textContent = 'ERROR';
