@@ -15,12 +15,12 @@
 //  - The COPY button copies the last ruling and every node's answer to the clipboard.
 //  - Hover a node screen to read its answer; with more than one round you see every round it spoke.
 //    In LINK mode each screen shows its link (DRAFT, REVIEW, FINAL) and the full chain answer appears under the board.
-//  - Sound (Web Audio, nothing to download):
-//      * an eerie ambient drone plays while the console is idle (starts on your first tap / click, because browsers block audio before that),
-//      * a mechanical machine-room drone with relay clicks and servo whines while the nodes think,
-//      * a deep slam with a hall tail on the verdict.
+//  - Sound (Web Audio, nothing to download), Evangelion MAGI style (dry computer chirps, relay clicks, alarm buzz):
+//      * a low control-room hum with faint data chirps plays while the console is idle (starts on your first tap / click, because browsers block audio before that),
+//      * a fast storm of data chirps and relay clicks while the nodes think,
+//      * chirp burst + three beeps + long tone on APPROVED, chirp mess + alarm siren + low buzz on DENIED.
 //    The SOUND button mutes everything (remembered on this device).
-//  - EXPAND covers the whole page (a fixed full-viewport layer) and also requests real browser fullscreen where the browser allows it.
+//  - EXPAND covers the whole page (a fixed full-viewport layer, scrollable) and also requests real browser fullscreen where the browser allows it.
 // Uses textContent for everything that comes from the server, so an AI answer can never inject HTML.
 // Colours are CSS variables on #magi-dash (--mg-or, --mg-gn, --mg-no, ...).
 (function () {
@@ -189,7 +189,7 @@
 
     // the final answer of a link-mode run (shown under the board, hidden until there is one)
     '.mg-final-lbl{display:none;margin:14px 0 0;font-size:.72rem;letter-spacing:.2em;color:var(--mg-hi)}',
-    '.mg-final{display:none;margin:6px 0 0;padding:10px 12px;background:#000;border:1px solid var(--mg-gn);color:var(--mg-hi);font:500 14px/1.45 ui-monospace,Menlo,Consolas,monospace;text-transform:none;white-space:pre-wrap;word-break:break-word;max-height:30vh;overflow:auto}',
+    '.mg-final{display:none;margin:6px 0 0;padding:10px 12px;background:#000;border:1px solid var(--mg-gn);color:var(--mg-hi);font:500 14px/1.45 ui-monospace,Menlo,Consolas,monospace;text-transform:none;white-space:pre-wrap;word-break:break-word;max-height:18vh;overflow:auto}',
 
     // the CONTROL panel: how the nodes act
     '.mg-panel>.mg-ctrl{display:none;position:absolute;z-index:8;top:64px;right:20px;width:min(900px,calc(100% - 40px));max-height:calc(100% - 84px);overflow:auto;margin:0;padding:0;background:#000;border:2px solid var(--mg-or);color:var(--mg-or);font-family:"Lucida Console",Menlo,Consolas,monospace}',
@@ -232,12 +232,12 @@
     '.mg-chips{grid-column:1/-1;display:flex;gap:8px;flex-wrap:wrap}',
     '#magi-dash .mg-chips .mg-btn{padding:5px 10px;font-size:.75rem;border-width:1px;text-transform:none;letter-spacing:.06em;font-weight:600}',
 
-    // EXPANDED: a fixed layer covering the whole viewport
-    '#magi-dash.max{position:fixed!important;top:0!important;left:0!important;right:0!important;bottom:0!important;width:100vw!important;height:100vh!important;max-width:none!important;margin:0!important;padding:0!important;overflow:hidden!important;z-index:2147483000!important;transform:none!important;background:repeating-linear-gradient(45deg,#000 0,#000 20px,#140b02 20px,#140b02 40px)!important;border:0!important;display:flex!important;align-items:center!important;justify-content:center!important}',
-    '#magi-dash.max .mg-panel{max-width:none!important;margin:0!important;min-height:0!important;border:0!important;outline:0!important;box-shadow:none!important}',
+    // EXPANDED: a fixed layer covering the whole viewport (it scrolls, so the bottom row is always reachable)
+    '#magi-dash.max{position:fixed!important;top:0!important;left:0!important;right:0!important;bottom:0!important;width:100vw!important;height:100vh!important;max-width:none!important;margin:0!important;padding:0!important;overflow:auto!important;z-index:2147483000!important;transform:none!important;background:repeating-linear-gradient(45deg,#000 0,#000 20px,#140b02 20px,#140b02 40px)!important;border:0!important;display:flex!important;align-items:flex-start!important;justify-content:center!important}',
+    '#magi-dash.max .mg-panel{max-width:none!important;margin:0 auto!important;min-height:0!important;border:0!important;outline:0!important;box-shadow:none!important}',
     '#magi-dash.max .mg-magi{width:1500px;max-width:100%;margin:0 auto}',
-    '#magi-dash:fullscreen,#magi-dash:-webkit-full-screen{background:#000;overflow:hidden;display:flex;align-items:center;justify-content:center}',
-    '#magi-dash:fullscreen .mg-panel,#magi-dash:-webkit-full-screen .mg-panel{max-width:none;margin:0}',
+    '#magi-dash:fullscreen,#magi-dash:-webkit-full-screen{background:#000;overflow:auto;display:flex;align-items:flex-start;justify-content:center}',
+    '#magi-dash:fullscreen .mg-panel,#magi-dash:-webkit-full-screen .mg-panel{max-width:none;margin:0 auto}',
 
     // effects
     '#magi-dash.boot .mg-panel{animation:mgBoot 1.2s steps(12) 1}',
@@ -315,27 +315,32 @@
     g.gain.exponentialRampToValueAtTime(0.0001, t + 0.025);
     o.connect(g); g.connect(bus); o.start(t); o.stop(t + 0.04);
   }
-  function servo(t) {
-    var o = ctx.createOscillator(), f = ctx.createBiquadFilter(), g = ctx.createGain();
-    var a = 220 + Math.random() * 120, b = a * (1.8 + Math.random() * 1.2), d = 0.16 + Math.random() * 0.2;
-    o.type = 'sawtooth'; f.type = 'bandpass'; f.Q.value = 7; f.frequency.value = 1100;
-    o.frequency.setValueAtTime(a, t);
-    o.frequency.exponentialRampToValueAtTime(b, t + d * 0.5);
-    o.frequency.exponentialRampToValueAtTime(a * 0.9, t + d);
-    g.gain.setValueAtTime(0, t);
-    g.gain.linearRampToValueAtTime(0.06, t + 0.02);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + d);
-    o.connect(f); f.connect(g); g.connect(bus);
-    var sg = ctx.createGain(); sg.gain.value = 0.3; g.connect(sg); sg.connect(fx);
-    o.start(t); o.stop(t + d + 0.05);
+
+  // Evangelion-style computer chirps: short dry square-wave blips on a high scale
+  var SCALE = [1318, 1568, 1760, 2093, 2349, 2637, 3136];
+  function blip(t, f, dur, vol, type) {
+    var o = ctx.createOscillator(), g = ctx.createGain(), lp = ctx.createBiquadFilter(), sg = ctx.createGain();
+    o.type = type || 'square'; o.frequency.setValueAtTime(f, t);
+    lp.type = 'lowpass'; lp.frequency.value = 4500;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + 0.002);
+    g.gain.setValueAtTime(vol, t + dur * 0.8);
+    g.gain.linearRampToValueAtTime(0.0001, t + dur);
+    o.connect(lp); lp.connect(g); g.connect(bus);
+    sg.gain.value = 0.12; g.connect(sg); sg.connect(fx);
+    o.start(t); o.stop(t + dur + 0.02);
+  }
+  // a quick random run of chirps (the "computer is working" chatter)
+  function chirpRun(t, n, gap, vol) {
+    for (var i = 0; i < n; i++) blip(t + i * gap, SCALE[Math.floor(Math.random() * SCALE.length)], 0.03 + Math.random() * 0.03, vol);
   }
 
-  // the machine-room drone while the nodes think
+  // the control-room hum + fast data chatter while the nodes think
   function startHum() {
     if (!soundOn() || hum || !audio()) return;
     var t = ctx.currentTime, out = ctx.createGain(), oscs = [];
     out.gain.setValueAtTime(0, t);
-    out.gain.linearRampToValueAtTime(0.2, t + 0.8);
+    out.gain.linearRampToValueAtTime(0.07, t + 0.8);
     out.connect(bus);
     var send = ctx.createGain(); send.gain.value = 0.2; out.connect(send); send.connect(fx);
 
@@ -352,18 +357,13 @@
       o.connect(g); g.connect(lp); o.start(t); oscs.push(o);
     });
 
-    var ns = ctx.createBufferSource(), nf = ctx.createBiquadFilter(), ng = ctx.createGain();
-    ns.buffer = noiseBuf; ns.loop = true; nf.type = 'bandpass'; nf.frequency.value = 2400; nf.Q.value = 0.7; ng.gain.value = 0.035;
-    ns.connect(nf); nf.connect(ng); ng.connect(out); ns.start(t); oscs.push(ns);
-
-    var h = { out: out, oscs: oscs, alive: true, timer: null }, step = 0;
+    var h = { out: out, oscs: oscs, alive: true, timer: null };
     h.timer = setInterval(function () {
       if (!h.alive || !ctx) return;
-      var now = ctx.currentTime; step++;
-      if (step % 5 === 0) servo(now);
-      else if (Math.random() < 0.3) relay(now, 0.6);
-      if (Math.random() < 0.12) relay(now + 0.07, 0.4);
-    }, 150);
+      var now = ctx.currentTime;
+      if (Math.random() < 0.75) chirpRun(now, 1 + Math.floor(Math.random() * 3), 0.045, 0.05);
+      if (Math.random() < 0.08) relay(now, 0.4);
+    }, 110);
     hum = h;
   }
   function stopHum() {
@@ -405,11 +405,11 @@
     hi.start(t); tr.start(t); oscs.push(hi, tr);
 
     var a = { out: out, oscs: oscs, alive: true, timer: null };
-    // now and then: a far-off relay click (no pings, so nothing in the music sounds like the verdict ding)
+    // now and then: a faint run of data chirps, like a far-off terminal
     a.timer = setInterval(function () {
       if (!a.alive || !ctx) return;
       var now = ctx.currentTime;
-      if (Math.random() < 0.12) relay(now, 0.25);
+      if (Math.random() < 0.35) chirpRun(now + Math.random() * 0.5, 2 + Math.floor(Math.random() * 4), 0.06, 0.018);
     }, 1000);
     amb = a;
   }
@@ -461,48 +461,11 @@
     Object.keys(cards).forEach(function (id) { cards[id].hx.style.removeProperty('--flick'); });
   }
 
-  // a deep mechanical slam with a long hall tail (no tone, no bell partials)
-  function boom(t, vol) {
-    var o = ctx.createOscillator(), g = ctx.createGain(), sg = ctx.createGain();
-    o.type = 'sine';
-    o.frequency.setValueAtTime(110, t);
-    o.frequency.exponentialRampToValueAtTime(35, t + 0.9);
-    g.gain.setValueAtTime(vol, t);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 1.6);
-    sg.gain.value = 0.5;
-    o.connect(g); g.connect(bus); g.connect(sg); sg.connect(fx);
-    o.start(t); o.stop(t + 1.7);
-    burst(t, 0.06, 'lowpass', 400, vol * 0.8, 0.6);
-  }
   // one node being counted in: a double relay clack
   function tally(t) { relay(t, 0.7); relay(t + 0.02, 0.4); }
 
-  // a low tone that swells in slowly and fades into the hall
-  function swell(t, f, rise, vol) {
-    var o = ctx.createOscillator(), g = ctx.createGain(), sg = ctx.createGain();
-    o.type = 'sine'; o.frequency.value = f;
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.linearRampToValueAtTime(vol, t + rise);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + rise + 2.2);
-    sg.gain.value = 0.4;
-    o.connect(g); g.connect(bus); g.connect(sg); sg.connect(fx);
-    o.start(t); o.stop(t + rise + 2.3);
-  }
-  // a dark, filtered tone that slides downward
-  function glide(t, a, b, dur, vol) {
-    var o = ctx.createOscillator(), f = ctx.createBiquadFilter(), g = ctx.createGain(), sg = ctx.createGain();
-    o.type = 'sawtooth'; f.type = 'lowpass'; f.frequency.value = 700;
-    o.frequency.setValueAtTime(a, t);
-    o.frequency.exponentialRampToValueAtTime(b, t + dur);
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.linearRampToValueAtTime(vol, t + 0.08);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    o.connect(f); f.connect(g); g.connect(bus);
-    sg.gain.value = 0.5; g.connect(sg); sg.connect(fx);
-    o.start(t); o.stop(t + dur + 0.05);
-  }
-  // ===== the verdict: an Evangelion-style computer readout (square-wave data chatter, then a sharp electronic confirm / alarm) =====
-  // these go straight to the speakers, past the compressor (which was squashing them), with a little room echo on the side
+  // ===== the verdict: an Evangelion-style computer readout (square-wave data chatter, then sharp electronic beeps / alarm) =====
+  // these go straight to the speakers, past the compressor, with a little room echo on the side
   var DING_VOL = 0.55;   // raise for louder, lower for quieter (keep it under about 0.7 or it can distort)
   function beep(t, f, dur, vol, type, f2) {
     var o = ctx.createOscillator(), lp = ctx.createBiquadFilter(), g = ctx.createGain(), sg = ctx.createGain();
@@ -522,24 +485,23 @@
   function chatter(t, freqs, vol) {
     freqs.forEach(function (f, i) { beep(t + i * 0.055, f, 0.035, vol, 'square'); });
   }
-  // approved: data chatter climbs, then two sharp confirm beeps and a longer final one
+  // approved: chirp burst, three identical sharp beeps, then one long tone
   function approvedSound(hit) {
     var v = DING_VOL * 0.6;
     relay(hit, 0.8);
-    chatter(hit, [1200, 1500, 1800, 1500, 2100, 2400], v * 0.7);
-    beep(hit + 0.45, 2093, 0.13, v, 'square');
-    beep(hit + 0.65, 2093, 0.13, v, 'square');
-    beep(hit + 0.85, 2637, 0.45, v, 'square');
+    for (var i = 0; i < 8; i++) beep(hit + i * 0.045, SCALE[(i * 3) % SCALE.length], 0.03, v * 0.5, 'square');
+    beep(hit + 0.5, 2093, 0.11, v, 'square');
+    beep(hit + 0.7, 2093, 0.11, v, 'square');
+    beep(hit + 0.9, 2093, 0.11, v, 'square');
+    beep(hit + 1.15, 2093, 0.8, v * 0.8, 'square');
   }
-  // denied: erratic chatter falls apart, then three alarm pulses a tritone apart and a low sinking buzz
+  // denied: broken chirps, a two-tone alarm siren, then a low sinking buzz
   function deniedSound(hit) {
     var v = DING_VOL * 0.6;
     relay(hit, 0.8);
-    chatter(hit, [1400, 1100, 1250, 800, 950, 600], v * 0.7);
-    beep(hit + 0.45, 880, 0.14, v, 'square');
-    beep(hit + 0.65, 622, 0.14, v, 'square');
-    beep(hit + 0.85, 880, 0.14, v, 'square');
-    beep(hit + 1.05, 220, 0.6, v * 0.7, 'sawtooth', 110);
+    for (var i = 0; i < 8; i++) beep(hit + i * 0.05, i % 2 ? 900 : 1400, 0.03, v * 0.5, 'square');
+    for (var j = 0; j < 6; j++) beep(hit + 0.5 + j * 0.2, j % 2 ? 520 : 780, 0.16, v, 'square');
+    beep(hit + 1.8, 120, 0.8, v * 0.8, 'sawtooth');
   }
   // linked: a rising data run, then three even confirm tones that climb (a chain completing, neither yes nor no)
   function linkedSound(hit) {
@@ -571,52 +533,25 @@
   var PING = { melchior: { ap: 1568, dn: 520 }, balthasar: { ap: 1245, dn: 440 }, caspar: { ap: 1760, dn: 600 } };
   function pingBase(id, k) { return (PING[id] || PING.melchior)[k]; }
 
-  // one AI approved: a dry machine acknowledgement, three square-wave blips (root, fifth, octave) after a relay click
+  // one AI approved: relay click and two quick rising chirps
   function approvedPing(id) {
-    var t = ctx.currentTime, root = pingBase(id, 'ap') / 2;
-    relay(t, 0.5);
-    [[1, 0], [1.5, 0.065], [2, 0.13]].forEach(function (s) {
-      var o = ctx.createOscillator(), lp = ctx.createBiquadFilter(), g = ctx.createGain(), at = t + 0.02 + s[1];
-      o.type = 'square'; o.frequency.value = root * s[0];
-      lp.type = 'lowpass'; lp.frequency.value = 3500;
-      g.gain.setValueAtTime(0.0001, at);
-      g.gain.linearRampToValueAtTime(0.1, at + 0.004);
-      g.gain.setValueAtTime(0.1, at + 0.04);
-      g.gain.exponentialRampToValueAtTime(0.0001, at + 0.055);
-      o.connect(lp); lp.connect(g); g.connect(bus);
-      o.start(at); o.stop(at + 0.07);
-    });
+    var t = ctx.currentTime, f = pingBase(id, 'ap');
+    relay(t, 0.4);
+    blip(t + 0.02, f, 0.06, 0.12);
+    blip(t + 0.1, f * 1.5, 0.09, 0.12);
   }
-  // one AI denied: three wobbling tones (a tritone and a minor second apart) sink together, with a low thud and a long echo
+  // one AI denied: relay click and two falling buzzy tones
   function deniedPing(id) {
-    var t = ctx.currentTime, b = pingBase(id, 'dn');
-    var g = ctx.createGain(), lpf = ctx.createBiquadFilter(), sg = ctx.createGain(), lfo = ctx.createOscillator(), lg = ctx.createGain();
-    lpf.type = 'lowpass'; lpf.frequency.value = 1400;
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.linearRampToValueAtTime(0.28, t + 0.02);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.8);
-    lpf.connect(g); g.connect(bus);
-    sg.gain.value = 0.6; g.connect(sg); sg.connect(fx);
-    lfo.frequency.value = 9; lg.gain.value = 7; lfo.connect(lg);
-    [[b, 'triangle', b * 0.635, 1], [b * 1.414, 'sawtooth', b * 0.895, 0.35], [b * 1.06, 'triangle', b * 0.6, 0.5]].forEach(function (p) {
-      var o = ctx.createOscillator(), og = ctx.createGain();
-      o.type = p[1]; o.frequency.setValueAtTime(p[0], t);
-      o.frequency.exponentialRampToValueAtTime(p[2], t + 0.6);
-      og.gain.value = p[3]; lg.connect(o.frequency); o.connect(og); og.connect(lpf);
-      o.start(t); o.stop(t + 0.85);
-    });
-    lfo.start(t); lfo.stop(t + 0.85);
-    var th = ctx.createOscillator(), tg = ctx.createGain();
-    th.type = 'sine'; th.frequency.setValueAtTime(90, t); th.frequency.exponentialRampToValueAtTime(45, t + 0.5);
-    tg.gain.setValueAtTime(0.3, t); tg.gain.exponentialRampToValueAtTime(0.0001, t + 0.6);
-    th.connect(tg); tg.connect(bus); th.start(t); th.stop(t + 0.65);
-    burst(t, 0.08, 'lowpass', 300, 0.25, 0.4);
+    var t = ctx.currentTime, f = pingBase(id, 'dn');
+    relay(t, 0.4);
+    blip(t + 0.02, f, 0.12, 0.14, 'sawtooth');
+    blip(t + 0.18, f * 0.75, 0.2, 0.14, 'sawtooth');
   }
-  // one AI has spoken in discuss or link mode (no yes or no): a relay click and one soft tone, each AI at its own pitch
+  // one AI has spoken in discuss or link mode (no yes or no): a relay click and one chirp, each AI at its own pitch
   function openPing(id) {
     var t = ctx.currentTime;
-    relay(t, 0.5);
-    dingTone(t + 0.03, pingBase(id, 'ap') / 2, 0.12);
+    relay(t, 0.4);
+    blip(t + 0.02, pingBase(id, 'ap'), 0.1, 0.12);
   }
   // one AI has decided
   function nodePing(verdict, id) {
@@ -625,16 +560,6 @@
     if (verdict === 'DENIED') deniedPing(id);
     else if (verdict === 'OPEN') openPing(id);
     else approvedPing(id);
-  }
-  // a short clean ding with a fading tail and a little echo
-  function dingTone(t, f, vol) {
-    var o = ctx.createOscillator(), g = ctx.createGain(), sg = ctx.createGain();
-    o.type = 'sine'; o.frequency.value = f;
-    g.gain.setValueAtTime(vol, t);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 1.2);
-    sg.gain.value = 0.35;
-    o.connect(g); g.connect(bus); g.connect(sg); sg.connect(fx);
-    o.start(t); o.stop(t + 1.3);
   }
 
   // ===== NERV mode (remembered on this device; on unless it was switched off) =====
@@ -711,7 +636,7 @@
   }
   showFinal('');
 
-  // bottom row: question: [ input ] EXECUTE, then the example chips and the decree box
+  // bottom row: question: [ input ] EXECUTE, then the decree box
   var form = el('div', 'mg-form');
   var ql = el('span', 'mg-ql', 'QUESTION:');
   var ta = el('textarea');
@@ -724,12 +649,6 @@
   form.appendChild(ta);
   form.appendChild(run);
   var chips = el('div', 'mg-chips');
-  ['Should I run a promo this weekend?', 'Is it safe to raise prices by 5%?', 'Should I restock the best seller now?'].forEach(function (t) {
-    var c = el('button', 'mg-btn', t);
-    c.type = 'button';
-    c.addEventListener('click', function () { ta.value = t; ta.focus(); });
-    chips.appendChild(c);
-  });
   // the decree: force the result of the next run (it resets to AUTO after every run)
   var dec = el('select', 'mg-dec');
   dec.setAttribute('aria-label', 'Admin decree for the next run');
@@ -1014,14 +933,15 @@
     syncToggles();
   });
 
-  // ===== EXPAND: fixed design height, scaled to fit. Answers scroll inside the panel instead of growing it =====
-  var DESIGN_H = 1000; // raise in steps of 20 if the bottom row is still cut off, lower if there is empty space
+  // ===== EXPAND: design height as a minimum, scaled to fit. The expanded layer scrolls, so the question row is always reachable =====
+  var DESIGN_H = 1000; // raise in steps of 20 if there is too much empty space at the bottom, lower if the board is cut off
   function fit() {
-    if (!root.classList.contains('max') || window.innerWidth < 860) { panel.style.zoom = ''; panel.style.width = ''; panel.style.height = ''; panel.style.overflow = ''; return; }
+    if (!root.classList.contains('max') || window.innerWidth < 860) { panel.style.zoom = ''; panel.style.width = ''; panel.style.height = ''; panel.style.minHeight = ''; panel.style.overflow = ''; return; }
     var pad = 16, vw = window.innerWidth - pad * 2, vh = window.innerHeight - pad * 2;
     var s = Math.min(vw / 1560, vh / DESIGN_H);
     panel.style.width = Math.round(vw / s) + 'px'; // stretch sideways to use the full screen width
-    panel.style.height = DESIGN_H + 'px';
+    panel.style.height = '';
+    panel.style.minHeight = DESIGN_H + 'px';
     panel.style.overflow = 'visible';
     panel.style.zoom = s.toFixed(3);
   }
