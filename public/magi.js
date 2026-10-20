@@ -262,9 +262,19 @@
   document.head.appendChild(style);
 
   // ===== sound: all synthesized, nothing to load =====
+  // Design: a small speaker in a control room. Everything is dry and a bit rough:
+  //  - non-musical terminal pitches, clumped irregular chatter, tiny pitch / timing / volume wobble (never the same twice),
+  //  - every beep has a key-click on its front edge and goes through a narrow "small speaker" filter,
+  //  - relays are noise clacks with a small thump, not pure tones,
+  //  - idle is a quiet 50 Hz mains hum plus air noise, with rare clacks and short data bursts (no pad, no reverb tails).
   var SND = 'magi_snd';
   function soundOn() { try { return localStorage.getItem(SND) !== '0'; } catch (e) { return true; } }
-  var AC = window.AudioContext || window.webkitAudioContext, ctx = null, bus = null, fx = null, noiseBuf = null, hum = null, amb = null;
+  var AC = window.AudioContext || window.webkitAudioContext, ctx = null, bus = null, spk = null, room = null, noiseBuf = null, hum = null, amb = null;
+  var AMB_LEVEL = 0.06;
+  var rnd = function (a, b) { return a + Math.random() * (b - a); };
+  // terminal pitches: deliberately not a musical scale
+  var FREQS = [931, 1108, 1337, 1622, 1913, 2284, 2731];
+  var pick = function () { return FREQS[Math.floor(Math.random() * FREQS.length)]; };
 
   function audio() {
     if (!AC) return null;
@@ -276,20 +286,24 @@
       master.connect(ctx.destination);
       bus = comp;
 
-      fx = ctx.createGain();
-      var dly = ctx.createDelay(1), fb = ctx.createGain(), tone = ctx.createBiquadFilter(), eo = ctx.createGain();
-      dly.delayTime.value = 0.31; fb.gain.value = 0.45; eo.gain.value = 0.55;
-      tone.type = 'lowpass'; tone.frequency.value = 3000;
-      fx.connect(dly); dly.connect(tone); tone.connect(fb); fb.connect(dly); tone.connect(eo); eo.connect(bus);
-      var rv = ctx.createConvolver(), rg = ctx.createGain(), len = Math.floor(ctx.sampleRate * 2.8), imp = ctx.createBuffer(2, len, ctx.sampleRate);
+      // the small console speaker: narrow band, a little boxy
+      spk = ctx.createBiquadFilter();
+      spk.type = 'bandpass'; spk.frequency.value = 2000; spk.Q.value = 0.55;
+      var spkG = ctx.createGain();
+      spkG.gain.value = 1.6;
+      spk.connect(spkG); spkG.connect(bus);
+
+      // a tiny dry room (under half a second), just enough to stop it sounding like it is inside your head
+      room = ctx.createGain();
+      var rv = ctx.createConvolver(), rg = ctx.createGain(), len = Math.floor(ctx.sampleRate * 0.45), imp = ctx.createBuffer(2, len, ctx.sampleRate);
       for (var ch = 0; ch < 2; ch++) {
         var d = imp.getChannelData(ch);
-        for (var i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 2.6);
+        for (var i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3);
       }
-      rv.buffer = imp; rg.gain.value = 0.55;
-      fx.connect(rv); rv.connect(rg); rg.connect(bus);
+      rv.buffer = imp; rg.gain.value = 0.5;
+      room.connect(rv); rv.connect(rg); rg.connect(bus);
 
-      noiseBuf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
+      noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
       var nd = noiseBuf.getChannelData(0);
       for (var j = 0; j < nd.length; j++) nd[j] = Math.random() * 2 - 1;
     }
@@ -297,150 +311,145 @@
     return ctx;
   }
 
-  function burst(t, dur, type, freq, vol, send) {
+  // short envelope: fast attack, exponential decay (never ramps to 0)
+  function env(g, t, peak, att, dur) {
+    g.gain.setValueAtTime(0.001, t);
+    g.gain.linearRampToValueAtTime(peak, t + att);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  }
+  // a key-click: a few milliseconds of band-passed noise
+  function click(t, vol, freq) {
     var s = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain();
-    s.buffer = noiseBuf; f.type = type; f.frequency.value = freq; f.Q.value = 1.2;
-    g.gain.setValueAtTime(vol, t);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.buffer = noiseBuf; f.type = 'bandpass'; f.frequency.value = freq || rnd(2200, 3800); f.Q.value = 1.4;
+    env(g, t, vol, 0.0008, 0.012 + rnd(0, 0.01));
     s.connect(f); f.connect(g); g.connect(bus);
-    if (send) { var sg = ctx.createGain(); sg.gain.value = send; g.connect(sg); sg.connect(fx); }
-    s.start(t, Math.random() * 0.8); s.stop(t + dur + 0.02);
+    s.start(t, rnd(0, 1.5)); s.stop(t + 0.05);
   }
+  // a relay: two noise clacks and a small thump
   function relay(t, vol) {
-    burst(t, 0.018, 'highpass', 2600, vol * 0.5, 0.15);
+    click(t, vol * 0.5, rnd(1500, 2600));
+    click(t + rnd(0.012, 0.022), vol * 0.35, rnd(2800, 4200));
     var o = ctx.createOscillator(), g = ctx.createGain();
-    o.type = 'square'; o.frequency.setValueAtTime(900 + Math.random() * 500, t);
-    o.frequency.exponentialRampToValueAtTime(260, t + 0.02);
-    g.gain.setValueAtTime(vol * 0.12, t);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.025);
-    o.connect(g); g.connect(bus); o.start(t); o.stop(t + 0.04);
+    o.type = 'sine'; o.frequency.setValueAtTime(rnd(120, 160), t);
+    o.frequency.exponentialRampToValueAtTime(55, t + 0.045);
+    env(g, t, vol * 0.25, 0.002, 0.06);
+    o.connect(g); g.connect(bus); o.start(t); o.stop(t + 0.08);
   }
-
-  // Evangelion-style computer chirps: short dry square-wave blips on a high scale
-  var SCALE = [1318, 1568, 1760, 2093, 2349, 2637, 3136];
-  function blip(t, f, dur, vol, type) {
-    var o = ctx.createOscillator(), g = ctx.createGain(), lp = ctx.createBiquadFilter(), sg = ctx.createGain();
-    o.type = type || 'square'; o.frequency.setValueAtTime(f, t);
-    lp.type = 'lowpass'; lp.frequency.value = 4500;
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.linearRampToValueAtTime(vol, t + 0.002);
-    g.gain.setValueAtTime(vol, t + dur * 0.8);
-    g.gain.linearRampToValueAtTime(0.0001, t + dur);
-    o.connect(lp); lp.connect(g); g.connect(bus);
-    sg.gain.value = 0.12; g.connect(sg); sg.connect(fx);
+  // one terminal beep: tiny pitch wobble, key-click on the front, through the small speaker
+  function blip(t, f, dur, vol, type, send) {
+    var o = ctx.createOscillator(), g = ctx.createGain(), rg = ctx.createGain();
+    o.type = type || 'square';
+    o.frequency.setValueAtTime(f * rnd(0.994, 1.006), t);
+    env(g, t, vol, 0.001, dur);
+    o.connect(g); g.connect(spk);
+    rg.gain.value = send == null ? 0.08 : send; g.connect(rg); rg.connect(room);
     o.start(t); o.stop(t + dur + 0.02);
+    click(t, vol * 0.6, 3000);
   }
-  // a quick random run of chirps (the "computer is working" chatter)
-  function chirpRun(t, n, gap, vol) {
-    for (var i = 0; i < n; i++) blip(t + i * gap, SCALE[Math.floor(Math.random() * SCALE.length)], 0.03 + Math.random() * 0.03, vol);
+  // a clump of data chatter: uneven gaps, uneven lengths, uneven volume. returns when it ends
+  function dataBurst(t, n, vol) {
+    var at = t;
+    for (var i = 0; i < n; i++) {
+      blip(at, pick(), rnd(0.02, 0.05), vol * rnd(0.6, 1), 'square', 0.05);
+      at += rnd(0.05, 0.11);
+    }
+    return at;
+  }
+  // human-ish timing for a deliberate beep
+  var hz = function (t) { return t + rnd(-0.006, 0.006); };
+
+  // the quiet room: 50 Hz mains hum plus air noise
+  function roomBed(out, t, oscs, level) {
+    var lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass'; lp.frequency.value = 240;
+    lp.connect(out);
+    [[50, 'sawtooth', 0.5], [100, 'sine', 0.35], [150, 'triangle', 0.12]].forEach(function (p) {
+      var o = ctx.createOscillator(), g = ctx.createGain();
+      o.type = p[1]; o.frequency.value = p[0] * rnd(0.999, 1.001); g.gain.value = p[2] * level;
+      o.connect(g); g.connect(lp); o.start(t); oscs.push(o);
+    });
+    var ns = ctx.createBufferSource(), nf = ctx.createBiquadFilter(), ng = ctx.createGain();
+    ns.buffer = noiseBuf; ns.loop = true; nf.type = 'lowpass'; nf.frequency.value = 500; ng.gain.value = 0.3 * level;
+    ns.connect(nf); nf.connect(ng); ng.connect(out); ns.start(t); oscs.push(ns);
   }
 
-  // the control-room hum + fast data chatter while the nodes think
+  // while the nodes think: clumped bursts of chatter with relay clacks between
   function startHum() {
     if (!soundOn() || hum || !audio()) return;
     var t = ctx.currentTime, out = ctx.createGain(), oscs = [];
-    out.gain.setValueAtTime(0, t);
-    out.gain.linearRampToValueAtTime(0.07, t + 0.8);
+    out.gain.setValueAtTime(0.001, t);
+    out.gain.linearRampToValueAtTime(0.05, t + 0.6);
     out.connect(bus);
-    var send = ctx.createGain(); send.gain.value = 0.2; out.connect(send); send.connect(fx);
-
-    var lp = ctx.createBiquadFilter(), pulse = ctx.createGain();
-    lp.type = 'lowpass'; lp.frequency.value = 280; lp.Q.value = 5;
-    pulse.gain.value = 0.7;
-    lp.connect(pulse); pulse.connect(out);
-    var mot = ctx.createOscillator(), motG = ctx.createGain();
-    mot.frequency.value = 8.5; motG.gain.value = 0.28;
-    mot.connect(motG); motG.connect(pulse.gain); mot.start(t); oscs.push(mot);
-    [[55, 'sawtooth', 0, 0.5], [55, 'sawtooth', 9, 0.4], [110, 'square', -7, 0.14]].forEach(function (p) {
-      var o = ctx.createOscillator(), g = ctx.createGain();
-      o.type = p[1]; o.frequency.value = p[0]; o.detune.value = p[2]; g.gain.value = p[3];
-      o.connect(g); g.connect(lp); o.start(t); oscs.push(o);
-    });
-
+    roomBed(out, t, oscs, 1);
     var h = { out: out, oscs: oscs, alive: true, timer: null };
-    h.timer = setInterval(function () {
+    function loop() {
       if (!h.alive || !ctx) return;
       var now = ctx.currentTime;
-      if (Math.random() < 0.75) chirpRun(now, 1 + Math.floor(Math.random() * 3), 0.045, 0.05);
-      if (Math.random() < 0.08) relay(now, 0.4);
-    }, 110);
+      var end = dataBurst(now, Math.floor(rnd(4, 11)), 0.045);
+      if (Math.random() < 0.5) relay(now + rnd(0, 0.2), 0.35);
+      h.timer = setTimeout(loop, (end - now) * 1000 + rnd(120, 520));
+    }
+    loop();
     hum = h;
   }
   function stopHum() {
     if (!hum || !ctx) { hum = null; return; }
     var h = hum, t = ctx.currentTime;
-    hum = null; h.alive = false; clearInterval(h.timer);
+    hum = null; h.alive = false; clearTimeout(h.timer);
     h.out.gain.cancelScheduledValues(t);
-    h.out.gain.setValueAtTime(h.out.gain.value, t);
-    h.out.gain.linearRampToValueAtTime(0, t + 0.3);
+    h.out.gain.setValueAtTime(Math.max(0.001, h.out.gain.value), t);
+    h.out.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
     setTimeout(function () { h.oscs.forEach(function (o) { try { o.stop(); } catch (e) { } }); }, 400);
   }
 
-  // the eerie ambient drone that plays while the console is idle (keeps going quietly under the thinking sound)
+  // idle: quiet hum and air, with a rare relay clack or a short data burst at random
   function startAmbient() {
     if (!soundOn() || amb || document.hidden || !root.classList.contains('on') || !isAdminNow() || !audio()) return;
     var t = ctx.currentTime, out = ctx.createGain(), oscs = [];
-    out.gain.setValueAtTime(0, t);
-    out.gain.linearRampToValueAtTime(0.11, t + 4);
+    out.gain.setValueAtTime(0.001, t);
+    out.gain.linearRampToValueAtTime(AMB_LEVEL, t + 3);
     out.connect(bus);
-    var send = ctx.createGain(); send.gain.value = 0.5; out.connect(send); send.connect(fx);
-
-    // slowly breathing low-pass over a dissonant pad (a root, a minor second above it, a fifth, an octave)
-    var lp = ctx.createBiquadFilter();
-    lp.type = 'lowpass'; lp.frequency.value = 500; lp.Q.value = 2;
-    lp.connect(out);
-    var lfo = ctx.createOscillator(), lg = ctx.createGain();
-    lfo.frequency.value = 0.07; lg.gain.value = 260;
-    lfo.connect(lg); lg.connect(lp.frequency); lfo.start(t); oscs.push(lfo);
-    [[55, 'sawtooth', 0, 0.35], [58.27, 'sawtooth', 4, 0.25], [82.41, 'triangle', -5, 0.3], [110, 'sine', 0, 0.2], [164.81, 'triangle', 7, 0.1]].forEach(function (p) {
-      var o = ctx.createOscillator(), g = ctx.createGain();
-      o.type = p[1]; o.frequency.value = p[0]; o.detune.value = p[2]; g.gain.value = p[3];
-      o.connect(g); g.connect(lp); o.start(t); oscs.push(o);
-    });
-    // a thin high tone that slowly fades in and out
-    var hi = ctx.createOscillator(), hg = ctx.createGain(), tr = ctx.createOscillator(), tg = ctx.createGain();
-    hi.type = 'sine'; hi.frequency.value = 932.33; hg.gain.value = 0.04;
-    tr.frequency.value = 0.18; tg.gain.value = 0.03;
-    tr.connect(tg); tg.connect(hg.gain); hi.connect(hg); hg.connect(out);
-    hi.start(t); tr.start(t); oscs.push(hi, tr);
-
+    roomBed(out, t, oscs, 1);
     var a = { out: out, oscs: oscs, alive: true, timer: null };
-    // now and then: a faint run of data chirps, like a far-off terminal
-    a.timer = setInterval(function () {
+    function next() {
       if (!a.alive || !ctx) return;
       var now = ctx.currentTime;
-      if (Math.random() < 0.35) chirpRun(now + Math.random() * 0.5, 2 + Math.floor(Math.random() * 4), 0.06, 0.018);
-    }, 1000);
+      if (Math.random() < 0.55) relay(now, 0.2);
+      else dataBurst(now, Math.floor(rnd(3, 8)), 0.02);
+      a.timer = setTimeout(next, rnd(1800, 6000));
+    }
+    a.timer = setTimeout(next, rnd(1500, 3500));
     amb = a;
   }
-  // pull the ambient drone down for a moment so a sound on top of it comes through clearly, then bring it back
+  // pull the idle bed down for a moment so a sound on top comes through clearly, then bring it back
   function duckAmbient(t, level, hold, back) {
     if (!amb || !ctx) return;
     var g = amb.out.gain;
     g.cancelScheduledValues(t);
-    g.setValueAtTime(g.value, t);
-    g.linearRampToValueAtTime(level, t + 0.12);
-    g.setValueAtTime(level, t + hold);
-    g.linearRampToValueAtTime(0.11, t + hold + back);
+    g.setValueAtTime(Math.max(0.001, g.value), t);
+    g.linearRampToValueAtTime(Math.max(0.001, level), t + 0.12);
+    g.setValueAtTime(Math.max(0.001, level), t + hold);
+    g.linearRampToValueAtTime(AMB_LEVEL, t + hold + back);
   }
   function stopAmbient() {
     if (!amb || !ctx) { amb = null; return; }
     var a = amb, t = ctx.currentTime;
-    amb = null; a.alive = false; clearInterval(a.timer);
+    amb = null; a.alive = false; clearTimeout(a.timer);
     a.out.gain.cancelScheduledValues(t);
-    a.out.gain.setValueAtTime(a.out.gain.value, t);
-    a.out.gain.linearRampToValueAtTime(0, t + 0.6);
+    a.out.gain.setValueAtTime(Math.max(0.001, a.out.gain.value), t);
+    a.out.gain.exponentialRampToValueAtTime(0.001, t + 0.6);
     setTimeout(function () { a.oscs.forEach(function (o) { try { o.stop(); } catch (e) { } }); }, 800);
   }
-  // browsers only allow sound after a tap / click / key press, so the ambient drone starts on the first one
+  // browsers only allow sound after a tap / click / key press, so the idle sound starts on the first one
   ['pointerdown', 'keydown', 'touchstart'].forEach(function (ev) {
     document.addEventListener(ev, function () { startAmbient(); }, { passive: true });
   });
   document.addEventListener('visibilitychange', function () { if (document.hidden) stopAmbient(); else startAmbient(); });
 
+  // a soft key-click that follows the screens flickering while the nodes think
   function tick() {
     if (!soundOn() || !ctx || ctx.state !== 'running') return;
-    relay(ctx.currentTime, 0.8);
+    if (Math.random() < 0.35) click(ctx.currentTime, 0.1);
   }
 
   var flickT = null;
@@ -461,69 +470,54 @@
     Object.keys(cards).forEach(function (id) { cards[id].hx.style.removeProperty('--flick'); });
   }
 
-  // one node being counted in: a double relay clack
-  function tally(t) { relay(t, 0.7); relay(t + 0.02, 0.4); }
+  // one node being counted in: a relay clack
+  function tally(t) { relay(t, 0.55); }
 
-  // ===== the verdict: an Evangelion-style computer readout (square-wave data chatter, then sharp electronic beeps / alarm) =====
-  // these go straight to the speakers, past the compressor, with a little room echo on the side
-  var DING_VOL = 0.55;   // raise for louder, lower for quieter (keep it under about 0.7 or it can distort)
-  function beep(t, f, dur, vol, type, f2) {
-    var o = ctx.createOscillator(), lp = ctx.createBiquadFilter(), g = ctx.createGain(), sg = ctx.createGain();
-    o.type = type || 'square';
-    o.frequency.setValueAtTime(f, t);
-    if (f2) o.frequency.exponentialRampToValueAtTime(f2, t + dur);
-    lp.type = 'lowpass'; lp.frequency.value = 5200;
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.linearRampToValueAtTime(vol, t + 0.003);
-    g.gain.setValueAtTime(vol, t + dur * 0.7);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    o.connect(lp); lp.connect(g); g.connect(ctx.destination);
-    sg.gain.value = 0.15; g.connect(sg); sg.connect(fx);
-    o.start(t); o.stop(t + dur + 0.03);
-  }
-  // fast data chatter: a row of very short blips
-  function chatter(t, freqs, vol) {
-    freqs.forEach(function (f, i) { beep(t + i * 0.055, f, 0.035, vol, 'square'); });
-  }
-  // approved: chirp burst, three identical sharp beeps, then one long tone
+  // ===== the verdict =====
+  // chatter first, then the call itself. Approved: three even pulses and a held tone. Denied: a harsh two-tone buzzer and a sinking growl.
   function approvedSound(hit) {
-    var v = DING_VOL * 0.6;
-    relay(hit, 0.8);
-    for (var i = 0; i < 8; i++) beep(hit + i * 0.045, SCALE[(i * 3) % SCALE.length], 0.03, v * 0.5, 'square');
-    beep(hit + 0.5, 2093, 0.11, v, 'square');
-    beep(hit + 0.7, 2093, 0.11, v, 'square');
-    beep(hit + 0.9, 2093, 0.11, v, 'square');
-    beep(hit + 1.15, 2093, 0.8, v * 0.8, 'square');
+    relay(hit, 0.6);
+    var end = dataBurst(hit, 7, 0.06);
+    var s = end + 0.12;
+    blip(hz(s), 1760, 0.09, 0.12, 'square', 0.1);
+    blip(hz(s + 0.15), 1760, 0.09, 0.12, 'square', 0.1);
+    blip(hz(s + 0.30), 1760, 0.09, 0.12, 'square', 0.1);
+    blip(hz(s + 0.52), 1760, 0.6, 0.1, 'square', 0.15);
   }
-  // denied: broken chirps, a two-tone alarm siren, then a low sinking buzz
   function deniedSound(hit) {
-    var v = DING_VOL * 0.6;
-    relay(hit, 0.8);
-    for (var i = 0; i < 8; i++) beep(hit + i * 0.05, i % 2 ? 900 : 1400, 0.03, v * 0.5, 'square');
-    for (var j = 0; j < 6; j++) beep(hit + 0.5 + j * 0.2, j % 2 ? 520 : 780, 0.16, v, 'square');
-    beep(hit + 1.8, 120, 0.8, v * 0.8, 'sawtooth');
+    relay(hit, 0.6);
+    var end = dataBurst(hit, 6, 0.05);
+    var s = end + 0.12;
+    for (var i = 0; i < 4; i++) blip(hz(s + i * 0.19), i % 2 ? 294 : 392, 0.16, 0.14, 'sawtooth', 0.1);
+    var t = s + 0.85;
+    var o = ctx.createOscillator(), lp = ctx.createBiquadFilter(), g = ctx.createGain();
+    o.type = 'sawtooth'; lp.type = 'lowpass'; lp.frequency.value = 500;
+    o.frequency.setValueAtTime(170, t);
+    o.frequency.exponentialRampToValueAtTime(65, t + 0.7);
+    env(g, t, 0.16, 0.01, 0.75);
+    o.connect(lp); lp.connect(g); g.connect(bus); o.start(t); o.stop(t + 0.8);
+    click(t, 0.2, 800);
   }
-  // linked: a rising data run, then three even confirm tones that climb (a chain completing, neither yes nor no)
+  // linked: a data run, then three rising tones (a chain completing, neither yes nor no)
   function linkedSound(hit) {
-    var v = DING_VOL * 0.6;
-    relay(hit, 0.8);
-    chatter(hit, [900, 1100, 1300, 1500, 1700], v * 0.6);
-    beep(hit + 0.4, 1319, 0.12, v, 'square');
-    beep(hit + 0.55, 1568, 0.12, v, 'square');
-    beep(hit + 0.7, 2093, 0.4, v, 'square');
+    relay(hit, 0.6);
+    var end = dataBurst(hit, 5, 0.05);
+    var s = end + 0.1;
+    blip(hz(s), 1337, 0.1, 0.11, 'square', 0.1);
+    blip(hz(s + 0.16), 1622, 0.1, 0.11, 'square', 0.1);
+    blip(hz(s + 0.32), 1913, 0.4, 0.1, 'square', 0.12);
   }
-  // no consensus / test / discussion: two flat mid beeps
+  // no consensus / test / discussion: two flat beeps
   function unclearSound(hit) {
-    var v = DING_VOL * 0.6;
-    beep(hit, 1000, 0.12, v, 'square');
-    beep(hit + 0.2, 1000, 0.12, v, 'square');
+    blip(hz(hit), 1108, 0.1, 0.1, 'square', 0.08);
+    blip(hz(hit + 0.2), 1108, 0.1, 0.1, 'square', 0.08);
   }
   function ding(verdict) {
     if (!soundOn() || !audio()) return;
-    var t = ctx.currentTime, gap = 0.22;
-    duckAmbient(t, 0.02, 3.2, 3.3);
-    for (var i = 0; i < 3; i++) tally(t + i * gap);   // the three nodes clack in one by one
-    var hit = t + 3 * gap + 0.1;
+    var t = ctx.currentTime;
+    duckAmbient(t, 0.01, 3, 2.5);
+    for (var i = 0; i < 3; i++) tally(t + i * 0.22 + rnd(-0.01, 0.01));   // the three nodes clack in one by one
+    var hit = t + 0.8;
     if (verdict === 'APPROVED') approvedSound(hit);
     else if (verdict === 'DENIED') deniedSound(hit);
     else if (verdict === 'LINKED') linkedSound(hit);
@@ -533,30 +527,30 @@
   var PING = { melchior: { ap: 1568, dn: 520 }, balthasar: { ap: 1245, dn: 440 }, caspar: { ap: 1760, dn: 600 } };
   function pingBase(id, k) { return (PING[id] || PING.melchior)[k]; }
 
-  // one AI approved: relay click and two quick rising chirps
+  // one AI approved: relay click and two short beeps
   function approvedPing(id) {
     var t = ctx.currentTime, f = pingBase(id, 'ap');
-    relay(t, 0.4);
-    blip(t + 0.02, f, 0.06, 0.12);
-    blip(t + 0.1, f * 1.5, 0.09, 0.12);
+    relay(t, 0.35);
+    blip(t + 0.03, f, 0.05, 0.1, 'square');
+    blip(t + 0.11 + rnd(0, 0.01), f * 1.19, 0.08, 0.1, 'square');
   }
-  // one AI denied: relay click and two falling buzzy tones
+  // one AI denied: relay click and two low buzzy tones
   function deniedPing(id) {
     var t = ctx.currentTime, f = pingBase(id, 'dn');
-    relay(t, 0.4);
-    blip(t + 0.02, f, 0.12, 0.14, 'sawtooth');
-    blip(t + 0.18, f * 0.75, 0.2, 0.14, 'sawtooth');
+    relay(t, 0.35);
+    blip(t + 0.03, f, 0.1, 0.12, 'sawtooth');
+    blip(t + 0.17, f * 0.8, 0.16, 0.12, 'sawtooth');
   }
-  // one AI has spoken in discuss or link mode (no yes or no): a relay click and one chirp, each AI at its own pitch
+  // one AI has spoken in discuss or link mode (no yes or no): relay click and one beep
   function openPing(id) {
     var t = ctx.currentTime;
-    relay(t, 0.4);
-    blip(t + 0.02, pingBase(id, 'ap'), 0.1, 0.12);
+    relay(t, 0.35);
+    blip(t + 0.03, pingBase(id, 'ap'), 0.08, 0.1, 'square');
   }
   // one AI has decided
   function nodePing(verdict, id) {
     if (!soundOn() || !audio()) return;
-    duckAmbient(ctx.currentTime, 0.04, 0.9, 2);
+    duckAmbient(ctx.currentTime, 0.02, 0.9, 2);
     if (verdict === 'DENIED') deniedPing(id);
     else if (verdict === 'OPEN') openPing(id);
     else approvedPing(id);
