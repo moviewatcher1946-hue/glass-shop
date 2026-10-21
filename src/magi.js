@@ -29,16 +29,28 @@
 // Providers: Gemini, Groq, OpenRouter, NVIDIA (build.nvidia.com, free key) and Cloudflare Workers AI (free daily allowance).
 // Env vars: GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY, NVIDIA_API_KEY, CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID.
 // Optional models: MAGI_GEMINI_MODEL, MAGI_GROQ_MODEL, MAGI_OPENROUTER_MODEL, MAGI_NVIDIA_MODEL, MAGI_CLOUDFLARE_MODEL.
-// Optional: MAGI_THINKING=on keeps the providers' reasoning enabled (the default turns it off for speed).
+// Optional: MAGI_THINKING=on keeps Gemini's and OpenRouter's reasoning enabled (the default turns it off for speed).
+// Optional (Groq token control):
+//   MAGI_QWEN_MAX_OUT   output cap for Qwen on Groq (default 2500). Groq counts this against your per-minute budget.
+//   MAGI_OSS_MAX_OUT    output cap for gpt-oss on Groq (default 3000).
+//   MAGI_QWEN_THINK     "default" (Qwen thinks, the default) or "none" (Qwen does not think, cheapest).
 // Without a database (pool is null) the settings, links and history only last until the server restarts.
 const TIMEOUT = 45000;       // longest wait for a single provider call
 const RUN_BUDGET = 60000;    // longest total time for one whole run; keep below the browser/proxy limit
 const MIN_CALL_MS = 5000;    // never start a call with less time than this
 const ROUND_MIN_MS = 20000;  // do not start another round with less time than this
 const QUESTION_MAX = 4096;
-// Reasoning models (Qwen on Groq, Nemotron, Gemini 3.5) spend output tokens on thinking before the visible answer.
+// Reasoning models (Gemini 3.5, Nemotron) spend output tokens on thinking before the visible answer.
 // 1024 was often used up by the thinking alone, which left an empty or cut-off answer.
 const MAX_OUT = 8192;
+// Groq models get their own, smaller caps. Groq reserves max_tokens against the per-minute token budget,
+// so a big cap on every call eats the budget even when the model uses far less.
+const intEnv = (k, d) => { const n = parseInt(process.env[k], 10); return Number.isFinite(n) && n >= 256 ? n : d; };
+const QWEN_MAX_OUT = intEnv('MAGI_QWEN_MAX_OUT', 2500);
+const OSS_MAX_OUT = intEnv('MAGI_OSS_MAX_OUT', 3000);
+const QWEN_EFFORT = process.env.MAGI_QWEN_THINK === 'none' ? 'none' : 'default';
+const QWEN_FALLBACK_MAX = 1000; // cap for the no-thinking retry when Qwen runs out of tokens while thinking
+const QWEN_BREVITY = 'Think briefly and efficiently before you answer. Do not go over the same point twice in your reasoning.';
 // Turn off the reasoning step on providers that support it, unless MAGI_THINKING=on.
 const NO_THINK = process.env.MAGI_THINKING !== 'on';
 let runDeadline = 0; // set at the start of each run
@@ -267,24 +279,56 @@ async function callProvider(view, system, user, temp) {
     if (!text.trim() && c && c.finishReason === 'MAX_TOKENS') throw new Error('Ran out of tokens while thinking');
     return stripThink(text);
   }
+
+  // OpenAI-compatible providers (Groq, OpenRouter, NVIDIA, Cloudflare).
   const url = p.url();
   const headers = { 'content-type': 'application/json', authorization: 'Bearer ' + key };
   if (p.id === 'openrouter') headers['X-Title'] = 'MAGI';
-  const body = {
-    model, temperature, max_tokens: MAX_OUT,
-    messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+
+  // Groq models: gpt-oss takes low/medium/high. Qwen3 only takes 'default' (thinks) or 'none' (does not think).
+  const isQwen = p.id === 'groq' && /qwen/i.test(model);
+  const isOss = p.id === 'groq' && /gpt-oss/i.test(model);
+
+  const buildBody = (maxTok, qwenEffort, sys) => {
+    const body = {
+      model, temperature, max_tokens: maxTok,
+      messages: [{ role: 'system', content: sys }, { role: 'user', content: user }],
+    };
+    if (isOss) body.reasoning_effort = 'medium';
+    if (isQwen) {
+      body.reasoning_effort = qwenEffort;
+      body.reasoning_format = 'hidden'; // thinking is removed server-side and not sent back
+    }
+    if (NO_THINK && p.id === 'openrouter') body.reasoning = { enabled: false };
+    return body;
   };
-  if (NO_THINK) {
-    if (p.id === 'groq') body.reasoning_effort = 'medium';
-    if (p.id === 'openrouter') body.reasoning = { enabled: false };
+
+  const send = async (body) => {
+    const { r, d } = await postJson(url, headers, body, ms);
+    if (!r.ok) throw new Error(errText(d, r.status));
+    if (d.error) throw new Error(errText(d, r.status)); // OpenRouter can answer 200 with an error body
+    const ch = d.choices && d.choices[0];
+    return { text: stripThink((ch && ch.message && ch.message.content) || ''), finish: ch && ch.finish_reason };
+  };
+
+  if (isQwen) {
+    const thinks = QWEN_EFFORT !== 'none';
+    const sys = thinks ? system + ' ' + QWEN_BREVITY : system;
+    const first = await send(buildBody(thinks ? QWEN_MAX_OUT : QWEN_FALLBACK_MAX, QWEN_EFFORT, sys));
+    if (first.text) return first.text;
+    // Qwen used its whole allowance thinking and wrote no answer: ask again once with thinking off, so the node still answers.
+    if (thinks && first.finish === 'length') {
+      console.error('magi qwen: ran out of tokens while thinking, retrying with thinking off');
+      const retry = await send(buildBody(QWEN_FALLBACK_MAX, 'none', system));
+      if (retry.text) return retry.text;
+    }
+    return '';
   }
-  const { r, d } = await postJson(url, headers, body, ms);
-  if (!r.ok) throw new Error(errText(d, r.status));
-  const ch = d.choices && d.choices[0];
-  if (d.error) throw new Error(errText(d, r.status)); // OpenRouter can answer 200 with an error body
-  const text = stripThink((ch && ch.message && ch.message.content) || '');
-  if (!text && ch && ch.finish_reason === 'length') throw new Error('Ran out of tokens while thinking');
-  return text;
+
+  const maxTok = isOss ? OSS_MAX_OUT : MAX_OUT;
+  const out = await send(buildBody(maxTok, 'default', system));
+  if (!out.text && out.finish === 'length') throw new Error('Ran out of tokens while thinking');
+  return out.text;
 }
 
 // In discuss mode nobody votes, so the "verdict" is the neutral word OPEN.
@@ -592,12 +636,4 @@ module.exports = function mount(app, { pool, auth, admin, wrap }) {
     const question = String(body.question || '').trim();
     if (!question) return res.status(400).json({ error: 'Enter a question first.' });
     if (question.length > QUESTION_MAX) return res.status(400).json({ error: 'Question is too long (max ' + QUESTION_MAX + ' characters).' });
-    const cfg = snapshot(); // settings are frozen for the whole run, so a change mid-run cannot mix two setups
-    const decreeOk = cfg.mode === 'verdict' || (cfg.mode === 'link' && cfg.linkOut === 'verdict');
-    const override = decreeOk ? String(body.override || '').toUpperCase() : '';
-    const results = cfg.mode === 'link' ? await linkChain(question, cfg) : await deliberate(question, cfg);
-    const run = { question, results, ...tally(results, cfg, override) };
-    await histSave(run).catch((e) => console.error('magi history save:', e.message));
-    res.json(run);
-  }));
-};
+    const cfg = snapshot(); //
