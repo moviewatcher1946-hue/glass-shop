@@ -636,4 +636,12 @@ module.exports = function mount(app, { pool, auth, admin, wrap }) {
     const question = String(body.question || '').trim();
     if (!question) return res.status(400).json({ error: 'Enter a question first.' });
     if (question.length > QUESTION_MAX) return res.status(400).json({ error: 'Question is too long (max ' + QUESTION_MAX + ' characters).' });
-    const cfg = snapshot(); //
+    const cfg = snapshot(); // settings are frozen for the whole run, so a change mid-run cannot mix two setups
+    const decreeOk = cfg.mode === 'verdict' || (cfg.mode === 'link' && cfg.linkOut === 'verdict');
+    const override = decreeOk ? String(body.override || '').toUpperCase() : '';
+    const results = cfg.mode === 'link' ? await linkChain(question, cfg) : await deliberate(question, cfg);
+    const run = { question, results, ...tally(results, cfg, override) };
+    await histSave(run).catch((e) => console.error('magi history save:', e.message));
+    res.json(run);
+  }));
+};
