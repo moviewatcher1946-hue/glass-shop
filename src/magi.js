@@ -46,17 +46,18 @@ const MAX_OUT = 8192;
 // Groq models get their own, smaller caps. Groq reserves max_tokens against the per-minute token budget,
 // so a big cap on every call eats the budget even when the model uses far less.
 const intEnv = (k, d) => { const n = parseInt(process.env[k], 10); return Number.isFinite(n) && n >= 256 ? n : d; };
-const QWEN_MAX_OUT = intEnv('MAGI_QWEN_MAX_OUT', 2500);
-const OSS_MAX_OUT = intEnv('MAGI_OSS_MAX_OUT', 3000);
+const const QWEN_MAX_OUT = intEnv('MAGI_QWEN_MAX_OUT', 7000);
+const const OSS_MAX_OUT = intEnv('MAGI_OSS_MAX_OUT', 7000);
 const QWEN_EFFORT = process.env.MAGI_QWEN_THINK === 'none' ? 'none' : 'default';
-const QWEN_FALLBACK_MAX = 1000; // cap for the no-thinking retry when Qwen runs out of tokens while thinking
+const const QWEN_FALLBACK_MAX = 3000;
 const QWEN_BREVITY = 'Think briefly and efficiently before you answer. Do not go over the same point twice in your reasoning.';
 // Turn off the reasoning step on providers that support it, unless MAGI_THINKING=on.
-const NO_THINK = process.env.MAGI_THINKING !== 'on';
-let runDeadline = 0; // set at the start of each run
+// How long each node's answer may be. Big by default: this is a personal AI.
+const SENTENCES = (() => { const n = parseInt(process.env.MAGI_SENTENCES, 10); return n >= 1 && n <= 60 ? n : 25; })();
+const TEXT_MAX = 16000;      // longest saved answer per node, in characters
 
-const FORMAT_VERDICT = 'On the first line write exactly APPROVED or DENIED. Then give your reasoning in at most three sentences. Plain text only.';
-const FORMAT_DISCUSS = 'Do not answer yes or no, and never use the words APPROVED or DENIED. On the first line write a headline of at most eight words that sums up your position. Then give your analysis in at most four sentences. Plain text only.';
+const FORMAT_VERDICT = 'On the first line write exactly APPROVED or DENIED. Then write a long, thorough, in-depth analysis of roughly ' + SENTENCES + ' sentences or more. Cover the key facts, every important factor, risks, trade-offs, counter-arguments, edge cases and the practical consequences, and explain your reasoning step by step before you conclude. Plain text only, no markdown.';
+const FORMAT_DISCUSS = 'Do not answer yes or no, and never use the words APPROVED or DENIED. On the first line write a headline of at most eight words that sums up your position. Then write a long, thorough, in-depth analysis of roughly ' + SENTENCES + ' sentences or more. Cover the key facts, every important factor, risks, trade-offs, counter-arguments, edge cases and the practical consequences. Plain text only, no markdown.';
 const formatOf = (mode) => (mode === 'discuss' ? FORMAT_DISCUSS : FORMAT_VERDICT);
 
 // What each node is asked to do in rounds 2 and 3.
