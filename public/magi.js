@@ -236,6 +236,14 @@
     '#magi-dash.max{position:fixed!important;top:0!important;left:0!important;right:0!important;bottom:0!important;width:100vw!important;height:100vh!important;height:100dvh!important;min-width:0!important;max-width:none!important;margin:0!important;padding:0!important;overflow:auto!important;z-index:2147483000!important;transform:none!important;background:repeating-linear-gradient(45deg,#000 0,#000 20px,#140b02 20px,#140b02 40px)!important;border:0!important;display:flex!important;align-items:flex-start!important;justify-content:center!important}',
     '#magi-dash.max .mg-panel{max-width:none!important;margin:0 auto!important;min-height:0!important;border:0!important;outline:0!important;box-shadow:none!important}',
     '#magi-dash.max .mg-magi{width:1500px;max-width:100%;margin:0 auto}',
+    // COMPACT: a short window (a quarter of the screen). Smaller buttons and spacing so the board gets most of the height.
+    '#magi-dash.max.compact .mg-panel{padding:6px 8px!important}',
+    '#magi-dash.max.compact .mg-bar{gap:4px;margin:0 0 4px}',
+    '#magi-dash.max.compact .mg-bar .mg-btn{padding:3px 8px;font-size:.66rem;letter-spacing:.1em;border-width:1px}',
+    '#magi-dash.max.compact .mg-form{margin:6px 0 0;padding-top:6px;gap:8px}',
+    '#magi-dash.max.compact .mg-form .mg-ql{font-size:.72rem}',
+    '#magi-dash.max.compact .mg-form textarea{min-height:30px;height:30px;padding:4px 8px;font-size:13px}',
+    '#magi-dash.max.compact .mg-run{min-height:30px;padding:0 16px;font-size:.78rem}',
     '#magi-dash:fullscreen,#magi-dash:-webkit-full-screen{background:#000;overflow:auto;display:flex;align-items:flex-start;justify-content:center}',
     '#magi-dash:fullscreen .mg-panel,#magi-dash:-webkit-full-screen .mg-panel{max-width:none;margin:0 auto}',
 
@@ -1008,20 +1016,27 @@
     syncToggles();
   });
 
-  // ===== EXPAND: design height as a minimum, scaled to fit. The expanded layer scrolls, so the question row is always reachable =====
-  var MIN_SCALE = 0.9; // lowest zoom in a small window (raise for bigger text, lower to see more of the board at once)
-  var DESIGN_H = 1000; // raise in steps of 20 if there is too much empty space at the bottom, lower if the board is cut off
+  // ===== EXPAND: a layer over the whole browser window. The board (2:1) is sized so the three node screens fit the window height;
+  // the buttons and the question row stay at normal, readable size, and the layer scrolls if the window is really tiny =====
+  var MIN_BOARD = 360; // narrowest the board may get (px); below this the layer scrolls instead of shrinking the board further
   function fit() {
-    if (!root.classList.contains('max')) { panel.style.zoom = ''; panel.style.width = ''; panel.style.height = ''; panel.style.minHeight = ''; panel.style.overflow = ''; return; }
-    // the board keeps its desktop layout at ANY window size (like a floating window): it is scaled down to fit (down to MIN_SCALE), never reflowed
-    var pad = 8, vw = window.innerWidth - pad * 2, vh = window.innerHeight - pad * 2;
-    // never shrink below MIN_SCALE so text stays readable in a small window; the layer scrolls up and down instead
-    var s = Math.max(MIN_SCALE, Math.min(vw / 1560, vh / DESIGN_H));
-    panel.style.width = Math.round(vw / s) + 'px';
-    panel.style.height = '';
-    panel.style.minHeight = Math.round(vh / s) + 'px';   // fill the whole screen, not just the design height
+    if (!root.classList.contains('max')) { root.classList.remove('compact'); panel.style.width = ''; panel.style.zoom = ''; panel.style.minHeight = ''; panel.style.overflow = ''; nodesWrap.style.width = ''; nodesWrap.style.margin = ''; return; }
+    var pad = 8;
+    panel.style.zoom = '';
+    panel.style.minHeight = '';
     panel.style.overflow = 'visible';
-    panel.style.zoom = s.toFixed(3);
+    root.classList.toggle('compact', window.innerHeight < 640);   // a short window: tighter buttons and spacing
+    panel.style.width = Math.max(320, window.innerWidth - pad * 2) + 'px';
+    var cs = getComputedStyle(panel), inner = panel.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    var chrome = panel.offsetHeight - nodesWrap.offsetHeight;   // everything in the panel that is not the board (buttons, question row, final answer)
+    var avail = window.innerHeight - pad * 2 - chrome;
+    var bw = Math.max(MIN_BOARD, Math.min(inner, Math.floor(avail * 2)));
+    nodesWrap.style.width = bw + 'px';
+    nodesWrap.style.margin = '0 auto';
+  }
+  if (window.ResizeObserver) {
+    var fitRO = new ResizeObserver(function () { if (root.classList.contains('max')) fit(); });
+    [bar, form, finalLbl, finalBox].forEach(function (n) { if (n) fitRO.observe(n); });
   }
   window.addEventListener('resize', fit);
   window.addEventListener('orientationchange', fit);
