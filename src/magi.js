@@ -30,9 +30,10 @@
 // Env vars: GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY, NVIDIA_API_KEY, CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID.
 // Optional models: MAGI_GEMINI_MODEL, MAGI_GROQ_MODEL, MAGI_OPENROUTER_MODEL, MAGI_NVIDIA_MODEL, MAGI_CLOUDFLARE_MODEL.
 // Optional: MAGI_THINKING=on keeps Gemini's and OpenRouter's reasoning enabled (the default turns it off for speed).
+// Optional: MAGI_SENTENCES (1 to 60, default 25) sets how long each node's answer is.
 // Optional (Groq token control):
-//   MAGI_QWEN_MAX_OUT   output cap for Qwen on Groq (default 2500). Groq counts this against your per-minute budget.
-//   MAGI_OSS_MAX_OUT    output cap for gpt-oss on Groq (default 3000).
+//   MAGI_QWEN_MAX_OUT   output cap for Qwen on Groq (default 7000). Groq counts this against your per-minute budget.
+//   MAGI_OSS_MAX_OUT    output cap for gpt-oss on Groq (default 7000).
 //   MAGI_QWEN_THINK     "default" (Qwen thinks, the default) or "none" (Qwen does not think, cheapest).
 // Without a database (pool is null) the settings, links and history only last until the server restarts.
 const TIMEOUT = 45000;       // longest wait for a single provider call
@@ -46,12 +47,15 @@ const MAX_OUT = 8192;
 // Groq models get their own, smaller caps. Groq reserves max_tokens against the per-minute token budget,
 // so a big cap on every call eats the budget even when the model uses far less.
 const intEnv = (k, d) => { const n = parseInt(process.env[k], 10); return Number.isFinite(n) && n >= 256 ? n : d; };
-const const QWEN_MAX_OUT = intEnv('MAGI_QWEN_MAX_OUT', 7000);
-const const OSS_MAX_OUT = intEnv('MAGI_OSS_MAX_OUT', 7000);
+const QWEN_MAX_OUT = intEnv('MAGI_QWEN_MAX_OUT', 7000);
+const OSS_MAX_OUT = intEnv('MAGI_OSS_MAX_OUT', 7000);
 const QWEN_EFFORT = process.env.MAGI_QWEN_THINK === 'none' ? 'none' : 'default';
-const const QWEN_FALLBACK_MAX = 3000;
+const QWEN_FALLBACK_MAX = 3000;
 const QWEN_BREVITY = 'Think briefly and efficiently before you answer. Do not go over the same point twice in your reasoning.';
 // Turn off the reasoning step on providers that support it, unless MAGI_THINKING=on.
+const NO_THINK = (process.env.MAGI_THINKING || '').trim().toLowerCase() !== 'on';
+// The time at which the current run must stop starting new calls. Set at the start of every run.
+let runDeadline = Date.now() + RUN_BUDGET;
 // How long each node's answer may be. Big by default: this is a personal AI.
 const SENTENCES = (() => { const n = parseInt(process.env.MAGI_SENTENCES, 10); return n >= 1 && n <= 60 ? n : 25; })();
 const TEXT_MAX = 16000;      // longest saved answer per node, in characters
@@ -337,7 +341,7 @@ function shape(view, text, started, mode, round, kind) {
   return {
     id: view.node.id, name: view.node.name, role: view.node.role, provider: view.label, model: view.model, ok: true,
     verdict: mode === 'discuss' ? 'OPEN' : verdictOf(text),
-    text: String(text).trim().slice(0, 1500), ms: Date.now() - started, round, kind,
+    text: String(text).trim().slice(0, TEXT_MAX), ms: Date.now() - started, round, kind,
   };
 }
 
