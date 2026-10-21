@@ -20,7 +20,7 @@
 //      * a mechanical machine-room drone with relay clicks and servo whines while the nodes think,
 //      * a deep slam with a hall tail on the verdict.
 //    The SOUND button mutes everything (remembered on this device).
-//  - EXPAND covers the whole page (a fixed full-viewport layer) and also requests real browser fullscreen where the browser allows it.
+//  - EXPAND covers the whole browser window (a fixed full-viewport layer). It never asks for real screen fullscreen, so side-by-side windows stay visible.
 // Uses textContent for everything that comes from the server, so an AI answer can never inject HTML.
 // Colours are CSS variables on #magi-dash (--mg-or, --mg-gn, --mg-no, ...).
 (function () {
@@ -233,7 +233,7 @@
     '#magi-dash .mg-chips .mg-btn{padding:5px 10px;font-size:.75rem;border-width:1px;text-transform:none;letter-spacing:.06em;font-weight:600}',
 
     // EXPANDED: a fixed layer covering the whole viewport (it scrolls, so the bottom row is always reachable)
-    '#magi-dash.max{position:fixed!important;top:0!important;left:0!important;right:0!important;bottom:0!important;width:100vw!important;height:100vh!important;max-width:none!important;margin:0!important;padding:0!important;overflow:auto!important;z-index:2147483000!important;transform:none!important;background:repeating-linear-gradient(45deg,#000 0,#000 20px,#140b02 20px,#140b02 40px)!important;border:0!important;display:flex!important;align-items:flex-start!important;justify-content:center!important}',
+    '#magi-dash.max{position:fixed!important;top:0!important;left:0!important;right:0!important;bottom:0!important;width:100vw!important;height:100vh!important;height:100dvh!important;min-width:0!important;max-width:none!important;margin:0!important;padding:0!important;overflow:auto!important;z-index:2147483000!important;transform:none!important;background:repeating-linear-gradient(45deg,#000 0,#000 20px,#140b02 20px,#140b02 40px)!important;border:0!important;display:flex!important;align-items:flex-start!important;justify-content:center!important}',
     '#magi-dash.max .mg-panel{max-width:none!important;margin:0 auto!important;min-height:0!important;border:0!important;outline:0!important;box-shadow:none!important}',
     '#magi-dash.max .mg-magi{width:1500px;max-width:100%;margin:0 auto}',
     '#magi-dash:fullscreen,#magi-dash:-webkit-full-screen{background:#000;overflow:auto;display:flex;align-items:flex-start;justify-content:center}',
@@ -253,7 +253,7 @@
     '.mg-panel>.mg-links,.mg-panel>.mg-ctrl{overflow:auto;overscroll-behavior:contain}',
     '.mg-panel>.mg-links .mg-lh,.mg-panel>.mg-ctrl .mg-lh,.mg-panel>.mg-hist .mg-lh{position:sticky;top:0;z-index:2;background:#000}',
     '#magi-dash .mg-lx{min-width:46px;min-height:34px;font-size:1rem}',
-    '@media (max-width:860px){.mg-ctls{grid-template-columns:1fr}.mg-form{grid-template-columns:1fr}.mg-run{min-height:44px}.mg-lb{grid-template-columns:1fr}.mg-pgrid{grid-template-columns:1fr}.mg-row{grid-template-columns:1fr}.mg-dec{margin-left:0}.mg-hi{grid-template-columns:auto minmax(0,1fr)}.mg-hi span:last-child{grid-column:1/-1}}',
+    '@media (max-width:860px){#magi-dash:not(.max) .mg-ctls{grid-template-columns:1fr}#magi-dash:not(.max) .mg-form{grid-template-columns:1fr}#magi-dash:not(.max) .mg-run{min-height:44px}#magi-dash:not(.max) .mg-lb{grid-template-columns:1fr}#magi-dash:not(.max) .mg-pgrid{grid-template-columns:1fr}#magi-dash:not(.max) .mg-row{grid-template-columns:1fr}#magi-dash:not(.max) .mg-dec{margin-left:0}#magi-dash:not(.max) .mg-hi{grid-template-columns:auto minmax(0,1fr)}#magi-dash:not(.max) .mg-hi span:last-child{grid-column:1/-1}}',
     '@media (prefers-reduced-motion:reduce){#magi-dash *{animation:none!important}}',
   ].join('\n');
   var style = document.createElement('style');
@@ -1011,16 +1011,18 @@
   // ===== EXPAND: design height as a minimum, scaled to fit. The expanded layer scrolls, so the question row is always reachable =====
   var DESIGN_H = 1000; // raise in steps of 20 if there is too much empty space at the bottom, lower if the board is cut off
   function fit() {
-    if (!root.classList.contains('max') || window.innerWidth < 860) { panel.style.zoom = ''; panel.style.width = ''; panel.style.height = ''; panel.style.minHeight = ''; panel.style.overflow = ''; return; }
-    var pad = 16, vw = window.innerWidth - pad * 2, vh = window.innerHeight - pad * 2;
+    if (!root.classList.contains('max')) { panel.style.zoom = ''; panel.style.width = ''; panel.style.height = ''; panel.style.minHeight = ''; panel.style.overflow = ''; return; }
+    // the board keeps its desktop layout at ANY window size (like a floating window): it is scaled down to fit, never reflowed
+    var pad = 8, vw = window.innerWidth - pad * 2, vh = window.innerHeight - pad * 2;
     var s = Math.min(vw / 1560, vh / DESIGN_H);
-    panel.style.width = Math.round(vw / s) + 'px'; // stretch sideways to use the full screen width
+    panel.style.width = Math.round(vw / s) + 'px';
     panel.style.height = '';
-    panel.style.minHeight = DESIGN_H + 'px';
+    panel.style.minHeight = Math.round(vh / s) + 'px';   // fill the whole screen, not just the design height
     panel.style.overflow = 'visible';
     panel.style.zoom = s.toFixed(3);
   }
   window.addEventListener('resize', fit);
+  window.addEventListener('orientationchange', fit);
 
   function expand() {
     root.classList.add('max');
@@ -1028,13 +1030,6 @@
     document.body.style.overflow = 'hidden';
     maxBtn.textContent = 'COLLAPSE';
     fit();
-    var rf = root.requestFullscreen || root.webkitRequestFullscreen;
-    if (rf) {
-      try {
-        var p = rf.call(root);
-        if (p && p.catch) p.catch(function (e) { console.warn('MAGI fullscreen refused:', e && e.message); });
-      } catch (e) { console.warn('MAGI fullscreen error:', e && e.message); }
-    }
   }
   function collapse() {
     if (!root.classList.contains('max')) return;
@@ -1042,11 +1037,6 @@
     document.body.style.overflow = '';
     maxBtn.textContent = 'EXPAND';
     fit();
-    var fe = document.fullscreenElement || document.webkitFullscreenElement;
-    if (fe) {
-      var ef = document.exitFullscreen || document.webkitExitFullscreen;
-      try { var p = ef.call(document); if (p && p.catch) p.catch(function () { }); } catch (e) { }
-    }
     place();
   }
   maxBtn.addEventListener('click', function () { if (root.classList.contains('max')) collapse(); else expand(); });
@@ -1055,11 +1045,6 @@
     if (anyPanel()) { closePanels(); return; }
     if (root.classList.contains('max')) collapse();
   });
-  function fsChange() {
-    if (!(document.fullscreenElement || document.webkitFullscreenElement) && root.classList.contains('max')) collapse();
-  }
-  document.addEventListener('fullscreenchange', fsChange);
-  document.addEventListener('webkitfullscreenchange', fsChange);
 
   // ===== keep the block above the Dashboard numbers =====
   var loaded = false;
