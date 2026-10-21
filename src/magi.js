@@ -29,33 +29,33 @@
 // Providers: Gemini, Groq, OpenRouter, NVIDIA (build.nvidia.com, free key) and Cloudflare Workers AI (free daily allowance).
 // Env vars: GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY, NVIDIA_API_KEY, CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID.
 // Optional models: MAGI_GEMINI_MODEL, MAGI_GROQ_MODEL, MAGI_OPENROUTER_MODEL, MAGI_NVIDIA_MODEL, MAGI_CLOUDFLARE_MODEL.
-// Optional: MAGI_THINKING=on keeps the providers' reasoning enabled (the default turns it off for speed).
+// Optional: MAGI_THINKING=on keeps the providers'  enabled (the default turns it off for speed).
 // Without a database (pool is null) the settings, links and history only last until the server restarts.
 const TIMEOUT = 45000;       // longest wait for a single provider call
 const RUN_BUDGET = 60000;    // longest total time for one whole run; keep below the browser/proxy limit
 const MIN_CALL_MS = 5000;    // never start a call with less time than this
 const ROUND_MIN_MS = 20000;  // do not start another round with less time than this
 const QUESTION_MAX = 4096;
-// Reasoning models (Qwen on Groq, Nemotron, Gemini 3.5) spend output tokens on thinking before the visible answer.
+//  models (Qwen on Groq, Nemotron, Gemini 3.5) spend output tokens on thinking before the visible answer.
 // 1024 was often used up by the thinking alone, which left an empty or cut-off answer.
 const MAX_OUT = 8192;
-// Turn off the reasoning step on providers that support it, unless MAGI_THINKING=on.
+// Turn off the  step on providers that support it, unless MAGI_THINKING=on.
 const NO_THINK = process.env.MAGI_THINKING !== 'on';
 let runDeadline = 0; // set at the start of each run
 
-const FORMAT_VERDICT = 'On the first line write exactly APPROVED or DENIED. Then give your reasoning in at most three sentences. Plain text only.';
+const FORMAT_VERDICT = 'On the first line write exactly APPROVED or DENIED. Then give your  in at most three sentences. Plain text only.';
 const FORMAT_DISCUSS = 'Do not answer yes or no, and never use the words APPROVED or DENIED. On the first line write a headline of at most eight words that sums up your position. Then give your analysis in at most four sentences. Plain text only.';
 const formatOf = (mode) => (mode === 'discuss' ? FORMAT_DISCUSS : FORMAT_VERDICT);
 
 // What each node is asked to do in rounds 2 and 3.
 const INSTR = {
   debate: {
-    verdict: 'Consider their reasoning. Keep your position if you still believe it, or change it if they convinced you.',
-    discuss: 'Respond to their reasoning. Say where you agree and where you disagree, and sharpen your own view.',
+    verdict: 'Consider their . Keep your position if you still believe it, or change it if they convinced you.',
+    discuss: 'Respond to their . Say where you agree and where you disagree, and sharpen your own view.',
   },
   convince: {
-    verdict: 'This is the convincing round. Make the strongest honest case you can to win the others over: speak to them by name and go after the weakest point in their reasoning. You may change your own verdict if their case beats yours.',
-    discuss: 'This is the convincing round. Make the strongest honest case you can to bring the others round to your view: speak to them by name and go after the weakest point in their reasoning. You may change your mind if their case beats yours.',
+    verdict: 'This is the convincing round. Make the strongest honest case you can to win the others over: speak to them by name and go after the weakest point in their . You may change your own verdict if their case beats yours.',
+    discuss: 'This is the convincing round. Make the strongest honest case you can to bring the others round to your view: speak to them by name and go after the weakest point in their . You may change your mind if their case beats yours.',
   },
   final: {
     verdict: 'This is the final round. Weigh the arguments made to you. Hold your verdict or change it. The vote is taken on what you write now.',
@@ -66,7 +66,7 @@ const INSTR = {
 // What each link of the chain is asked to do in link mode (the first link just answers the question).
 const LINK_INSTR = {
   review: {
-    verdict: 'You are a middle link in a chain. Check the reasoning above, fix mistakes and add what is missing. Keep the verdict or change it.',
+    verdict: 'You are a middle link in a chain. Check the  above, fix mistakes and add what is missing. Keep the verdict or change it.',
     discuss: 'You are a middle link in a chain. Check the analysis above, fix mistakes and add what is missing, then give your improved analysis.',
   },
   final: {
@@ -184,7 +184,7 @@ function systemFor(n, cfg, extra) {
   return s + ' ' + formatOf(outModeOf(cfg));
 }
 
-// Remove a reasoning model's visible "thinking" (<think>...</think>), which would otherwise be read as the verdict line.
+// Remove a  model's visible "thinking" (<think>...</think>), which would otherwise be read as the verdict line.
 const stripThink = (t) => {
   let s = String(t || '').replace(/<think>[\s\S]*?<\/think>/gi, '');
   const i = s.lastIndexOf('</think>');
@@ -275,7 +275,7 @@ async function callProvider(view, system, user, temp) {
     messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
   };
   if (NO_THINK) {
-    if (p.id === 'groq') body.reasoning_effort = 'high';
+    if (p.id === 'groq') body._effort = 'medium';
     if (p.id === 'openrouter') body.reasoning = { enabled: false };
   }
   const { r, d } = await postJson(url, headers, body, ms);
