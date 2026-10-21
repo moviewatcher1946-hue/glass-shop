@@ -1009,12 +1009,14 @@
   });
 
   // ===== EXPAND: design height as a minimum, scaled to fit. The expanded layer scrolls, so the question row is always reachable =====
+  var MIN_SCALE = 0.9; // lowest zoom in a small window (raise for bigger text, lower to see more of the board at once)
   var DESIGN_H = 1000; // raise in steps of 20 if there is too much empty space at the bottom, lower if the board is cut off
   function fit() {
     if (!root.classList.contains('max')) { panel.style.zoom = ''; panel.style.width = ''; panel.style.height = ''; panel.style.minHeight = ''; panel.style.overflow = ''; return; }
-    // the board keeps its desktop layout at ANY window size (like a floating window): it is scaled down to fit, never reflowed
+    // the board keeps its desktop layout at ANY window size (like a floating window): it is scaled down to fit (down to MIN_SCALE), never reflowed
     var pad = 8, vw = window.innerWidth - pad * 2, vh = window.innerHeight - pad * 2;
-    var s = Math.min(vw / 1560, vh / DESIGN_H);
+    // never shrink below MIN_SCALE so text stays readable in a small window; the layer scrolls up and down instead
+    var s = Math.max(MIN_SCALE, Math.min(vw / 1560, vh / DESIGN_H));
     panel.style.width = Math.round(vw / s) + 'px';
     panel.style.height = '';
     panel.style.minHeight = Math.round(vh / s) + 'px';   // fill the whole screen, not just the design height
