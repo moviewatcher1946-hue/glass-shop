@@ -237,12 +237,30 @@
     '#magi-dash.max .mg-panel{max-width:none!important;margin:0 auto!important;min-height:0!important;border:0!important;outline:0!important;box-shadow:none!important}',
     '#magi-dash.max .mg-magi{width:1500px;max-width:100%;margin:0 auto}',
     // COMPACT: a short window (a quarter of the screen). Smaller buttons and spacing so the board gets most of the height.
-    // BLEED: a tiny window. The board fills the whole window edge to edge; the buttons and the question row are just below it (scroll down).
+    '#magi-dash:not(.side) .mg-all{display:none!important}',
+    // SIDE: a short, wide window (a quarter of the screen). Board on the left; buttons, question and the full answer in a column on the right.
+    '#magi-dash.max.side.on .mg-panel{display:grid!important;grid-template-columns:var(--mg-bw) minmax(0,1fr);grid-template-rows:auto auto auto auto minmax(0,1fr);column-gap:8px;height:100vh;height:100dvh;padding:6px!important;overflow:hidden!important;border:0!important}',
+    '#magi-dash.max.side .mg-panel>.mg-magi{grid-column:1;grid-row:1/-1;align-self:center;margin:0!important}',
+    '#magi-dash.max.side .mg-panel>.mg-bar{grid-column:2;grid-row:1;justify-content:flex-start;gap:4px;margin:0 0 6px}',
+    '#magi-dash.max.side .mg-panel>.mg-bar .mg-btn{padding:3px 7px;font-size:.62rem;letter-spacing:.08em;border-width:1px}',
+    '#magi-dash.max.side .mg-panel>.mg-form{grid-column:2;grid-row:2;display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:0;padding:6px 0 0}',
+    '#magi-dash.max.side .mg-form .mg-ql{flex:1 1 100%;font-size:.7rem}',
+    '#magi-dash.max.side .mg-form textarea{flex:1 1 100%;min-height:54px;height:54px;font-size:13px}',
+    '#magi-dash.max.side .mg-run{min-height:30px;padding:0 16px;font-size:.78rem}',
+    '#magi-dash.max.side .mg-form .mg-chips{position:static!important;grid-column:auto;flex:1 1 auto;margin:0;padding:0}',
+    '#magi-dash.max.side .mg-form .mg-dec{margin:0;width:100%;font-size:.68rem}',
+    '#magi-dash.max.side .mg-panel>.mg-pips{grid-column:2;grid-row:3;margin:6px 0 0}',
+    '#magi-dash.max.side .mg-panel>.mg-final-lbl{grid-column:2;grid-row:4;margin:6px 0 0}',
+    '#magi-dash.max.side .mg-panel>.mg-final{grid-column:2;grid-row:5;margin:4px 0 0;max-height:none;min-height:0;overflow:auto;font-size:13px}',
+    // BLEED: a tiny window. The board takes the whole window (original shape, scaled evenly).
+    // The buttons (top right) and the question row (bottom) float over it, faint until you point at them or click into the question box.
     '#magi-dash.max.bleed.on .mg-panel{display:flex!important;flex-direction:column;padding:0!important;border:0!important;width:100%!important}',
     '#magi-dash.max.bleed .mg-panel>.mg-magi{order:1;flex:none;border-left:0;border-right:0}',
-    '#magi-dash.max.bleed .mg-panel>.mg-bar{order:2;padding:6px 8px;margin:0}',
-    '#magi-dash.max.bleed .mg-panel>.mg-form{order:3;margin:0;padding:6px 8px}',
     '#magi-dash.max.bleed .mg-panel>*:not(.mg-magi):not(.mg-bar):not(.mg-form):not(.mg-sweep){order:4}',
+    '#magi-dash.max.bleed .mg-panel>.mg-bar{position:fixed;top:0;right:0;left:auto;z-index:60;margin:0;padding:4px 6px;background:rgba(0,0,0,.92);border-bottom:1px solid var(--mg-dim);opacity:.14;transition:opacity .15s}',
+    '#magi-dash.max.bleed .mg-panel>.mg-bar:hover,#magi-dash.max.bleed .mg-panel>.mg-bar:focus-within{opacity:1}',
+    '#magi-dash.max.bleed .mg-panel>.mg-form{position:fixed;left:0;right:0;bottom:0;z-index:60;margin:0;padding:6px 8px;background:rgba(0,0,0,.92);border-top:1px solid var(--mg-dim);opacity:.14;transition:opacity .15s}',
+    '#magi-dash.max.bleed .mg-panel>.mg-form:hover,#magi-dash.max.bleed .mg-panel>.mg-form:focus-within{opacity:1}',
     '#magi-dash.max.compact .mg-panel{padding:6px 8px!important}',
     '#magi-dash.max.compact .mg-bar{gap:4px;margin:0 0 4px}',
     '#magi-dash.max.compact .mg-bar .mg-btn{padding:3px 8px;font-size:.66rem;letter-spacing:.1em;border-width:1px}',
@@ -717,13 +735,30 @@
   var finalBox = el('div', 'mg-final');
   panel.appendChild(finalLbl);
   panel.appendChild(finalBox);
+  var FINAL_LBL = 'FINAL ANSWER \u00b7 MELCHIOR \u2192 BALTHASAR \u2192 CASPER';
   function showFinal(text) {
     var on = !!text;
+    finalLbl.textContent = FINAL_LBL;
+    finalLbl.classList.remove('mg-all'); finalBox.classList.remove('mg-all');
     finalBox.textContent = text || '';
     finalLbl.style.display = on ? 'block' : 'none';
     finalBox.style.display = on ? 'block' : 'none';
   }
   showFinal('');
+  // verdict / discuss runs: in the side layout (a small window) every node's answer is listed in the right-hand column, so you do not have to hover each screen
+  function showAnswers(d) {
+    var order = { melchior: 1, balthasar: 2, caspar: 3 };
+    var parts = (d.results || []).slice().sort(function (a, b) { return (order[a.id] || 9) - (order[b.id] || 9); }).map(function (r) {
+      var head = (DISPLAY[r.id] || String(r.id).toUpperCase()) + (r.ok ? (r.verdict && r.verdict !== 'OPEN' ? ' \u00b7 ' + r.verdict : '') : ' \u00b7 NO RESPONSE');
+      return head + '\n' + (r.ok ? logOf(r) : (r.error || 'Node did not respond.'));
+    });
+    if (!parts.length) return;
+    finalBox.textContent = parts.join('\n\n');
+    finalLbl.textContent = 'ANSWERS \u00b7 EACH NODE';
+    finalLbl.classList.add('mg-all'); finalBox.classList.add('mg-all');
+    finalLbl.style.display = 'block';
+    finalBox.style.display = 'block';
+  }
 
   // bottom row: question: [ input ] EXECUTE, then the decree box
   var form = el('div', 'mg-form');
@@ -1025,15 +1060,28 @@
   // ===== EXPAND: a layer over the whole browser window. The board (2:1) is sized so the three node screens fit the window height;
   // the buttons and the question row stay at normal, readable size, and the layer scrolls if the window is really tiny =====
   var BLEED_BELOW = 240; // if the board would be shorter than this (px), it fills the whole window instead and the controls move below it
+  var SIDE_MIN = 300; // narrowest the right-hand column (buttons, question, answer) may get in the side layout
   var MAX_RATIO = 2; // board width / height. 2 = the original MAGI shape (never squashed). Raise it to let the board stretch wider in a short window
   var MIN_BOARD = 360; // narrowest the board may get (px); below this the layer scrolls instead of shrinking the board further
   function fit() {
-    if (!root.classList.contains('max')) { root.classList.remove('compact'); root.classList.remove('bleed'); panel.style.width = ''; panel.style.zoom = ''; panel.style.minHeight = ''; panel.style.overflow = ''; nodesWrap.style.width = ''; nodesWrap.style.height = ''; nodesWrap.style.aspectRatio = ''; nodesWrap.style.margin = ''; return; }
+    if (!root.classList.contains('max')) { root.classList.remove('compact'); root.classList.remove('bleed'); root.classList.remove('side'); panel.style.removeProperty('--mg-bw'); panel.style.width = ''; panel.style.zoom = ''; panel.style.minHeight = ''; panel.style.overflow = ''; nodesWrap.style.width = ''; nodesWrap.style.height = ''; nodesWrap.style.aspectRatio = ''; nodesWrap.style.margin = ''; return; }
     var pad = 4;
     panel.style.zoom = '';
     panel.style.minHeight = '';
     panel.style.overflow = 'visible';
-    root.classList.remove('bleed');
+    root.classList.remove('bleed'); root.classList.remove('side');
+    panel.style.removeProperty('--mg-bw');
+    if (window.innerHeight < 520 && window.innerWidth >= 760) {   // short, wide window: board left, controls and answers in a column on the right
+      root.classList.add('side'); root.classList.remove('compact');
+      var sbw = Math.floor(Math.max(MIN_BOARD, Math.min(window.innerWidth - 12 - SIDE_MIN, (window.innerHeight - 12) * MAX_RATIO)));
+      panel.style.width = window.innerWidth + 'px';
+      panel.style.setProperty('--mg-bw', sbw + 'px');
+      nodesWrap.style.aspectRatio = 'auto';
+      nodesWrap.style.width = sbw + 'px';
+      nodesWrap.style.height = Math.floor(sbw / MAX_RATIO) + 'px';
+      nodesWrap.style.margin = '0';
+      return;
+    }
     root.classList.toggle('compact', window.innerHeight < 640);   // a short window: tighter buttons and spacing
     panel.style.width = Math.max(320, window.innerWidth - pad * 2) + 'px';
     var cs = getComputedStyle(panel), inner = panel.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
@@ -1366,6 +1414,7 @@
       setPips(r.results);
       setResolution(r);
       showFinal(r.mode === 'link' ? (r.final || '') : '');
+      if (r.mode !== 'link' && r.results) showAnswers(r);
       setHist(false);
     }).catch(function (e) { resSub.textContent = e.message; });
   }
@@ -1419,7 +1468,7 @@
           stopFlicker();
           setPips(d.results);
           setResolution(d);
-          if (d.mode === 'link') showFinal(d.final || 'No final answer was produced.');
+          if (d.mode === 'link') showFinal(d.final || 'No final answer was produced.'); else showAnswers(d);
           ding(d.decision);
           resolve();
         }, list.length * GAP + 300);
