@@ -7,20 +7,26 @@
 //      * CHAIN ENDS WITH (link mode only): VERDICT (the last link rules APPROVED / DENIED) or DISCUSSION (no yes or no),
 //      * 3-ROUND MODE (optional, off by default): round 2 = the convincing round, round 3 = the final ruling,
 //        3-ROUND MODE and CONVINCING ROUND are hidden in LINK mode, because the chain has no rounds.
+//      * SYNTHESIZER (on by default): a fourth model reads all three answers and writes ONE balanced final answer.
+//        It never votes and never changes the decision or the decree. It has its own ON / OFF switch, its own
+//        personality box (CONTROL) and its own provider / model (LINKS). It costs one extra call per run.
 //      * STANDING ORDERS that every node must follow, a personality box per node, MUTE per node, and CREATIVITY.
 //    The DECREE box next to EXECUTE lets you force APPROVED or DENIED for one run, whatever the nodes say.
 //    The decree is shown in VERDICT mode, and in LINK mode when the chain ends with a verdict.
-//  - The LINKS button opens the provider / model switches for each node.
+//  - The LINKS button opens the provider / model switches for each node and for the synthesizer.
 //  - The HISTORY button lists the last 50 runs (saved by the server). Click one to put it back on the board.
-//  - The COPY button copies the last ruling and every node's answer to the clipboard.
+//  - The COPY button copies the last ruling, the balanced answer and every node's answer to the clipboard.
 //  - Hover a node screen to read its answer; with more than one round you see every round it spoke.
 //    In LINK mode each screen shows its link (DRAFT, REVIEW, FINAL) and the full chain answer appears under the board.
+//    The SYNTHESIZER strip and its balanced answer appear under the board in every mode.
 //  - Sound (Web Audio, nothing to download):
 //      * an eerie ambient drone plays while the console is idle (starts on your first tap / click, because browsers block audio before that),
 //      * a mechanical machine-room drone with relay clicks and servo whines while the nodes think,
-//      * a deep slam with a hall tail on the verdict.
+//      * a deep slam with a hall tail on the verdict, then a three-tones-into-one chime when the synthesizer finishes.
 //    The SOUND button mutes everything (remembered on this device).
 //  - EXPAND covers the whole browser window (a fixed full-viewport layer). It never asks for real screen fullscreen, so side-by-side windows stay visible.
+//    On a phone (touch device) held sideways, EXPAND ALWAYS uses the SIDE layout: board on the left,
+//    buttons + question + synthesized answer + every node's answer in a column on the right. Held upright, a hint asks you to turn the phone.
 // Uses textContent for everything that comes from the server, so an AI answer can never inject HTML.
 // Colours are CSS variables on #magi-dash (--mg-or, --mg-gn, --mg-no, ...).
 (function () {
@@ -38,20 +44,30 @@
       .then(function (r) { return r.json().catch(function () { return {}; }).then(function (d) { if (!r.ok) throw new Error(d.error || 'Request failed'); return d; }); });
   }
 
+  // a phone or tablet (touch device): EXPAND always uses the side layout here
+  var IS_MOBILE = (function () {
+    try {
+      if (/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)) return true;
+      return !!(window.matchMedia && matchMedia('(pointer:coarse)').matches && navigator.maxTouchPoints > 0 && Math.min(screen.width, screen.height) < 900);
+    } catch (e) { return false; }
+  })();
+
   var DISPLAY = { melchior: 'MELCHIOR\u20221', balthasar: 'BALTHASAR\u20222', caspar: 'CASPER\u20223' };
   var KATA = { melchior: '\u30e1\u30eb\u30ad\u30aa\u30fc\u30eb', balthasar: '\u30d0\u30eb\u30bf\u30b6\u30fc\u30eb', caspar: '\u30ab\u30b9\u30d1\u30fc' };
   var ORDER = { caspar: 1, balthasar: 2, melchior: 3 };
   var KANJI = { APPROVED: '\u627f\u8a8d', DENIED: '\u5426\u6c7a', UNCLEAR: '\u4e0d\u660e', 'NO CONSENSUS': '\u6c7a\u8b70\u4e0d\u80fd', OPEN: '\u898b\u89e3', DISCUSSED: '\u5354\u8b70', LINKED: '\u9023\u643a', 'NO ANSWER': '\u7121\u56de\u7b54' };
   var K_WAIT = '\u5be9\u8b70\u4e2d', K_IDLE = '\u5f85\u6a5f', K_OFF = '\u672a\u63a5\u7d9a', K_NONE = '\u5fdc\u7b54\u306a\u3057';
   var K_Q = '\u8cea\u554f', K_A = '\u89e3\u6c7a';
+  var K_SYN = '\u7d71\u5408';   // "integration" - the synthesizer
   // link mode: the kanji and name for each link in the chain (draft, review, final)
   var CHAIN_KANJI = ['\u8349\u6848', '\u518d\u8003', '\u7d50\u8ad6'];
   var CHAIN_NAME = ['DRAFT', 'REVIEW', 'FINAL'];
   var CHAIN_KIND = ['draft', 'review', 'final'];
 
   // the admin's settings (the server is the source of truth; this is the copy the screen uses)
-  var cfg = { mode: 'verdict', linkOut: 'verdict', rounds: 1, convince: true, temperature: 0.4, directive: '' };
+  var cfg = { mode: 'verdict', linkOut: 'verdict', rounds: 1, convince: true, synth: true, synthPersona: '', temperature: 0.4, directive: '' };
   var lastNodes = [], pCols = {};
+  var synthInfo = null;   // the synthesizer's provider / model / personality, as the server reports it
   var lastMode = 'verdict';
   // does a run with these settings end in an APPROVED / DENIED decision (so the decree makes sense)?
   var hasVotes = function () { return cfg.mode === 'verdict' || (cfg.mode === 'link' && cfg.linkOut === 'verdict'); };
@@ -106,6 +122,10 @@
     '.mg-panel>.mg-sweep{position:absolute;z-index:0}',
 
     '.mg-bar{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin:0 0 10px}',
+
+    // phone held upright in EXPAND: a hint to turn it sideways (hidden everywhere else)
+    '.mg-rot{display:none;margin:0 0 6px;padding:5px 8px;border:1px dashed var(--mg-or);font-size:.65rem;letter-spacing:.14em;text-align:center;color:var(--mg-hi)}',
+    '#magi-dash.max.pm .mg-rot{display:block}',
 
     // the MAGI board: the grid from the reference stylesheet (2:1, sized in cqw / cqh so it scales as one piece)
     '.mg-magi{display:grid;width:100%;margin:0;aspect-ratio:2/1;container-type:size;border:2px solid var(--mg-or);grid-template-columns:[left-header-start] 20px [casper-start status] 2fr [left-header-end balthasar-start casper-balthasar-connection] 0.5fr [casper-end title casper-melchior-connection] 1fr [balthasar-melchior-connection melchior-start] 0.5fr [right-header-start balthasar-end response] 2fr [melchior-end] 20px [right-header-end];grid-template-rows:20px [header balthasar-start] 2fr [status response] 2fr [casper-start melchior-start casper-balthasar-connection balthasar-melchior-connection] 1fr [balthasar-end title casper-melchior-connection] 3fr [casper-end melchior-end] 20px}',
@@ -187,7 +207,14 @@
     '.mg-pips i{width:11px;height:11px;border:2px solid var(--mg-gn);transform:rotate(45deg)}',
     '.mg-pips i.ap{background:var(--mg-gn)}.mg-pips i.dn{background:var(--mg-no);border-color:var(--mg-no)}.mg-pips i.off{border-color:var(--mg-dim)}',
 
-    // the final answer of a link-mode run (shown under the board, hidden until there is one)
+    // the answers under the board: the SYNTHESIZER strip + balanced answer, then (link mode / small window) the nodes' own answers
+    '.mg-ans{display:block}',
+    '.mg-syn{display:flex;align-items:center;justify-content:space-between;gap:6px 12px;flex-wrap:wrap;margin:14px 0 0;padding:6px 10px;border:1px solid var(--mg-bl);color:var(--mg-bl);font:800 .7rem/1.3 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.14em}',
+    '.mg-syn b{font:inherit;letter-spacing:.08em;text-transform:none;word-break:break-word;text-align:right}',
+    '.mg-syn.busy b{animation:mgBlink .7s steps(2) infinite}',
+    '.mg-syn.ok{border-color:var(--mg-gn);color:var(--mg-gn)}',
+    '.mg-syn.bad{border-color:var(--mg-no);color:#ff6a4d}',
+    '.mg-syn-box{display:none;margin:6px 0 0;padding:10px 12px;background:#000;border:1px solid var(--mg-bl);color:#bfe9ff;font:500 14px/1.45 ui-monospace,Menlo,Consolas,monospace;text-transform:none;white-space:pre-wrap;word-break:break-word;max-height:24vh;overflow:auto;animation:mgFade .35s ease-out both}',
     '.mg-final-lbl{display:none;margin:14px 0 0;font-size:.72rem;letter-spacing:.2em;color:var(--mg-hi)}',
     '.mg-final{display:none;margin:6px 0 0;padding:10px 12px;background:#000;border:1px solid var(--mg-gn);color:var(--mg-hi);font:500 14px/1.45 ui-monospace,Menlo,Consolas,monospace;text-transform:none;white-space:pre-wrap;word-break:break-word;max-height:18vh;overflow:auto}',
 
@@ -208,6 +235,8 @@
     '.mg-pcol{display:flex;flex-direction:column;gap:6px;min-width:0;padding:8px;border:1px solid var(--mg-dim);background:#050200}',
     '.mg-pcol textarea{min-height:150px}',
     '.mg-pcol .mg-acts{display:flex}',
+    '.mg-pcol.syn{border-color:var(--mg-bl)}',
+    '.mg-pcol.syn textarea{min-height:100px}',
     '.mg-dec{margin-left:auto;min-height:0;padding:5px 8px;color:var(--mg-or);background:#000;border:1px solid var(--mg-or);font:700 .75rem/1.2 inherit;letter-spacing:.08em;text-transform:uppercase}',
     '.mg-dec option{background:#000;color:var(--mg-hi)}',
 
@@ -238,8 +267,8 @@
     '#magi-dash.max .mg-magi{width:1500px;max-width:100%;margin:0 auto}',
     // COMPACT: a short window (a quarter of the screen). Smaller buttons and spacing so the board gets most of the height.
     '#magi-dash:not(.side) .mg-all{display:none!important}',
-    // SIDE: a short, wide window (a quarter of the screen). Board on the left; buttons, question and the full answer in a column on the right.
-    '#magi-dash.max.side.on .mg-panel{display:grid!important;grid-template-columns:var(--mg-bw) minmax(0,1fr);grid-template-rows:auto auto auto auto minmax(0,1fr);column-gap:8px;height:100vh;height:100dvh;padding:6px!important;overflow:hidden!important;border:0!important}',
+    // SIDE: a short, wide window, or ANY phone held sideways. Board on the left; buttons, question, the balanced answer and every node answer in a column on the right.
+    '#magi-dash.max.side.on .mg-panel{display:grid!important;grid-template-columns:var(--mg-bw) minmax(0,1fr);grid-template-rows:auto auto auto minmax(0,1fr);column-gap:8px;height:100vh;height:100dvh;padding:6px!important;overflow:hidden!important;border:0!important}',
     '#magi-dash.max.side .mg-panel>.mg-magi{grid-column:1;grid-row:1/-1;align-self:center;margin:0!important}',
     '#magi-dash.max.side .mg-panel>.mg-bar{grid-column:2;grid-row:1;justify-content:flex-start;gap:4px;margin:0 0 6px}',
     '#magi-dash.max.side .mg-panel>.mg-bar .mg-btn{padding:3px 7px;font-size:.62rem;letter-spacing:.08em;border-width:1px}',
@@ -250,8 +279,11 @@
     '#magi-dash.max.side .mg-form .mg-chips{position:static!important;grid-column:auto;flex:1 1 auto;margin:0;padding:0}',
     '#magi-dash.max.side .mg-form .mg-dec{margin:0;width:100%;font-size:.68rem}',
     '#magi-dash.max.side .mg-panel>.mg-pips{grid-column:2;grid-row:3;margin:6px 0 0}',
-    '#magi-dash.max.side .mg-panel>.mg-final-lbl{grid-column:2;grid-row:4;margin:6px 0 0}',
-    '#magi-dash.max.side .mg-panel>.mg-final{grid-column:2;grid-row:5;margin:4px 0 0;max-height:none;min-height:0;overflow:auto;font-size:13px}',
+    '#magi-dash.max.side .mg-panel>.mg-ans{grid-column:2;grid-row:4;margin:4px 0 0;min-height:0;overflow:auto;overscroll-behavior:contain}',
+    '#magi-dash.max.side .mg-ans .mg-syn{margin:2px 0 0;font-size:.6rem}',
+    '#magi-dash.max.side .mg-ans .mg-syn-box{max-height:none;font-size:13px}',
+    '#magi-dash.max.side .mg-ans .mg-final-lbl{margin:6px 0 0}',
+    '#magi-dash.max.side .mg-ans .mg-final{margin:4px 0 0;max-height:none;font-size:13px}',
     // BLEED: a tiny window. The board takes the whole window (original shape, scaled evenly).
     // The buttons (top right) and the question row (bottom) float over it, faint until you point at them or click into the question box.
     '#magi-dash.max.bleed.on .mg-panel{display:flex!important;flex-direction:column;padding:0!important;border:0!important;width:100%!important}',
@@ -668,6 +700,25 @@
     o.connect(g); g.connect(bus); g.connect(sg); sg.connect(fx);
     o.start(t); o.stop(t + 1.3);
   }
+  // the synthesizer has finished: three tones (one for each node) slide together into a single note, then one clean chime
+  function mergePing() {
+    if (!soundOn() || !audio()) return;
+    var t = ctx.currentTime;
+    duckAmbient(t, 0.04, 1.2, 1.6);
+    [[784, 0], [622, 0.06], [988, 0.12]].forEach(function (p) {
+      var o = ctx.createOscillator(), g = ctx.createGain(), sg = ctx.createGain(), at = t + p[1];
+      o.type = 'sine';
+      o.frequency.setValueAtTime(p[0], at);
+      o.frequency.exponentialRampToValueAtTime(740, at + 0.5);
+      g.gain.setValueAtTime(0.0001, at);
+      g.gain.linearRampToValueAtTime(0.12, at + 0.05);
+      g.gain.exponentialRampToValueAtTime(0.0001, at + 0.9);
+      sg.gain.value = 0.4;
+      o.connect(g); g.connect(bus); g.connect(sg); sg.connect(fx);
+      o.start(at); o.stop(at + 0.95);
+    });
+    dingTone(t + 0.55, 1480, 0.1);
+  }
 
   // ===== NERV mode (remembered on this device; on unless it was switched off) =====
   var PREF = 'magi_nerv';
@@ -698,6 +749,8 @@
   var offBtn = el('button', 'mg-btn', 'NERV: ON');
   var lastRun = null;   // the last run on the board (a fresh run or one replayed from the history), used by COPY
   [ctrlBtn, linksBtn, histBtn, copyBtn, sndBtn, maxBtn, offBtn].forEach(function (b) { b.type = 'button'; bar.appendChild(b); });
+  var rotHint = el('div', 'mg-rot', 'TURN YOUR PHONE SIDEWAYS FOR THE SIDE LAYOUT');
+  panel.appendChild(rotHint);
   panel.appendChild(bar);
 
   // the board: header rules, code block, response box, title and the three screens all sit in one grid
@@ -730,11 +783,48 @@
   var pips = el('div', 'mg-pips');
   panel.appendChild(pips);
 
-  // the full answer of a link-mode run (hidden in the other modes)
+  // the answers area under the board: [SYNTHESIZER strip + balanced answer] then [the full answer of a link-mode run / every node's answer]
+  var ansWrap = el('div', 'mg-ans');
+  panel.appendChild(ansWrap);
+
+  // ----- the SYNTHESIZER: a fourth model that reads the three answers and writes one balanced final answer (no vote) -----
+  var synWrap = el('div', 'mg-synwrap');
+  var synStrip = el('div', 'mg-syn');
+  synStrip.appendChild(el('span', null, 'SYNTHESIZER \u00b7 ' + K_SYN + ' \u00b7 BALANCED ANSWER'));
+  var synState = el('b', null, 'STANDBY');
+  synStrip.appendChild(synState);
+  var synBox = el('div', 'mg-syn-box');
+  synWrap.appendChild(synStrip);
+  synWrap.appendChild(synBox);
+  ansWrap.appendChild(synWrap);
+
+  function synthIdleLabel() {
+    if (!synthInfo) return 'STANDBY';
+    if (!synthInfo.enabled) return 'NO KEY \u00b7 ' + synthInfo.provider;
+    return 'STANDBY \u00b7 ' + synthInfo.provider + ' \u00b7 ' + (synthInfo.model || '');
+  }
+  // state: idle | wait | done | fail
+  function setSynth(state, s) {
+    synStrip.className = 'mg-syn' + (state === 'wait' ? ' busy' : state === 'done' ? ' ok' : state === 'fail' ? ' bad' : '');
+    var label = synthIdleLabel();
+    if (state === 'wait') label = 'AWAITING THE NODES...';
+    else if (state === 'done' && s) label = 'MERGED \u00b7 ' + ((s.ms || 0) / 1000).toFixed(1) + 'S \u00b7 ' + (s.provider || '') + ' \u00b7 ' + (s.model || '');
+    else if (state === 'fail') label = 'FAILED \u00b7 ' + ((s && s.error) || 'no answer');
+    synState.textContent = label;
+    var show = state === 'done' && s && s.text;
+    synBox.textContent = show ? s.text : '';
+    synBox.style.display = show ? 'block' : 'none';
+  }
+  // show the synthesizer part of a finished run (or of a replayed one)
+  function showSynth(d) {
+    if (d && d.synth) setSynth(d.synth.ok ? 'done' : 'fail', d.synth);
+    else setSynth('idle');
+  }
+
   var finalLbl = el('div', 'mg-final-lbl', 'FINAL ANSWER \u00b7 MELCHIOR \u2192 BALTHASAR \u2192 CASPER');
   var finalBox = el('div', 'mg-final');
-  panel.appendChild(finalLbl);
-  panel.appendChild(finalBox);
+  ansWrap.appendChild(finalLbl);
+  ansWrap.appendChild(finalBox);
   var FINAL_LBL = 'FINAL ANSWER \u00b7 MELCHIOR \u2192 BALTHASAR \u2192 CASPER';
   function showFinal(text) {
     var on = !!text;
@@ -745,7 +835,7 @@
     finalBox.style.display = on ? 'block' : 'none';
   }
   showFinal('');
-  // verdict / discuss runs: in the side layout (a small window) every node's answer is listed in the right-hand column, so you do not have to hover each screen
+  // verdict / discuss runs: in the side layout (a small window or a phone) every node's answer is listed in the right-hand column, so you do not have to hover each screen
   function showAnswers(d) {
     var order = { melchior: 1, balthasar: 2, caspar: 3 };
     var parts = (d.results || []).slice().sort(function (a, b) { return (order[a.id] || 9) - (order[b.id] || 9); }).map(function (r) {
@@ -861,6 +951,10 @@
   linkNote.style.display = 'none';
   ctrlBody.appendChild(linkNote);
 
+  // the synthesizer switch: ON = a fourth model merges the three answers into one balanced answer
+  var segSynth = seg('SYNTHESIZER', [['1', 'ON \u00b7 ONE BALANCED ANSWER'], ['0', 'OFF \u00b7 NODES ONLY']], function (v) { quick({ synth: v === '1' }); });
+  ctrlBody.appendChild(el('div', 'mg-note', 'SYNTHESIZER ON: after the nodes finish, a fourth model reads every answer and writes ONE balanced final answer: where they agree, where they disagree, the strongest point on each side, and a fair conclusion. It does not vote and never changes the decision or the decree. It costs one extra AI call per run. It works in every mode. Its provider / model is set under LINKS and its personality below. This switch saves at once.'));
+
   var tRow = el('div', 'mg-row'), tLab = el('label', null, 'CREATIVITY 0.4'), tr = el('input');
   tr.type = 'range'; tr.min = '0'; tr.max = '1.5'; tr.step = '0.1'; tr.value = '0.4';
   tr.setAttribute('aria-label', 'Creativity of the nodes');
@@ -880,7 +974,21 @@
 
   var pGrid = el('div', 'mg-pgrid');
   ctrlBody.appendChild(pGrid);
-  ctrlBody.appendChild(el('div', 'mg-note', 'Each box is that node\u2019s personality. Rewrite it however you like, then press SAVE. MUTE silences a node (it stops voting, or drops out of the chain) and saves at once. DEFAULT puts the built-in personality back in the box.'));
+
+  // the synthesizer's personality box
+  var synCol = el('div', 'mg-pcol syn'), synTa = el('textarea'), synDef = '';
+  synTa.maxLength = 1500;
+  synTa.setAttribute('aria-label', 'Personality for the synthesizer');
+  var synActs = el('div', 'mg-acts'), synDefBtn = el('button', 'mg-btn', 'DEFAULT');
+  synDefBtn.type = 'button';
+  synActs.appendChild(synDefBtn);
+  synCol.appendChild(el('label', null, 'SYNTHESIZER \u00b7 PERSONALITY'));
+  synCol.appendChild(synTa);
+  synCol.appendChild(synActs);
+  ctrlBody.appendChild(synCol);
+  synDefBtn.addEventListener('click', function () { synTa.value = synDef; });
+
+  ctrlBody.appendChild(el('div', 'mg-note', 'Each box is that node\u2019s personality (the last one is the synthesizer\u2019s). Rewrite it however you like, then press SAVE. MUTE silences a node (it stops voting, or drops out of the chain) and saves at once. DEFAULT puts the built-in personality back in the box.'));
 
   var cAct = el('div', 'mg-acts');
   var bSaveCtrl = el('button', 'mg-btn solid', 'SAVE ORDERS + PERSONALITIES');
@@ -920,21 +1028,27 @@
       pc.mute.classList.toggle('solid', pc.muted);
       if (text) pc.ta.value = n.persona || pc.def;
     });
+    if (synthInfo) {
+      synDef = synthInfo.default_persona || '';
+      if (text) synTa.value = synthInfo.persona || synDef;
+    }
     if (text) ordTa.value = cfg.directive || '';
   }
-  // reflect the mode, link ending, rounds and creativity everywhere they show
+  // reflect the mode, link ending, rounds, synthesizer and creativity everywhere they show
   function syncMode() {
     var isLink = cfg.mode === 'link';
     segMode.mark(cfg.mode);
     segOut.mark(cfg.linkOut);
     segRounds.mark(cfg.rounds > 1 ? 3 : 1);
     segConv.mark(cfg.convince ? '1' : '0');
+    segSynth.mark(cfg.synth ? '1' : '0');
     // the chain ending only matters in link mode; the round controls mean nothing there
     segOut.row.style.display = isLink ? '' : 'none';
     segRounds.row.style.display = isLink ? 'none' : '';
     segConv.row.style.display = isLink ? 'none' : '';
     roundNote.style.display = isLink ? 'none' : '';
     linkNote.style.display = isLink ? '' : 'none';
+    synWrap.style.display = cfg.synth ? '' : 'none';
     tr.value = String(cfg.temperature);
     tLab.textContent = 'CREATIVITY ' + Number(cfg.temperature).toFixed(1);
     exModeEl.textContent = 'EX_MODE:' + (isLink ? 'LINK/' + (cfg.linkOut === 'verdict' ? 'VERDICT' : 'DISCUSS') : (cfg.mode === 'discuss' ? 'DISCUSS' : 'VERDICT') + '/R' + cfg.rounds);
@@ -944,6 +1058,7 @@
   }
   function takeSettings(d, text) {
     if (d.settings) cfg = d.settings;
+    if (d.synth) { synthInfo = d.synth; applySynthLink(); }
     if (d.nodes) {
       lastNodes = d.nodes;
       d.nodes.forEach(function (n) { if (cards[n.id]) applyNode(cards[n.id], n); });
@@ -951,6 +1066,7 @@
     }
     syncMode();
     fillCtrl(lastNodes, text);
+    if (!hasResult) setSynth('idle');
   }
   function saveSettings(body, msg, text) {
     ctrlNote('SAVING...');
@@ -966,7 +1082,8 @@
       var pc = pCols[id], v = pc.ta.value.trim();
       nodes[id] = { persona: v === pc.def.trim() ? '' : v };   // the built-in text is saved as "no change"
     });
-    saveSettings({ directive: ordTa.value, nodes: nodes }, 'ORDERS AND PERSONALITIES SAVED', true);
+    var sv = synTa.value.trim();
+    saveSettings({ directive: ordTa.value, nodes: nodes, synthPersona: sv === synDef.trim() ? '' : sv }, 'ORDERS AND PERSONALITIES SAVED', true);
   });
   bResetCtrl.addEventListener('click', function () { saveSettings({ reset: true }, 'EVERYTHING BACK TO DEFAULT', true); });
   syncMode();
@@ -1064,16 +1181,21 @@
   var MAX_RATIO = 2; // board width / height. 2 = the original MAGI shape (never squashed). Raise it to let the board stretch wider in a short window
   var MIN_BOARD = 360; // narrowest the board may get (px); below this the layer scrolls instead of shrinking the board further
   function fit() {
-    if (!root.classList.contains('max')) { root.classList.remove('compact'); root.classList.remove('bleed'); root.classList.remove('side'); panel.style.removeProperty('--mg-bw'); panel.style.width = ''; panel.style.zoom = ''; panel.style.minHeight = ''; panel.style.overflow = ''; nodesWrap.style.width = ''; nodesWrap.style.height = ''; nodesWrap.style.aspectRatio = ''; nodesWrap.style.margin = ''; return; }
+    if (!root.classList.contains('max')) { root.classList.remove('compact'); root.classList.remove('bleed'); root.classList.remove('side'); root.classList.remove('pm'); panel.style.removeProperty('--mg-bw'); panel.style.width = ''; panel.style.zoom = ''; panel.style.minHeight = ''; panel.style.overflow = ''; nodesWrap.style.width = ''; nodesWrap.style.height = ''; nodesWrap.style.aspectRatio = ''; nodesWrap.style.margin = ''; return; }
     var pad = 4;
+    var landscape = window.innerWidth > window.innerHeight;
     panel.style.zoom = '';
     panel.style.minHeight = '';
     panel.style.overflow = 'visible';
     root.classList.remove('bleed'); root.classList.remove('side');
+    root.classList.toggle('pm', IS_MOBILE && !landscape);   // a phone held upright: show the "turn your phone" hint
     panel.style.removeProperty('--mg-bw');
-    if (window.innerHeight < 520 && window.innerWidth >= 760) {   // short, wide window: board left, controls and answers in a column on the right
+    // the SIDE layout: always on a phone held sideways, and on any short, wide window
+    if ((IS_MOBILE && landscape) || (window.innerHeight < 520 && window.innerWidth >= 760)) {
       root.classList.add('side'); root.classList.remove('compact');
-      var sbw = Math.floor(Math.max(MIN_BOARD, Math.min(window.innerWidth - 12 - SIDE_MIN, (window.innerHeight - 12) * MAX_RATIO)));
+      var sideMin = IS_MOBILE ? Math.min(SIDE_MIN, Math.floor(window.innerWidth * 0.42)) : SIDE_MIN;
+      var minB = IS_MOBILE ? 200 : MIN_BOARD;
+      var sbw = Math.floor(Math.max(minB, Math.min(window.innerWidth - 12 - sideMin, (window.innerHeight - 12) * MAX_RATIO)));
       panel.style.width = window.innerWidth + 'px';
       panel.style.setProperty('--mg-bw', sbw + 'px');
       nodesWrap.style.aspectRatio = 'auto';
@@ -1085,7 +1207,7 @@
     root.classList.toggle('compact', window.innerHeight < 640);   // a short window: tighter buttons and spacing
     panel.style.width = Math.max(320, window.innerWidth - pad * 2) + 'px';
     var cs = getComputedStyle(panel), inner = panel.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
-    var chrome = panel.offsetHeight - nodesWrap.offsetHeight;   // everything in the panel that is not the board (buttons, question row, final answer)
+    var chrome = panel.offsetHeight - nodesWrap.offsetHeight;   // everything in the panel that is not the board (buttons, question row, answers)
     var avail = window.innerHeight - 4 - chrome;                // the board grows until it touches the button row above and the question row below
     if (avail < BLEED_BELOW) {   // too small to fit the board AND the controls: the board takes the whole window
       root.classList.add('bleed');
@@ -1107,16 +1229,18 @@
   }
   if (window.ResizeObserver) {
     var fitRO = new ResizeObserver(function () { if (root.classList.contains('max')) fit(); });
-    [bar, form, finalLbl, finalBox].forEach(function (n) { if (n) fitRO.observe(n); });
+    [bar, form, ansWrap].forEach(function (n) { if (n) fitRO.observe(n); });
   }
   window.addEventListener('resize', fit);
-  window.addEventListener('orientationchange', fit);
+  window.addEventListener('orientationchange', function () { setTimeout(fit, 120); fit(); });
 
   function expand() {
     root.classList.add('max');
     document.body.appendChild(root);
     document.body.style.overflow = 'hidden';
     maxBtn.textContent = 'COLLAPSE';
+    // on a phone, ask for landscape (browsers only allow it in some cases; if refused, the hint is shown instead)
+    if (IS_MOBILE) { try { var lk = screen.orientation && screen.orientation.lock && screen.orientation.lock('landscape'); if (lk && lk.catch) lk.catch(function () { }); } catch (e) { } }
     fit();
   }
   function collapse() {
@@ -1124,6 +1248,7 @@
     root.classList.remove('max');
     document.body.style.overflow = '';
     maxBtn.textContent = 'EXPAND';
+    if (IS_MOBILE) { try { if (screen.orientation && screen.orientation.unlock) screen.orientation.unlock(); } catch (e) { } }
     fit();
     place();
   }
@@ -1161,16 +1286,18 @@
   }
   var defOf = function (id) { for (var i = 0; i < provs.length; i++) if (provs[i].id === id) return provs[i].model || ''; return ''; };
 
-  function fillProviders(c) {
-    c.sel.textContent = '';
+  // fill a provider <select> from the provider list and pick the one a node (or the synthesizer) is on
+  function fillSel(sel, n) {
+    sel.textContent = '';
     provs.forEach(function (p) {
       var o = el('option', null, p.label + (p.ready ? '' : ' \u00b7 NO KEY'));
       o.value = p.id;
-      if (!p.ready && p.id !== c.n.provider_id) o.disabled = true;
-      c.sel.appendChild(o);
+      if (!p.ready && p.id !== n.provider_id) o.disabled = true;
+      sel.appendChild(o);
     });
-    c.sel.value = c.n.provider_id;
+    sel.value = n.provider_id;
   }
+  function fillProviders(c) { fillSel(c.sel, c.n); }
   function note(c, msg, kind) { c.out.textContent = msg || ''; c.out.className = 'mg-out' + (kind ? ' ' + kind : ''); }
 
   function applyNode(c, n) {
@@ -1188,11 +1315,76 @@
     }
   }
 
+  // ----- the synthesizer's own LINKS column (provider + model, SAVE / TEST / DEFAULT) -----
+  var synLink = null;
+  function applySynthLink() {
+    if (!synLink || !synthInfo) return;
+    fillSel(synLink.sel, synthInfo);
+    synLink.model.value = synthInfo.model || '';
+    synLink.model.placeholder = synthInfo.default_model || 'model name';
+  }
+  function buildSynthLink() {
+    if (!synthInfo) return;
+    var lcol = el('div', 'mg-col');
+    lcol.style.order = 9;
+    lcol.style.gridColumn = '1 / -1';   // the synthesizer gets its own full-width row under the three nodes
+    lcol.appendChild(el('div', 'mg-kt', 'SYNTHESIZER \u00b7 ' + K_SYN + ' \u00b7 NO VOTE'));
+    var ctl = el('div', 'mg-ctl');
+    var l1 = el('label', null, 'LINK'), sel = el('select');
+    sel.setAttribute('aria-label', 'AI provider for the synthesizer');
+    var l2 = el('label', null, 'MODEL'), model = el('input');
+    model.type = 'text'; model.maxLength = 120; model.spellcheck = false;
+    model.setAttribute('aria-label', 'Model for the synthesizer');
+    var acts = el('div', 'mg-acts');
+    var bSave = el('button', 'mg-btn solid', 'SAVE LINK'), bTest = el('button', 'mg-btn', 'TEST'), bDef = el('button', 'mg-btn', 'DEFAULT');
+    [bSave, bTest, bDef].forEach(function (b) { b.type = 'button'; acts.appendChild(b); });
+    var out = el('div', 'mg-out');
+    [l1, sel, l2, model, acts, out].forEach(function (x) { ctl.appendChild(x); });
+    lcol.appendChild(ctl);
+    linkBody.appendChild(lcol);
+    synLink = { sel: sel, model: model, out: out };
+    applySynthLink();
+
+    var c = synLink;
+    sel.addEventListener('change', function () { model.value = defOf(sel.value); model.placeholder = defOf(sel.value) || 'model name'; note(c, ''); });
+    var taken = function (r) {
+      synthInfo = r.node;
+      applySynthLink();
+      if (!hasResult) setSynth('idle');
+    };
+    bSave.addEventListener('click', function () {
+      var m = model.value.trim();
+      if (m === defOf(sel.value)) m = '';
+      bSave.disabled = true;
+      note(c, 'SAVING...');
+      api('/api/admin/magi/node', 'POST', { node: 'synth', provider: sel.value, model: m }).then(function (r) {
+        taken(r);
+        note(c, 'LINK SAVED \u00b7 ' + r.node.provider + ' \u00b7 ' + r.node.model, 'ok');
+      }).catch(function (e) { note(c, e.message, 'err'); }).then(function () { bSave.disabled = false; });
+    });
+    bDef.addEventListener('click', function () {
+      bDef.disabled = true;
+      api('/api/admin/magi/node', 'POST', { node: 'synth', reset: true }).then(function (r) {
+        taken(r);
+        note(c, 'BACK TO THE BUILT-IN LINK \u00b7 ' + r.node.provider, 'ok');
+      }).catch(function (e) { note(c, e.message, 'err'); }).then(function () { bDef.disabled = false; });
+    });
+    bTest.addEventListener('click', function () {
+      bTest.disabled = true;
+      note(c, 'TESTING LINK...');
+      api('/api/admin/magi/test', 'POST', { node: 'synth' }).then(function (r) {
+        if (r.ok) note(c, 'LINK OK \u00b7 ' + (r.ms / 1000).toFixed(1) + 'S \u00b7 ' + r.model, 'ok');
+        else note(c, 'LINK FAILED \u00b7 ' + (r.error || 'no answer'), 'err');
+      }).catch(function (e) { note(c, e.message, 'err'); }).then(function () { bTest.disabled = false; });
+    });
+  }
+
   function buildNodes(list) {
     Array.prototype.slice.call(nodesWrap.querySelectorAll('.mg-wm,.mg-conn')).forEach(function (x) { x.remove(); });
     ctlWrap.textContent = '';
     linkBody.textContent = '';
     cards = {};
+    synLink = null;
 
     ['cb', 'cm', 'bm'].forEach(function (k) { nodesWrap.appendChild(el('div', 'mg-conn ' + k)); });
 
@@ -1269,6 +1461,7 @@
         }).catch(function (e) { note(c, e.message, 'err'); }).then(function () { bTest.disabled = false; });
       });
     });
+    buildSynthLink();
     built = true;
   }
 
@@ -1297,12 +1490,14 @@
       provs = d.providers || [];
       var list = d.nodes || [];
       if (d.settings) cfg = d.settings;
+      synthInfo = d.synth || null;
       lastNodes = list;
       if (!built) { buildNodes(list); buildCtrl(list); }
-      else list.forEach(function (n) { if (cards[n.id]) applyNode(cards[n.id], n); });
+      else { list.forEach(function (n) { if (cards[n.id]) applyNode(cards[n.id], n); }); applySynthLink(); }
       fillCtrl(list, true);
       syncMode();
       idleLine(list);
+      if (!hasResult) setSynth('idle');
     }).catch(function (e) {
       resSub.textContent = e.message || 'Could not load MAGI status';
     });
@@ -1415,6 +1610,7 @@
       setResolution(r);
       showFinal(r.mode === 'link' ? (r.final || '') : '');
       if (r.mode !== 'link' && r.results) showAnswers(r);
+      showSynth(r);
       setHist(false);
     }).catch(function (e) { resSub.textContent = e.message; });
   }
@@ -1422,6 +1618,7 @@
     var flash = function (t) { copyBtn.textContent = t; setTimeout(function () { copyBtn.textContent = 'COPY'; }, 1300); };
     if (!lastRun) { flash('NOTHING YET'); return; }
     var t = 'QUESTION: ' + lastRun.question + '\nRESULT: ' + lastRun.decision + '\n\n' +
+      (lastRun.synth && lastRun.synth.ok && lastRun.synth.text ? 'BALANCED ANSWER (SYNTHESIZER):\n' + lastRun.synth.text + '\n\n' : '') +
       (lastRun.mode === 'link' && lastRun.final ? 'FINAL: ' + lastRun.final + '\n\n' : '') +
       (lastRun.results || []).filter(function (r) { return r.ok; }).map(function (r) {
         return (DISPLAY[r.id] || r.name) + (r.verdict && r.verdict !== 'OPEN' ? ' [' + r.verdict + ']' : '') + ':\n' + r.text;
@@ -1442,6 +1639,7 @@
     root.classList.add('busy');
     pips.textContent = '';
     showFinal('');
+    setSynth(cfg.synth ? 'wait' : 'idle');
     res.className = 'mg-res busy';
     resBig.textContent = K_WAIT;
     resBig.className = 'mg-st small';
@@ -1470,12 +1668,16 @@
           setResolution(d);
           if (d.mode === 'link') showFinal(d.final || 'No final answer was produced.'); else showAnswers(d);
           ding(d.decision);
+          // the synthesizer speaks last: its balanced answer appears, then the three-into-one chime
+          showSynth(d);
+          if (d.synth && d.synth.ok) setTimeout(mergePing, 2800);
           resolve();
         }, list.length * GAP + 300);
       });
     }).catch(function (e) {
       stopHum();
       stopFlicker();
+      setSynth('idle');
       res.className = 'mg-res dn';
       resBig.textContent = 'ERROR';
       resBig.className = 'mg-st small';
