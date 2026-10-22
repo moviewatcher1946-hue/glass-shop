@@ -14,7 +14,10 @@
 //               Round 2: the CONVINCING round (each node reads the others and argues to win them over),
 //                        or a plain debate when "convince" is switched off.
 //               Round 3: the FINAL round (each node hears every appeal and gives its closing position).
-//   directive standing orders added to every node's instructions.
+//   synth     SYNTHESIZER (on by default, toggle in CONTROL). After the nodes finish, a fourth model reads every answer
+//             and writes ONE balanced final answer. It works in every mode. It never changes the vote, the decision or the decree.
+//             It has its own provider / model (LINKS) and its own personality (CONTROL). It costs one extra call per run.
+//   directive standing orders added to every node's instructions (and the synthesizer's).
 //   personas  the admin can rewrite any node's personality, or mute a node.
 //   temperature  how creative the nodes are (0 to 1.5).
 //   decree    on any single run the admin can force APPROVED or DENIED whatever the nodes said
@@ -24,13 +27,14 @@
 //
 // Majority rule (verdict mode): two matching verdicts decide. A node that fails, is muted or answers unclearly does not vote.
 // Link mode: nodes run one after another. A muted, unready or failed node is skipped and the chain carries on.
-// Melchior = Google Gemini, Balthasar = Groq, Caspar = OpenRouter (any node can be linked to any provider). Admin only.
+// Melchior = Google Gemini, Balthasar = Groq, Caspar = OpenRouter, Synthesizer = Gemini (any of them can be linked to any provider). Admin only.
 // Keys come from environment variables only.
 // Providers: Gemini, Groq, OpenRouter, NVIDIA (build.nvidia.com, free key) and Cloudflare Workers AI (free daily allowance).
 // Env vars: GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY, NVIDIA_API_KEY, CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID.
 // Optional models: MAGI_GEMINI_MODEL, MAGI_GROQ_MODEL, MAGI_OPENROUTER_MODEL, MAGI_NVIDIA_MODEL, MAGI_CLOUDFLARE_MODEL.
 // Optional: MAGI_THINKING=on keeps Gemini's and OpenRouter's reasoning enabled (the default turns it off for speed).
 // Optional: MAGI_SENTENCES (1 to 60, default 25) sets how long each node's answer is.
+// Optional: MAGI_SYNTH_SENTENCES (1 to 60, default 15) sets how long the synthesizer's answer is.
 // Optional (Groq token control):
 //   MAGI_QWEN_MAX_OUT   output cap for Qwen on Groq (default 7000). Groq counts this against your per-minute budget.
 //   MAGI_OSS_MAX_OUT    output cap for gpt-oss on Groq (default 7000).
@@ -38,6 +42,7 @@
 // Without a database (pool is null) the settings, links and history only last until the server restarts.
 const TIMEOUT = 45000;       // longest wait for a single provider call
 const RUN_BUDGET = 60000;    // longest total time for one whole run; keep below the browser/proxy limit
+const SYNTH_BUDGET = 30000;  // extra time the synthesizer gets after the nodes are done
 const MIN_CALL_MS = 5000;    // never start a call with less time than this
 const ROUND_MIN_MS = 20000;  // do not start another round with less time than this
 const QUESTION_MAX = 4096;
@@ -58,11 +63,15 @@ const NO_THINK = (process.env.MAGI_THINKING || '').trim().toLowerCase() !== 'on'
 let runDeadline = Date.now() + RUN_BUDGET;
 // How long each node's answer may be. Big by default: this is a personal AI.
 const SENTENCES = (() => { const n = parseInt(process.env.MAGI_SENTENCES, 10); return n >= 1 && n <= 60 ? n : 25; })();
+const SYNTH_SENTENCES = (() => { const n = parseInt(process.env.MAGI_SYNTH_SENTENCES, 10); return n >= 1 && n <= 60 ? n : 15; })();
 const TEXT_MAX = 16000;      // longest saved answer per node, in characters
 
 const FORMAT_VERDICT = 'On the first line write exactly APPROVED or DENIED. Then write a long, thorough, in-depth analysis of roughly ' + SENTENCES + ' sentences or more. Cover the key facts, every important factor, risks, trade-offs, counter-arguments, edge cases and the practical consequences, and explain your reasoning step by step before you conclude. Plain text only, no markdown.';
 const FORMAT_DISCUSS = 'Do not answer yes or no, and never use the words APPROVED or DENIED. On the first line write a headline of at most eight words that sums up your position. Then write a long, thorough, in-depth analysis of roughly ' + SENTENCES + ' sentences or more. Cover the key facts, every important factor, risks, trade-offs, counter-arguments, edge cases and the practical consequences. Plain text only, no markdown.';
 const formatOf = (mode) => (mode === 'discuss' ? FORMAT_DISCUSS : FORMAT_VERDICT);
+
+// The synthesizer does not vote. It writes one balanced answer out of what the nodes said.
+const FORMAT_SYNTH = 'Combine the arguments above into ONE balanced final answer. Say where the nodes agree, where they disagree and why, weigh the strongest point on each side, and finish with a clear, fair conclusion. Do not repeat the nodes one by one and do not simply side with one of them. If a decision is on record, keep it and explain why it stands, and give the strongest dissent its due. If an argument is wrong, say so. Do not start with APPROVED or DENIED. Write roughly ' + SYNTH_SENTENCES + ' sentences. Plain text only, no markdown.';
 
 // What each node is asked to do in rounds 2 and 3.
 const INSTR = {
@@ -140,6 +149,15 @@ const NODES = [
 ];
 const NODE_BY_ID = Object.fromEntries(NODES.map((n) => [n.id, n]));
 
+// The synthesizer is not one of the three voting nodes. It reads what they said and writes the balanced final answer.
+// It has a link (provider + model) like a node, but no vote, no mute (use the toggle) and no place in the chain.
+const SYNTH = {
+  id: 'synth', name: 'SYNTHESIZER', role: 'ARBITER', home: 'gemini',
+  persona: 'You are the SYNTHESIZER, the balanced arbiter of the MAGI. You do not vote. You read what the scientist, the protector and the intuitive node each argued, and you merge their arguments into one fair, accurate answer. You respect the strongest point of each node, you are honest about real disagreement, and you never invent facts that none of them gave.',
+};
+// every node that can have its own provider / model link
+const LINKABLE = { ...NODE_BY_ID, [SYNTH.id]: SYNTH };
+
 // node id -> { provider, model } saved by the admin. Empty model means "the provider's default".
 const links = new Map();
 
@@ -149,13 +167,15 @@ const fresh = () => ({
   linkOut: 'verdict',   // link mode ends with: 'verdict' or 'discuss'
   rounds: 1,
   convince: true,
+  synth: true,          // the synthesizer: combine the nodes' answers into one balanced answer
+  synthPersona: '',     // empty = the built-in personality
   temperature: 0.4,
   directive: '',
   nodes: Object.fromEntries(NODES.map((n) => [n.id, { persona: '', muted: false }])),
 });
 let settings = fresh();
 
-const publicSettings = () => ({ mode: settings.mode, linkOut: settings.linkOut, rounds: settings.rounds, convince: settings.convince, temperature: settings.temperature, directive: settings.directive });
+const publicSettings = () => ({ mode: settings.mode, linkOut: settings.linkOut, rounds: settings.rounds, convince: settings.convince, synth: settings.synth, synthPersona: settings.synthPersona, temperature: settings.temperature, directive: settings.directive });
 const snapshot = () => JSON.parse(JSON.stringify(settings));
 
 // Take any of the fields from an object (a request body or a saved copy), checking each one.
@@ -165,6 +185,8 @@ function applySettings(b) {
   if (b.linkOut === 'verdict' || b.linkOut === 'discuss') settings.linkOut = b.linkOut;
   if (b.rounds != null) { const r = parseInt(b.rounds, 10); if (r >= 1 && r <= 3) settings.rounds = r; }
   if (b.convince != null) settings.convince = !!b.convince;
+  if (b.synth != null) settings.synth = !!b.synth;
+  if (b.synthPersona != null) settings.synthPersona = String(b.synthPersona).trim().slice(0, 1500);
   if (b.temperature != null) { const t = Number(b.temperature); if (Number.isFinite(t)) settings.temperature = Math.min(1.5, Math.max(0, Math.round(t * 10) / 10)); }
   if (b.directive != null) settings.directive = String(b.directive).trim().slice(0, 1200);
   if (b.nodes && typeof b.nodes === 'object') {
@@ -181,7 +203,7 @@ function applySettings(b) {
 const hintOf = (p) => p.keys[0] + (p.need ? ' and ' + p.need : '');
 const keyOf = (p) => { if (p.need && !(process.env[p.need] || '').trim()) return ''; for (const k of p.keys) { const v = (process.env[k] || '').trim(); if (v) return v; } return ''; };
 
-// The provider and model a node is actually using right now.
+// The provider and model a node (or the synthesizer) is actually using right now.
 function effective(n) {
   const link = links.get(n.id);
   const pid = link && PROVIDERS[link.provider] ? link.provider : n.home;
@@ -479,6 +501,46 @@ function tally(results, cfg, override) {
   return { decision: forced || vote, vote, overridden: !!forced, approved, denied, responded: ok.length, mode: 'verdict', rounds: cfg.rounds };
 }
 
+// The SYNTHESIZER: reads every answer that came back and writes one balanced final answer.
+// It never changes the vote or the decree; it only explains and balances what the nodes said.
+// It gets its own short time budget, so a slow run of the nodes cannot starve it.
+async function synthesize(question, results, t, cfg) {
+  const v = effective(SYNTH), started = Date.now();
+  const meta = { provider: v.label, model: v.model };
+  const ok = results.filter((r) => r.ok);
+  if (!ok.length) return { ok: false, ...meta, ms: 0, error: 'No node answered, so there is nothing to combine' };
+  if (!v.key) return { ok: false, ...meta, ms: 0, error: 'Not set up: add ' + hintOf(v.provider) + ' on the server' };
+
+  const out = outModeOf(cfg);
+  const said = (r) => (out === 'verdict' ? r.verdict + '. ' : '') + r.text;
+  const label = (r) => r.name + ' (' + r.role + (cfg.mode === 'link' ? ', link ' + r.round + ' of the chain: ' + r.kind : '') + ')';
+  let ruling = '';
+  if (out === 'verdict') {
+    if (t.decision === 'APPROVED' || t.decision === 'DENIED') {
+      ruling = t.overridden
+        ? 'The administrator decreed ' + t.decision + ' (the nodes themselves ended on ' + (t.vote || 'NO CONSENSUS') + ').'
+        : 'The decision on record is ' + t.decision + (cfg.mode === 'verdict' ? ' (' + t.approved + ' approved, ' + t.denied + ' denied).' : ' (the last link of the chain ruled it).');
+    } else {
+      ruling = 'The nodes reached no clear decision.';
+    }
+  }
+  const user = 'Question: ' + question + '\n\nThe nodes said:\n\n' + ok.map((r) => label(r) + ': ' + said(r)).join('\n\n') +
+    '\n\n' + (ruling ? ruling + '\n\n' : '') + FORMAT_SYNTH;
+
+  let system = cfg.synthPersona || SYNTH.persona;
+  if (cfg.directive) system += ' STANDING ORDERS FROM THE ADMINISTRATOR. Follow them in everything you write: ' + cfg.directive;
+
+  runDeadline = Date.now() + SYNTH_BUDGET;
+  try {
+    const text = await callProvider(v, system, user, cfg.temperature);
+    if (!String(text).trim()) throw new Error('Empty answer from ' + v.label);
+    return { ok: true, ...meta, text: String(text).trim().slice(0, TEXT_MAX), ms: Date.now() - started };
+  } catch (e) {
+    console.error('magi synth', (e && e.message) || e);
+    return { ok: false, ...meta, ms: Date.now() - started, error: String((e && e.message) || e).slice(0, 200) };
+  }
+}
+
 // What the admin screen shows for one node.
 function nodeView(n) {
   const v = effective(n), s = settings.nodes[n.id];
@@ -491,6 +553,19 @@ function nodeView(n) {
   };
 }
 
+// What the admin screen shows for the synthesizer (its on / off switch is settings.synth).
+function synthView() {
+  const v = effective(SYNTH);
+  return {
+    id: SYNTH.id, name: SYNTH.name, role: SYNTH.role,
+    provider: v.label, provider_id: v.provider.id,
+    model: v.model, default_model: v.provider.model(),
+    persona: settings.synthPersona, default_persona: SYNTH.persona,
+    enabled: !!v.key && !!settings.synth,
+  };
+}
+const viewOf = (n) => (n.id === SYNTH.id ? synthView() : nodeView(n));
+
 module.exports = function mount(app, { pool, auth, admin, wrap }) {
   // Load saved node links and settings from the database, if there is one.
   const ready = (async () => {
@@ -498,7 +573,7 @@ module.exports = function mount(app, { pool, auth, admin, wrap }) {
     try {
       await pool.query(`CREATE TABLE IF NOT EXISTS magi_links (node TEXT PRIMARY KEY, provider TEXT NOT NULL, model TEXT NOT NULL DEFAULT '')`);
       const r = await pool.query('SELECT node, provider, model FROM magi_links');
-      for (const x of r.rows) if (NODE_BY_ID[x.node] && PROVIDERS[x.provider]) links.set(x.node, { provider: x.provider, model: x.model || '' });
+      for (const x of r.rows) if (LINKABLE[x.node] && PROVIDERS[x.provider]) links.set(x.node, { provider: x.provider, model: x.model || '' });
     } catch (e) { console.error('magi links init:', e.message); }
     try {
       await pool.query(`CREATE TABLE IF NOT EXISTS magi_settings (k TEXT PRIMARY KEY, v TEXT NOT NULL)`);
@@ -570,13 +645,14 @@ module.exports = function mount(app, { pool, auth, admin, wrap }) {
     await ready;
     res.json({
       nodes: NODES.map(nodeView),
+      synth: synthView(),
       providers: Object.values(PROVIDERS).map((p) => ({ id: p.id, label: p.label, ready: !!keyOf(p), model: p.model() })),
       settings: publicSettings(),
       quorum: 2,
     });
   }));
 
-  // Change how the nodes act: mode, link ending, rounds, convincing round, creativity, standing orders, personalities, muting.
+  // Change how the nodes act: mode, link ending, rounds, convincing round, synthesizer, creativity, standing orders, personalities, muting.
   // Send only the fields that change, or { reset: true } to put everything back to the defaults.
   app.post('/api/admin/magi/settings', auth, admin, wrap(async (req, res) => {
     await ready;
@@ -584,20 +660,20 @@ module.exports = function mount(app, { pool, auth, admin, wrap }) {
     if (b.reset) settings = fresh();
     else applySettings(b);
     await persist();
-    res.json({ settings: publicSettings(), nodes: NODES.map(nodeView) });
+    res.json({ settings: publicSettings(), nodes: NODES.map(nodeView), synth: synthView() });
   }));
 
-  // Save a node's provider and model, or reset it to its built-in link.
+  // Save a node's (or the synthesizer's) provider and model, or reset it to its built-in link.
   app.post('/api/admin/magi/node', auth, admin, wrap(async (req, res) => {
     await ready;
     const body = req.body || {};
-    const n = NODE_BY_ID[String(body.node || '')];
+    const n = LINKABLE[String(body.node || '')];
     if (!n) return res.status(400).json({ error: 'Unknown node.' });
 
     if (body.reset) {
       links.delete(n.id);
       if (pool) await pool.query('DELETE FROM magi_links WHERE node = $1', [n.id]).catch((e) => console.error('magi reset:', e.message));
-      return res.json({ node: nodeView(n) });
+      return res.json({ node: viewOf(n) });
     }
 
     const pid = String(body.provider || '');
@@ -613,13 +689,13 @@ module.exports = function mount(app, { pool, auth, admin, wrap }) {
         [n.id, pid, model]
       ).catch((e) => console.error('magi save:', e.message));
     }
-    res.json({ node: nodeView(n) });
+    res.json({ node: viewOf(n) });
   }));
 
-  // Send one short question to a node to check its link.
+  // Send one short question to a node (or the synthesizer) to check its link.
   app.post('/api/admin/magi/test', auth, admin, wrap(async (req, res) => {
     await ready;
-    const n = NODE_BY_ID[String((req.body || {}).node || '')];
+    const n = LINKABLE[String((req.body || {}).node || '')];
     if (!n) return res.status(400).json({ error: 'Unknown node.' });
     const v = effective(n), started = Date.now();
     if (!v.key) return res.json({ ok: false, error: 'Not set up: add ' + hintOf(v.provider) + ' on the server', model: v.model });
@@ -635,6 +711,7 @@ module.exports = function mount(app, { pool, auth, admin, wrap }) {
 
   // Run the MAGI. Optional "override": "APPROVED" or "DENIED" is the admin's decree and replaces the vote
   // (verdict mode, and link mode when the chain ends with a verdict).
+  // When the synthesizer is on, the reply also carries "synth": { ok, text, ms, provider, model, error }.
   app.post('/api/admin/magi', auth, admin, wrap(async (req, res) => {
     await ready;
     const body = req.body || {};
@@ -645,7 +722,9 @@ module.exports = function mount(app, { pool, auth, admin, wrap }) {
     const decreeOk = cfg.mode === 'verdict' || (cfg.mode === 'link' && cfg.linkOut === 'verdict');
     const override = decreeOk ? String(body.override || '').toUpperCase() : '';
     const results = cfg.mode === 'link' ? await linkChain(question, cfg) : await deliberate(question, cfg);
-    const run = { question, results, ...tally(results, cfg, override) };
+    const t = tally(results, cfg, override);
+    const run = { question, results, ...t };
+    if (cfg.synth) run.synth = await synthesize(question, results, t, cfg);
     await histSave(run).catch((e) => console.error('magi history save:', e.message));
     res.json(run);
   }));
