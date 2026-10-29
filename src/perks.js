@@ -133,7 +133,7 @@ module.exports = function mount(app, { pool, auth, wrap }) {
 
   // Loyalty points: balance, tier, what it can buy, and the latest entries.
   app.get('/api/me/points', auth, wrap(async (req, res) => {
-    const b = await balance(q, req.user.id);
+    const b = await balance(pool, req.user.id);
     const { rows: history } = await q(
       `SELECT order_id, points, created_at, false AS spent FROM loyalty_ledger WHERE user_id=$1
        UNION ALL SELECT order_id, -points, created_at, true FROM loyalty_redemptions WHERE user_id=$1
