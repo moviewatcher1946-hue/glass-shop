@@ -123,7 +123,7 @@ module.exports = function mount(app, { pool, auth, wrap }) {
         JOIN order_items b ON b.order_id = a.order_id AND b.product_id IS NOT NULL AND b.product_id <> a.product_id
         JOIN orders o ON o.id = a.order_id AND o.status <> 'cancelled'
         JOIN products p ON p.id = b.product_id
-        WHERE a.product_id = ANY($1::int[]) AND NOT (b.product_id = ANY($1::int[]))
+        WHERE a.product_id = ANY($1::int[]) AND NOT (b.product_id = ANY($1::int[])) AND NOT p.resting
         GROUP BY p.id
         ORDER BY together DESC, p.id
         LIMIT 4`, [ids]);
