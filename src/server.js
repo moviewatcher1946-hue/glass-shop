@@ -151,7 +151,7 @@ async function squeeze(f) {
   } catch (e) { return f; }
 }
 const wrap = (fn) => (req, res, next) => fn(req, res, next).catch(next);
-const COLS = 'id,title,description,price,is_sold_out,category,discount_percent,bulk_min,bulk_percent,image_url,created_at,owner_id,stock,pinned,sort_order,discount_until';
+const COLS = 'id,title,description,price,is_sold_out,category,discount_percent,bulk_min,bulk_percent,image_url,created_at,owner_id,stock,pinned,sort_order,discount_until,resting';
 const LOW_STOCK = 5; // warn at this many left or fewer
 const CATEGORIES = ['drinks', 'snacks'];
 // Price after the product's % discount. The server always works the price out itself.
@@ -182,9 +182,10 @@ const COMBO_SQL = `SELECT c.id,c.title,c.description,c.price,c.is_active,c.creat
 // A combo with other sellers' products goes live only when every one of them has approved it.
 // The main admin can hide all of one seller's products from the shop (users.products_hidden). Visitors and customers never see them;
 // the main admin and sellers still do (marked "Hidden"), and nobody can order them while they are hidden.
-const HIDE_PROD = 'NOT COALESCE((SELECT products_hidden FROM users WHERE users.id=products.owner_id), false)';
+// Products that are resting (stock rotation, see rotation.js) are off the shelf for customers too.
+const HIDE_PROD = 'NOT COALESCE((SELECT products_hidden FROM users WHERE users.id=products.owner_id), false) AND NOT products.resting';
 const HIDE_COMBO = `NOT COALESCE((SELECT products_hidden FROM users WHERE users.id=c.owner_id), false)
-  AND NOT EXISTS (SELECT 1 FROM combo_items hi JOIN products hp ON hp.id=hi.product_id JOIN users hu ON hu.id=hp.owner_id WHERE hi.combo_id=c.id AND hu.products_hidden)`;
+  AND NOT EXISTS (SELECT 1 FROM combo_items hi JOIN products hp ON hp.id=hi.product_id JOIN users hu ON hu.id=hp.owner_id WHERE hi.combo_id=c.id AND (hu.products_hidden OR hp.resting))`;
 const isStaffReq = (req) => !!req.user && ['admin', 'seller'].includes(req.user.role);
 const COMBO_LIVE = "c.is_active AND NOT EXISTS (SELECT 1 FROM combo_approvals a WHERE a.combo_id=c.id AND a.status <> 'approved')";
 // Puts back the stock an order took (combo parts too). Safe to call twice.
@@ -330,6 +331,8 @@ const ensureShop = () => pool.query(`
 const ensureMerch = () => pool.query(`
   ALTER TABLE products ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT false;
   ALTER TABLE products ADD COLUMN IF NOT EXISTS sort_order INT;
+  ALTER TABLE products ADD COLUMN IF NOT EXISTS resting BOOLEAN NOT NULL DEFAULT false;
+  ALTER TABLE products ADD COLUMN IF NOT EXISTS last_shown TIMESTAMPTZ;
 `);
 
 // Seller accounts and ownership (safe to run every start). Existing rows become the main admin's.
@@ -749,6 +752,7 @@ require('./chatroom')(app, { pool, auth, wrap }); // shop support thread (shown 
 require('./agent')(app, { pool, auth, admin, wrap, notify }); // AI helper in Shop support + admin assistant (needs ANTHROPIC_API_KEY)
 require('./messages')(app, { pool, auth, admin, wrap }); // Messages: send and receive between everyone
 const perks = require('./perks')(app, { pool, auth, wrap }); // Your usual, loyalty points, order alerts
+require('./rotation')(app, { pool, auth, admin, wrap }); // Rotating stock: only some products on the shelf at a time (the admin AI controls it)
 require('./google')(app, { pool, wrap, auth }); // Sign in with Google (only when GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are set)
 require('./walkin')(app, { pool, auth, admin, wrap }); // Walk-in sales: face-to-face sales counted in the totals
 require('./magi')(app, { pool, auth, admin, wrap }); // MAGI: three AI nodes vote on a question (admin only)
